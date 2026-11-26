@@ -604,7 +604,12 @@ _CASE_LAT = re.compile(
     r"(?:^|(?<=[.!?|])|(?<=-[ \t]))[ \t]*((?:[A-Z][a-z]+[ \t]+){0,2}[A-Z][a-z]+)[ \t]+(?:ko|ki|ka|ke|ne)(?![A-Za-z])",
     re.M)
 _DOB_RE = re.compile(r"(?<![A-Za-z])(?:DOB|D\.O\.B\.?|Date\s+of\s+Birth|Birth\s*Date|B'?day|Janm\s*Tithi|"
-                     r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक)|Born(?:[ \t]+on)?|Janm|Janam|जन्म)[ \t]*[:\-]?[ \t]*", re.I)
+                     r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक)|Born(?:[ \t]+on)?|Janm|Janam|"
+                     r"(?:जन्म|जनम)(?:[ \t]*(?:तिथि|तिथी|तारीख|तारिख|दिनांक|मिती|मिति|तारीक))?)[ \t]*[:\-]?[ \t]*", re.I)
+_COMPACT_DOB = re.compile(r"[0-9०-९]{8}(?![0-9०-९A-Za-z])")
+# "birth_date": "19870314", dob=14031987: a key-style birth label before eight compact digits
+_COMPACT_DOB_KEY = re.compile(r"(?i)(?<![a-z])(?:dob|birth[_ ]?date|date[_ ]?of[_ ]?birth|birth[_ ]?dt|janm[_ ]?tithi)[\"']?"
+                              r"[ \t]*[:=][ \t]*[\"']?([0-9]{8})(?![0-9A-Za-z])")
 _GENDER_RE = re.compile(
     r"(?<![0-9०-९])[0-9०-९]{1,3}[ \t]*(?:Y|Yr|Yrs|Years?|yrs?|years?|वर्ष|साल)?\.?[ \t]*/[ \t]*"
     r"(F|M|Female|Male|FEMALE|MALE|महिला|पुरुष|स्त्री)(?![A-Za-zऀ-ॿ])")
@@ -774,6 +779,9 @@ def _layer_identifiers(cx: _Ctx) -> None:
             cx.enc_starts.add(sp.start)
     for sp in patterns.find_pins(t):
         cx.add(sp.start, sp.end, "PIN", sp.value, 1)
+    # passport / licence / ration / bank / family-id / vehicle / UPI numbers: redacted, never linked
+    for sp in patterns.find_personal_docs(t):
+        cx.add(sp.start, sp.end, sp.kind, sp.value, 0)
     # Hospital-shaped codes that the patient-id rules vetoed as reference numbers ("ref no NMC/25/137211"):
     # they may well be the patient's number, so they are redacted, but never used to link records.
     taken = sorted((c[1], c[2]) for c in cx.cands)
@@ -1056,11 +1064,22 @@ def _apply_label(cx: _Ctx, cls: str, label: str, vs: int, ve: int) -> None:
 
 def _layer_dob(cx: _Ctx, order: str) -> None:
     t = cx.text
+    for m in _COMPACT_DOB_KEY.finditer(t):
+        d = dates.compact_date(m.group(1), order)
+        if d is not None:
+            cx.add(m.start(1), m.end(1), "DOB", d.isoformat(), 2)
     for m in _DOB_RE.finditer(t):
         hits = dates.find_dates(t[m.end():m.end() + 40], order)
         if hits and hits[0].start == 0:
             h = hits[0]
             cx.add(m.end() + h.start, m.end() + h.end, "DOB", h.date.isoformat(), 2)
+            continue
+        # "DOB 14031987" / "DOB 19870314": eight compact digits that make a real date
+        cm = _COMPACT_DOB.match(t, m.end())
+        if cm:
+            d = dates.compact_date(cm.group(), order)
+            if d is not None:
+                cx.add(cm.start(), cm.end(), "DOB", d.isoformat(), 2)
 
 
 _PN = r"((?:[A-Z][a-z]+[ \t]+){0,2}[A-Z][a-z]+)"
@@ -2415,6 +2434,7 @@ class _OwnIndex:
     def __init__(self, keys: Any) -> None:
         own = sorted(k for k in keys if k and k not in _GENERIC_KEYS)
         self.own = own
+        self.given_generic = frozenset(k for k in keys if k in _GIVEN_GENERIC)
         self.own_set = frozenset(own)
         aff = set()  # type: Set[str]
         pre = set()  # type: Set[str]
@@ -2478,9 +2498,16 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
     full = _cached(known.full_names, _build_full)
     words = [(m.start(), m.end(), m.group()) for m in _WORD_ANY.finditer(t)]
     keys = [_word_key(w) for _, _, w in words]
-    if oi.own:
+    if oi.own or oi.given_generic:
         for (s, e, w), k in zip(words, keys):
-            if not k or k in _GENERIC_KEYS:
+            if not k:
+                continue
+            if k in _GENERIC_KEYS:
+                # "Ram ko bukhar", "राम ने दवा ली": a generic part that is also a given name, standing alone
+                # before a postposition, is the patient himself (never after a doctor's / nurse's title)
+                if (k in oi.given_generic and _POSTPOS_AFTER.match(t, e)
+                        and not _STAFF_TITLE_BEFORE.search(t, max(0, s - 12), s)):
+                    cx.add(s, e, "PATIENT_NAME", "", 6)
                 continue
             if k in own_set or (len(k) >= 4 and oi.fuzzy(k)) or (
                     (k in oi.affix or (w[:1].isupper() and oi.pet(k) and _low(w) not in lexicon.CLINICAL_WORDS))
@@ -2491,6 +2518,32 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
                 for nm in (_JOIN_AFTER.match(t, e), _JOIN_BEFORE.search(t, max(0, s - 30), s)):
                     if nm and _is_name_tok(nm.group(1), "cap"):
                         cx.add(nm.start(1), nm.end(1), "PATIENT_NAME", "", 6)
+    if own_set:
+        # "R A M E S H", "R.A.M.E.S.H": an own name typed letter by letter
+        for m in _SPACED_LETTERS.finditer(t):
+            k = _word_key(re.sub(r"[^A-Za-z]", "", m.group()))
+            if len(k) >= 3 and k in own_set:
+                cx.add(m.start(), m.end(), "PATIENT_NAME", "", 6)
+        # "RameshKumar", "C:\\docs\\RameshVerma\\": an own name glued to the next word in CamelCase
+        for m in _CAMEL_RUN.finditer(t):
+            for pm in re.finditer(r"[A-Z][a-z]+", m.group()):
+                k = _word_key(pm.group())
+                if len(k) >= 3 and k in own_set:
+                    cx.add(m.start() + pm.start(), m.start() + pm.end(), "PATIENT_NAME", "", 6)
+        # OCR breaks inside an own name: "Su kh ram", "Mun-\nda", "Tarun esh"
+        nw = len(words)
+        for i in range(nw - 1):
+            if len(words[i][2]) > 7 or not words[i][2].isascii():
+                continue
+            acc = words[i][2]
+            for j in range(i + 1, min(nw, i + 4)):
+                if not _OCR_GAP.fullmatch(t, words[j - 1][1], words[j][0]) or len(words[j][2]) > 7:
+                    break
+                acc += words[j][2]
+                k = _word_key(acc)
+                if len(k) >= 4 and k in own_set:
+                    cx.add(words[i][0], words[j][1], "PATIENT_NAME", "", 6)
+                    break
     if full:
         n = len(words)
         for L in sorted(full):
@@ -2525,6 +2578,12 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
                     break
 
 
+_SPACED_LETTERS = re.compile(r"(?<![A-Za-z.])[A-Za-z](?:(?:[ ]|\.[ ]?)[A-Za-z]){2,}\.?(?![A-Za-z])")
+_CAMEL_RUN = re.compile(r"(?<![A-Za-z])[A-Z][a-z]+(?:[A-Z][a-z]+)+(?![A-Za-z])")
+_OCR_GAP = re.compile(r"[ \t]{1,2}|-?[ \t]*\n[ \t]*")
+_GIVEN_GENERIC = frozenset(name_key(w) for w in ("ram", "rani", "राम", "रानी"))
+_POSTPOS_AFTER = re.compile(r"[ \t]+(?:ko|ne|ka|ki|ke|se|को|ने|का|की|के|से)(?![A-Za-zऀ-ॿ])")
+_STAFF_TITLE_BEFORE = re.compile(r"(?:dr|doctor|sister|nurse|staff|डॉ|डॉक्टर)\.?[ \t]*$", re.I)
 _SPLIT_DIGITS = re.compile(r"(?<![0-9A-Za-z])\+?\(?[0-9०-९]{1,5}\)?(?:[ .\-]{1,2}\(?[0-9०-९]{1,5}\)?){1,6}(?![0-9A-Za-z])")
 
 
@@ -2535,6 +2594,10 @@ _CAP_TOK = re.compile(r"[A-Z](?:[A-Za-z]|" + _POSS + r")*\.?")
 
 
 _PIN_AFTER = re.compile(r"[ \t]*[\-–][ \t]*[1-9][0-9]{5}(?![0-9])")
+
+
+# "Bill Rs. 450", "Total INR 1200": a currency word ends an amount phrase, never a surname
+_MONEY_WORDS = frozenset({"rs", "inr", "rupees", "rupee", "paise", "rs.", "₹"})
 
 
 def _layer_unknown_pairs(cx: _Ctx) -> None:
@@ -2551,7 +2614,8 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
                 real = [w for _, _, w in run if _low(w) not in _GENERIC]
                 nxt = re.match(r"[ \t]*([A-Za-z]+)", t[e:e + 30])
                 allcaps = all(w.isupper() and len(w) > 1 for _, _, w in run)
-                if (real and not re.match(r"[ \t]*[:：]", t[e:e + 3])
+                money = any(_low(w) in _MONEY_WORDS for _, _, w in run)
+                if (real and not money and not re.match(r"[ \t]*[:：]", t[e:e + 3])
                         and not _PLACE_BEFORE.search(_tail(t, ls, s))
                         and not (nxt and _low(nxt.group(1)) in _ORG_TAIL)
                         and not _PIN_AFTER.match(t, e)
