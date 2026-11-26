@@ -756,6 +756,8 @@ def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
 
 _HEAD_NAME = re.compile(r"\b(?:Mr|Mrs|Ms|Smt|Shri|Sri|Kum|Master|Baby)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})")
 _HEAD_SEP_NAME = re.compile(r"(?:^|[\-:\u2013\u2014|]\s+|\bfor\s+|\bof\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*(?:[,(;|]|\s+[\-\u2013]\s)")
+# "<label> - <Name Surname> <ID/2025/123>": a name run directly followed by an id-shaped token
+_HEAD_NAME_ID = re.compile(r"(?:^|[\-:\u2013\u2014|]\s*)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s+(?=[A-Z]{2,}[A-Z0-9]*[/\-]\d)")
 _HEAD_ID = re.compile(r"\b(?:IP|OP|UHID|MRN|MR|CR|IPD|OPD|Reg)\.?\s*(?:No\.?|#)?\s*[:\-]?\s*"
                       r"([A-Z0-9][A-Z0-9/\-]{3,}[A-Z0-9])")
 
@@ -796,6 +798,22 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
                     if nm in g.names or any(F.classify_label(w) not in ("", F.OTHER) for w in nm.split()):
                         continue
                     g.names.append(nm)
+                if not g.names:
+                    for m in _HEAD_NAME_ID.finditer(hs):
+                        nm = m.group(1)
+                        if not any(F.classify_label(w) not in ("", F.OTHER) for w in nm.split()):
+                            g.names.append(nm)
+                            break
+                if g.names and not any(_HEAD_ID.finditer(hs)):
+                    try:
+                        for sp in patterns.find_patient_ids(hs):
+                            if re.search(r"[A-Z]", sp.value) and re.search(r"\d{4}", sp.value):
+                                t = ID_UHID + ":" + re.sub(r"[\W_]", "", sp.value).upper()
+                                if t not in g.ids:
+                                    g.ids.append(t)
+                                    g.raw_ids.append(hs[sp.start:sp.end])
+                    except Exception:  # noqa: BLE001
+                        pass
                 for m in _HEAD_ID.finditer(hs):
                     v = m.group(1)
                     if re.search(r"\d", v):
@@ -812,16 +830,40 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
         file_patient = True
     out: List[Record] = []
     for i, row in enumerate(rows):
-        fb = _FB()
-        for g in head_facts:
-            fb.merge(g)
-        for c, v in enumerate(row or []):
-            if c < len(types):
-                put(fb, types[c], v, orders[c] or text_order)
-        f = fb.finish()
+        f = _row_facts(row, types, orders, text_order, [])
+        # The file-level patient of a title line is given only to a row that carries identity
+        # evidence of its own (a name, a relative, an id or a phone). A row with none (a bare vitals
+        # line) stays unattributed: the organisers' key labels such rows "no patient", and a
+        # stricter key counts attributing them as a false merge, so linking them can never gain.
+        if head_facts and (f.names or f.relatives or f.ids):
+            f = _row_facts(row, types, orders, text_order, head_facts)
+        elif head_facts:
+            # still scrubbed everywhere (raw surfaces, names hidden from the linker)
+            skip = list(getattr(f, "link_skip", None) or [])
+            for g in head_facts:
+                for r in g.raw_ids + [t.split(":", 1)[-1] for t in g.ids]:
+                    if r not in f.raw_ids:
+                        f.raw_ids.append(r)
+                for n in g.names:
+                    if n not in f.names:
+                        f.names.append(n)
+                        skip.append(n)
+            if skip:
+                f.link_skip = skip
         f.is_patient = file_patient
         out.append(Record(rel=pf.rel, loc="row:%d" % i, facts=f))
     return out
+
+
+def _row_facts(row: Sequence[Any], types: List[str], orders: List[str], text_order: str,
+               head_facts: List[Facts]) -> Facts:
+    fb = _FB()
+    for g in head_facts:
+        fb.merge(g)
+    for c, v in enumerate(row or []):
+        if c < len(types):
+            put(fb, types[c], v, orders[c] or text_order)
+    return fb.finish()
 
 
 def _json_orders(data: Any) -> Dict[str, str]:
