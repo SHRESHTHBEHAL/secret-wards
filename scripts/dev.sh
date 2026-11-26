@@ -9,6 +9,6 @@ OUT="${OUT:-$REPO/my_output}"
 PY="${PY:-python3}"
 
 rm -rf "$OUT"
-RAKSHA_SECRET="${RAKSHA_SECRET:-practice}" "$PY" "$REPO/main.py" --input "$KIT/dev/input" --output "$OUT"
+RAKSHA_SECRET="${RAKSHA_SECRET:-$("$PY" -c 'import secrets; print(secrets.token_hex(16))')}" "$PY" "$REPO/main.py" --input "$KIT/dev/input" --output "$OUT"
 "$PY" "$KIT/validate_output.py" --input "$KIT/dev/input" --output "$OUT"
 "$PY" "$KIT/check_dev.py" --output "$OUT" "$@"

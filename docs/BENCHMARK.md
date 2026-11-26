@@ -26,7 +26,7 @@ deterministic. Raksha: 98.2 in under a second, deterministic, offline, CPU-only.
 
 ```bash
 python3 scripts/synth_gen.py /tmp/synth 99
-RAKSHA_SECRET=practice python3 main.py --input /tmp/synth/input --output /tmp/out
+RAKSHA_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(16))')" python3 main.py --input /tmp/synth/input --output /tmp/out
 python3 ../Secret-Wards-ToolKit/check_dev.py --output /tmp/out --truth /tmp/synth/truth/truth.json
 python3 scripts/score_composite.py /tmp/out /tmp/synth/truth/truth.json /tmp/synth/input --wall 1 --rss 50 --deterministic 1
 ```

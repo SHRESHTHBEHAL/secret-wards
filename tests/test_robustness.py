@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
 MAIN = REPO / "main.py"
-SECRET = "zq9X-wardtest-SECRET-7731-kappa"
+SECRET = __import__("secrets").token_hex(16)   # random per test run, never a literal
 STRESS = os.environ.get("RAKSHA_STRESS") == "1"
 
 _STDOUT_OK = re.compile(r"^files \d+ sanitized \d+ quarantined \d+ records \d+ linked \d+$")
