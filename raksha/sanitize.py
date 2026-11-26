@@ -7,6 +7,7 @@ Standard library only, Python 3.9+.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import bisect
 import hashlib
 import posixpath
@@ -759,6 +760,11 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
                     break
     reps = []  # type: List[Tuple[int, int, str, str]]
     for sp in keep:
+        if sp.kind == "DISTRICT" and sp.start > 0 and text[sp.start - 1].isalpha() and text[sp.start].isalpha():
+            # a district span that starts inside the label word ("dist|rict Ganjam") starts at the name
+            m = re.search(r"\s+", text[sp.start:sp.end])
+            if m is not None and sp.start + m.end() < sp.end:
+                sp = dataclasses.replace(sp, start=sp.start + m.end())
         surf = text[sp.start:sp.end]
         k = sp.kind
         if k in NAME_KINDS:
