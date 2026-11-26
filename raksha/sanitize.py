@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from . import dates, fields, privacy
 from .detect import _STOP as _COMMON_WORDS, ID_KINDS, NAME_KINDS, Known, detect
 from .lexicon import DISTRICTS
-from .harvest import _text_table_types, columnar_rows, csv_view, harvest_file, keyed_record_id, text_table
+from .harvest import _text_table_types, columnar_rows, csv_view, harvest_file, keyed_record_id, kv_doc_slots, text_table
 from .ingest import dump_csv, dump_json
 from .normalize import to_ascii_digits, try_b64_text
 from .patterns import find_identifiers, norm_id, protected_spans
@@ -989,6 +989,9 @@ def _address_cells(v: str, out: str, ctx: _Ctx) -> str:
 
 
 def _address(v: str, ctx: _Ctx) -> str:
+    if "\n" in v and "," in v and len(v) <= 300:
+        # an address cell broken over lines ("Plot 12,\nSome Sahi,\nTown 760001"): its lines are comma parts
+        v = re.sub(r"[ \t]*,?[ \t]*\r?\n[ \t]*", ", ", v.strip())
     out = scrub_text(v, ctx, "full", collapse=True)
     out = _address_segments(v, out, ctx)
     if "," in v and "\n" not in v and len(v) <= 300:
@@ -1057,6 +1060,11 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
             return 0
         m = _REL_PREFIX.match(v)
         return (m.group(0) if m else "") + "[RELATIVE]"
+    if ftype == fields.BANK:
+        if num or sum(c.isdigit() for c in to_ascii_digits(str(v))) >= 6:
+            ctx.count("identifiers")
+            return 0 if num else "[REF]"
+        return _scrub_any(v, ctx, "full")
     if ftype in _FIELD_PH:
         ctx.count(_FIELD_COUNT.get(ftype, "identifiers"))
         if ftype in (fields.HOUSE, fields.LOCALITY, fields.VILLAGE, fields.TEHSIL):
@@ -1772,6 +1780,13 @@ def _text(pf: ParsedFile, fs: _File) -> str:
         return tab
     ctx = fs.main_ctx()
     text = pf.text or ""
+    try:
+        slots = kv_doc_slots(text)
+    except Exception:  # noqa: BLE001
+        slots = []
+    vals = [(a, b, typed_value(text[a:b], t, ctx, None)) for _lb, a, b, t in sorted(slots, key=lambda x: x[1])]
+    for a, b, v in reversed(vals):                  # a personal "label = value" slot: its typed value
+        text = text[:a] + (v if isinstance(v, str) else str(v)) + text[b:]
     out = scrub_text(text, ctx, "full", psn_fallback=True)
     if ctx.psn and ctx.psn not in out:
         lines = out.split("\n")
