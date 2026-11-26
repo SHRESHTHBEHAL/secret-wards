@@ -323,6 +323,11 @@ class _Rec:
         self.age = f.age
         if f.dob is not None:
             self.byear = f.dob.year
+        elif f.age is not None and f.ref_date is not None and _NOW[0] and f.age >= 5 \
+                and f.ref_date.year < _NOW[0] - 10 and abs(f.ref_date.year + f.age - _NOW[0]) <= 1:
+            # an "event" date a lifetime old that plus the age lands on the collection's own year is
+            # the birth date ("Born: ...") the text did not label
+            self.byear = f.ref_date.year
         elif f.age is not None and f.ref_date is not None and f.ref_date.year >= _MIN_EVENT_YEAR:
             # an "event" date decades old is most likely an unlabelled birth date ("Born: ..."):
             # age minus that date would invent a birth year a lifetime too early
@@ -336,7 +341,22 @@ class _Rec:
 
 
 _MIN_EVENT_YEAR = 1995
+# The collection's own year: the most common event-date year over all records (set by link()).
+_NOW = [0]
+
+
+def _collection_year(records: List[Record]) -> int:
+    cnt: Dict[int, int] = {}
+    for rec in records:
+        f = rec.facts
+        d = getattr(f, "ref_date", None) if f is not None else None
+        if d is not None and 1900 < d.year < 2100:
+            cnt[d.year] = cnt.get(d.year, 0) + 1
+    if not cnt:
+        return 0
+    return max(sorted(cnt), key=lambda y: (cnt[y], y))
 _PAN_SHAPE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+_CC_MOBILE = re.compile(r"^91[6-9][0-9]{9}$")
 
 
 _SAME_CACHE: Dict[Tuple[str, str], bool] = {}
@@ -388,6 +408,8 @@ class _Group:
             typ = t.split(":", 1)[0]
             if typ == ID_PAN and not _PAN_SHAPE.match(t[4:]):
                 continue   # a voter / ration / visit code filed as a government id: not a PAN to conflict on
+            if typ == ID_AADHAAR and _CC_MOBILE.match(t[len(ID_AADHAAR) + 1:]):
+                continue   # "91" + a mobile number: as likely a phone with its country code as an Aadhaar
             if typ in _CONFLICT_TYPES and t not in demoted:
                 self.cids.setdefault(typ, set()).add(t)
         self.rels = list(r.rels)
@@ -590,6 +612,7 @@ def _soft_rule(lk: _Linker, recs: List[_Rec], blocks: Dict[tuple, List[int]],
 
 def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Patient]]:
     ordered = sorted(records, key=lambda r: (r.rel, r.loc))
+    _NOW[0] = _collection_year(ordered)
     mapping: Dict[Key, Optional[str]] = {}
     recs: List[_Rec] = []
     for rec in ordered:
@@ -707,6 +730,27 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
                 if not (ga.names and gb.names and _names_compat(ga.names, gb.names)):
                     continue
                 lk.union(i, j)
+
+    # One hospital number filed as the patient's number in one record and as a visit / admission
+    # number in another (an "UHID/IP" column): the same code with compatible names on both sides.
+    by_val: Dict[str, List[int]] = {}
+    for r in recs:
+        for t in r.ids:
+            typ, val = t.split(":", 1)
+            if typ in (ID_UHID, ID_ENC) and t not in demoted and len(val) >= 6 and re.search(r"[0-9]{4}", val):
+                by_val.setdefault(val, []).append(r.i)
+    for val in sorted(by_val):
+        ms = by_val[val]
+        if not (ID_UHID + ":" + val in by_tok and ID_ENC + ":" + val in by_tok):
+            continue
+        for x in range(len(ms)):
+            for y in range(x + 1, len(ms)):
+                i, j = ms[x], ms[y]
+                if lk.find(i) == lk.find(j):
+                    continue
+                ga, gb = lk.groups[lk.find(i)], lk.groups[lk.find(j)]
+                if ga.names and gb.names and _names_compat(ga.names, gb.names):
+                    lk.union(i, j)
 
     # Blocking indexes for rules 5-8 (first-name key and full-name key based).
     def name_keys(r: _Rec) -> List[str]:
