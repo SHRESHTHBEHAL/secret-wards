@@ -1,4 +1,5 @@
 [submission]
 name  = "404FoundUs"
-setup = "pip install -r requirements.txt"                    # run once, internet allowed
-run   = "python main.py --input {input} --output {output}"   # run with NO internet
+# Standard library only: requirements.txt lists no packages, so this installs nothing and exits 0.
+setup = "python -m pip install --disable-pip-version-check -q -r requirements.txt"   # run once, internet allowed
+run   = "python main.py --input {input} --output {output}"                            # run with NO internet
