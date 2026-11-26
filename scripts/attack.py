@@ -1013,6 +1013,18 @@ def cross_release(dev, rel1, rel2):
             "risk": max(stable_psn, stable_dates)}
 
 
+def _ref(*parts):
+    """Opaque 8-hex handle for a file / location / id, so console output never carries record content
+    (input file names and locations can themselves hold personal data). Full detail goes to --json only."""
+    import hashlib
+    return hashlib.sha256("\x1f".join(str(x) for x in parts).encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def _nums(d):
+    """Only the numeric members of a result dict: console output is figures, never strings from the data."""
+    return {k: v for k, v in (d or {}).items() if isinstance(v, (int, float, bool)) or v is None}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--release", default=None)
@@ -1047,10 +1059,10 @@ def main():
         print("  %-30s %8.4f%s" % (k, res[k], ("   raw %.4f" % rv) if isinstance(rv, (int, float)) else ""))
     print("  targeted_signal_hits (all/true-owner): %s / %s   targets %d" % (res["targeted_signal_hits"], res["targeted_signal_hits_true"], res["targets"]))
     if res.get("simulation"):
-        print("  SIMULATION: %s" % res["simulation"])
-    print("  pseudonym_inversion: %s" % {k: v for k, v in res["pseudonym_inversion"].items() if k != "inverted"})
+        print("  SIMULATION: %s" % _nums(res["simulation"]))
+    print("  pseudonym_inversion: %s" % _nums(res["pseudonym_inversion"]))
     if res["cross_release"]:
-        print("  cross_release: %s" % res["cross_release"])
+        print("  cross_release: %s" % _nums(res["cross_release"]))
     # final block
     comp = {"A1": res["direct_exposure"], "A3": res["record_linkage_risk"], "A4": res["patients_reidentified"],
             "A5": res["targeted_success"]}
@@ -1084,8 +1096,8 @@ def main():
             print("  %-16s %5d" % (k, v))
         print("\nTARGETS")
         for t in res["targets_detail"]:
-            print("  %s %s success %.3f true-signals %s hint=%s (shared by %d profiles)" % (
-                t["patient"], t["rid"], t["success"], t["true_signals"], t["hint"], t["cond_profiles"]))
+            print("  target %s success %.3f true-signals %d (shared by %d profiles)" % (
+                _ref(t["patient"]), t["success"], len(t["true_signals"]), t["cond_profiles"]))
         best = {}
         for r in records:
             if r["patient"] not in best or r["risk4"] > best[r["patient"]]["risk4"]:
@@ -1096,9 +1108,9 @@ def main():
             useprof = r["pp"] >= r["p"]
             src = prof if useprof else r
             ev = prof["ev"] if useprof else r["ev"]
-            print("  %s risk %.3f (rec %.3f prof %.3f, %d cands) %s:%s" % (
-                pt, r["risk4"], r["p"], r["pp"], len(src["cands"]), r["file"], r["loc"]))
-            print("      filters %s  weights %s" % (src["applied"], src["why"].get(r["true"])))
+            print("  patient %s risk %.3f (rec %.3f prof %.3f, %d cands) at %s" % (
+                _ref(pt), r["risk4"], r["p"], r["pp"], len(src["cands"]), _ref(r["file"], r["loc"])))
+            print("      filters applied %d" % len(src["applied"] or ()))
             print("      evidence counts: ages %d bands %d birth-years %d genders %d districts %d tehsils %d villages %d "
                   "pins %d pin-prefixes %d houses %d" % (
                       len(ev.ages), len(ev.bands), len(ev.birth_years), len(ev.genders), len(ev.districts),

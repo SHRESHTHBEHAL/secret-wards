@@ -669,10 +669,16 @@ def main() -> int:
             return 1
     print(f"SELF-CHECK: {len(problems)} entity surfaces findable before but not after mutation; "
           f"{len(pres_problems)} preserve probes lost")
-    for p in problems[:30]:            # location and type only: never echo the surface itself
-        print("   ENTITY", " | ".join(map(str, p[:3])))
-    for p in pres_problems[:15]:
-        print("   PRESERVE", " | ".join(map(str, p[:2])))
+    # Counts by type and by opaque file handle only: file names and locations can hold personal data,
+    # so nothing read from a record (or its path) is ever printed.
+    by_type = {}
+    for p in problems:
+        by_type[str(p[2])] = by_type.get(str(p[2]), 0) + 1
+    for t, n in sorted(by_type.items()):
+        print(f"   ENTITY type {t:<18} {n}")
+    lost_files = {hashlib.sha256(str(p[0]).encode("utf-8", "replace")).hexdigest()[:8] for p in pres_problems}
+    if pres_problems:
+        print(f"   PRESERVE probes lost in {len(lost_files)} files (handles: {' '.join(sorted(lost_files)[:15])})")
     return 1 if problems else 0
 
 
