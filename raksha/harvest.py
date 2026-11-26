@@ -355,6 +355,9 @@ def put(fb: _FB, typ: str, value: Any, order: str = "dmy", group: str = "") -> N
         fb.tok(ID_INS, patterns.norm_id(s), s)
     elif typ == F.EMAIL:
         fb.tok(ID_EMAIL, s.lower(), s)
+    elif typ == F.BANK:
+        if sum(c.isdigit() for c in to_ascii_digits(s)) >= 6:
+            fb.raw(s)
     elif typ == F.PHONE:
         p = patterns.norm_phone(s)
         if p:
@@ -1295,6 +1298,41 @@ def _text_table_records(pf: ParsedFile, table: TextTable) -> List[Record]:
     return out
 
 
+_KV_DOC_LINE = re.compile(r"^[ \t]*([A-Za-z][A-Za-z0-9_./\- ]{0,40}?)[ \t]*=[ \t]*([^=\n]*?)[ \t\r]*$")
+_KV_FORCE = frozenset({F.NAME, F.FIRST_NAME, F.LAST_NAME, F.LOCAL_NAME, F.RELATIVE, F.PATIENT_ID, F.PHONE,
+                       F.AADHAAR, F.ABHA, F.ABHA_ADDR, F.PAN, F.INSURANCE, F.EMAIL, F.ADDRESS, F.HOUSE,
+                       F.LOCALITY, F.VILLAGE, F.TEHSIL, F.PIN, F.DOB, F.BANK})
+
+
+def kv_doc_slots(text: str) -> List[Tuple[str, int, int, str]]:
+    """A "label = value" document (one pair per line, at least four such lines, the other non-blank
+    lines only "#" comments or titles): (label, value start, value end, type) of every value whose
+    label types it as a personal slot (name, relative, id, phone, address part, PIN, DOB, bank account)."""
+    if not text or "=" not in text:
+        return []
+    out = []  # type: List[Tuple[str, int, int, str]]
+    pos = 0
+    n_kv = n_other = 0
+    for ln in text.split("\n"):
+        st = ln.strip()
+        if st and not st.startswith("#"):
+            m = _KV_DOC_LINE.match(ln)
+            if m and m.group(2).strip():
+                n_kv += 1
+                try:
+                    t = F.classify_label(m.group(1))
+                except Exception:  # noqa: BLE001
+                    t = F.OTHER
+                if t in _KV_FORCE:
+                    out.append((m.group(1), pos + m.start(2), pos + m.end(2), t))
+            else:
+                n_other += 1
+        pos += len(ln) + 1
+    if n_kv < 4 or n_other > max(2, n_kv // 4):
+        return []
+    return out
+
+
 def _text_records(pf: ParsedFile) -> List[Record]:
     text = pf.text or ""
     table = text_table(text)
@@ -1303,6 +1341,8 @@ def _text_records(pf: ParsedFile) -> List[Record]:
     order = _date_order(_DATEISH.findall(text))
     fb = _FB()
     fb.merge(_text_facts(text, order))
+    for _lb, a, b, t in kv_doc_slots(text):
+        put(fb, t, text[a:b], order)
     f = fb.finish()
     _merge_file_name(f, pf.rel)
     f.is_patient = _looks_patient(f)
