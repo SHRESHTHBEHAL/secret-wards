@@ -135,7 +135,8 @@ _S = {
                "rogi", "marij", "mariz", "panjikaran", "panjikrit", "nondani", "pravesh_no"),
     "enc": ("ipd", "ip", "adm", "admission", "admit", "encounter", "inpatient", "aipidi", "bharti",
             "ipno", "ipdno", "opd", "opdno"),
-    "other_id": ("bill", "invoice", "receipt", "sample", "specimen", "trip", "ticket", "order",
+    "other_id": ("bill", "invoice", "receipt", "sample", "specimen", "trip", "ticket", "order", "utr", "bank",
+                 "machine", "vehicle", "call", "scan", "template", "dlt", "preauth", "gate", "pass",
                  "accession", "barcode", "visit", "voucher", "token", "txn", "transaction", "claim",
                  "request", "booking", "package", "lot", "batch", "serial", "sl", "sno",
                  "row", "index", "page", "version", "room", "opd"),
@@ -156,7 +157,10 @@ _S = {
     "line": ("line", "line1", "line2"),
     "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
     "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
-                 "sector", "ward_no", "galli", "gali", "lane"),
+                 "sector", "ward_no", "galli", "gali", "lane", "para", "leikai", "tola", "veng", "patti",
+                 "pada", "chawl", "wada", "khangpa"),
+    "govid": ("voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
+              "kyc", "idproof"),
     "village": ("mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
                 "kasba", "qasba", "shahar", "nagar", "gramm"),
     "tehsil": ("tahasil", "tehesil", "taluq", "thaluk", "pargana", "upazila", "upzila", "mandalam", "tahsel", "tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
@@ -335,6 +339,8 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         return AADHAAR
     if h("pan") and not h("pin"):
         return PAN
+    if h("govid") and not (h("name") or h("date") or h("dob")):
+        return PAN             # voter id (EPIC), ration card, driving licence, passport, VID: a government id
     if h("insurance"):
         return INSURANCE
     if h("email"):
