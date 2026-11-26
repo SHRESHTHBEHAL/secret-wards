@@ -306,6 +306,9 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         if any(t in _BY_PRIVATE for t in toks):
             return NAME
         return FREE_TEXT
+    if is_id and any(t in ("lab", "labs", "laboratory", "path", "pathology", "radiology") for t in toks) and not (
+            h("uhid") or h("patient") or h("idhost")):
+        return OTHER_ID        # "Lab Ref", "Lab No": the laboratory's own reference, not the patient's id
     if is_id and h("idhost") and not (h("other_id") or h("name") or h("phone") or h("aadhaar") or h("abha")
                                       or h("pan") or h("insurance") or h("email") or h("date") or h("dob")):
         if h("enc"):
