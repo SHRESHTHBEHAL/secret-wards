@@ -374,7 +374,7 @@ _A_HOUSE = re.compile(
     r"Door\s*No\.?|मकान(?:\s*(?:नं|नंबर|न)\.?)?|म\.?\s*नं\.?|प्लॉट)\s*[:#\-]?\s*[0-9०-९A-Za-z/\-]*[0-9०-९]", re.I)
 _A_LOC = re.compile(r"(?:Mohalla|Mohallah|Mohalla|Muhalla|Ward|Sector|Colony|Gali|Lane|Street|Block|Basti|"
                     r"मोहल्ला|मुहल्ला|वार्ड|गली|सेक्टर|कॉलोनी|बस्ती)(?![A-Za-z])", re.I)
-_A_LOC_TAIL = re.compile(r"(?:Nagar|Colony|Basti|Bazar|Bazaar|Marg|Road|Chowk|Enclave|Puram|Vihar|Mohalla|Tola|"
+_A_LOC_TAIL = re.compile(r"(?:Nagar|Colony|Basti|Bazar|Bazaar|Marg|Road|Chowk|Enclave|Puram|Vihar|Mohalla|Tola|Leikai|Veng|"
                          r"नगर|कॉलोनी|बस्ती|बाजार|बाज़ार|मार्ग|रोड|चौक|विहार|टोला)\s*$", re.I)
 _A_LAND = re.compile(r"(?:near|nr\.?|opp\.?|opposite|behind|beside|next\s+to|in\s+front\s+of|close\s+to)(?![A-Za-z])", re.I)
 _A_LAND_TAIL = re.compile(r"के\s+(?:पास|पीछे|सामने|निकट|बगल)\s*$|(?:के\s+)?नज़दीक\s*$")
@@ -437,6 +437,21 @@ def _strip_part(text: str, a: int, b: int) -> str:
     return text[a:b] if a < b else ""
 
 
+_FIELD_GAP = re.compile(r"[ \t]{2,}|\t")
+_DIRECTION = frozenset("north south east west central upper lower new old".split())
+
+
+def is_district(part: str) -> bool:
+    """A known district, also with a direction word ("Imphal West", "West Tripura", "Lower Subansiri")."""
+    ws = [_nfc(w.lower()) for w in part.split()]
+    if not ws or len(ws) > 4:
+        return False
+    if " ".join(ws) in _DISTRICTS or (len(ws) == 1 and ws[0] in _DISTRICTS):
+        return True
+    core = [w for w in ws if w not in _DIRECTION]
+    return 0 < len(core) < len(ws) and " ".join(core) in _DISTRICTS
+
+
 def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_keep: bool = False) -> int:
     """Classify comma-separated parts of text[s:e]; returns number of classified parts."""
     parts = []
@@ -473,6 +488,9 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
             rx = {"VILLAGE": _A_VILL, "TEHSIL": _A_TEH, "DISTRICT": _A_DIST}[k]
             m = rx.match(part)
             vs, ve = _strip_span(text, ps + m.end(), pe)
+            gap = _FIELD_GAP.search(text, vs, ve)
+            if gap:
+                ve = gap.start()                  # "Dist <X>      AWC code ...": the next field is not the place
             if vs < ve:
                 add(vs, ve, k, _clean(text[vs:ve]) if k == "DISTRICT" else "", 3)
                 got += 1
@@ -506,6 +524,9 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
             if re.search(r"[0-9०-९]", part):
                 add(ps, pe, "ADDRESS", "", 3)
             continue
+        if is_district(part):
+            add(ps, pe, "DISTRICT", _clean(part), 3)
+            continue
         if idx == n - 1 and (got or (last_keep and n > 1)) and not re.search(r"[0-9०-९]", part):
             add(ps, pe, "DISTRICT", _clean(part), 3)      # trailing town / district name: kept
             continue
@@ -517,7 +538,8 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
 
 _KIN_RE = re.compile(r"(?<![A-Za-z/])([SDWHCFMBsdwhcfmb])[ \t]*/[ \t]*([Oo])(?![A-Za-z/])\.?[ \t]*:?[ \t]*")
 _KIN_EN = re.compile(r"(?<![A-Za-z])(son|daughter|wife|husband|father|mother)\s+of\s+", re.I)
-_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(" + "|".join(scripts.KIN_WORDS) + r"|पिता|पति|पत्नी|पुत्र|पुत्री|माता)(?:[ \t]*(?:" + "|".join(scripts.POSSESSIVES) + r")[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
+_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(" + "|".join(scripts.KIN_WORDS) + r"|पिता|पति|पत्नी|पुत्र|पुत्री|माता|बेटा|बेटी|बहन|ससुर|सास|"
+                     r"देवर|ननद|चाचा|चाची|मामा|मामी|बहू|दामाद|भाभी|जेठ|भतीजा|भतीजी|पोता|पोती|नाती|नातिन)(?:[ \t]*(?:" + "|".join(scripts.POSSESSIVES) + r")[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
 _HON_RE = re.compile(r"(?<![A-Za-zऀ-ॿ])(" + "|".join(sorted(
     (re.escape(w) for w in _HON_AFTER), key=len, reverse=True)) + r")(?![A-Za-zऀ-ॿ])", re.I)
 _TITLE_RE = re.compile(
@@ -1222,7 +1244,7 @@ op ops operative operatively partum natal mortem procedure surgery surgical offi
 email mail sms phone call courier ambulance referral hospital clinic road highway route
 """)
 _PT_PRE = re.compile(r"(?<![A-Za-z])(?:village|vill\.?|gaon|gaanv|gram|mauza|mouza|tola|basti|leikai|veng|sahi|wadi|"
-                     r"pada|chawl|mohalla|hamlet|post|p\.[ \t]*o\.?|PO|via)[ \t]*[:\-]?[ \t]+", re.I)
+                     r"pada|chawl|mohalla|hamlet|post|p\.[ \t]*o\.?|PO|via|tehsil|tahsil|taluka|taluk|tal\.|teh\.)[ \t]*[:\-]?[ \t]+", re.I)
 _PT_TITLE = re.compile(r"[A-Z][a-z]+(?:-[A-Z]?[a-z]+)*(?![A-Za-z])")
 _PT_LOWER = re.compile(r"[a-z]{3,}(?![A-Za-z])")
 _PT_PART = re.compile(r"[ \t]*(?:Pt|Part|Ward[ \t]*No)\.?[ \t]*[\-:]?[ \t]*(?:[0-9]+|[IVX]+)(?![A-Za-z0-9])", re.I)
@@ -1366,7 +1388,8 @@ def _layer_place_words(cx: _Ctx) -> None:
                 r = _take_place_fwd(t, s, True, 1)
             if r is None:
                 continue
-        if _ORG_NEXT.match(t, r[1]) or re.match(r"[ \t]*(?:hospital|phc|chc|sdh|opd|ward)", t[r[1]:], re.I):
+        if _ORG_NEXT.match(t, r[1]) or re.match(r"[ \t]*(?:hospital|phc|chc|sdh|opd|ward|icu|micu|sicu|nicu|picu|hdu|ccu|"
+                                                 r"iccu|ot|theatre|unit|dept|department|labour|lr|room|bed)(?![a-z])", t[r[1]:], re.I):
             continue
         word = t[r[0]:r[1]]
         trig = _low(m.group().split()[0])
@@ -1445,8 +1468,10 @@ _INIT_RUN = re.compile(r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Smt|Shri|Sri|Name|Patient|Pt|
 # history narrative: "assaulted by a neighbour, one Sukh", "accused Mr X", "landlord X"
 _ACCUSED = re.compile(r"(?<![A-Za-z])(?:(?:allegedly[ \t]+)?assaulted[ \t]+by(?:[ \t]+(?:a|the|his|her|one))?(?:[ \t]+"
                       r"(?:neighbou?r|landlord|employer|relative|man|person))?|accused|neighbou?r|landlord|employer|"
-                      r"by[ \t]+one)[ \t]*,?[ \t]*(?:one[ \t]+)?(?:(?:Mr|Shri|Sri)\.?[ \t]+)?"
-                      r"([A-Z][a-z]{2,}(?:[ \t]+[A-Z][a-z]{2,})?)(?![A-Za-z])")
+                      r"informant|identified[ \t]+by|statement[ \t]+of|as[ \t]+told[ \t]+by|pillion(?:[ \t]+rider)?|"
+                      r"driver|owner|complainant|eye[ \t]*witness|witness|"
+                      r"by[ \t]+one)[ \t]*[,:\-]?[ \t]*(?:one[ \t]+)?(?:(?:Mr|Shri|Sri|Sh|Seth|Smt|Mrs|Ms|Haji|Sardar)\.?[ \t]+)?"
+                      r"([A-Z][a-z]{2,}(?:[ \t]+[A-Z][a-z]{2,}){0,2})(?![A-Za-z])")
 # lowercase nursing line: "14:00 <given> <surname> ot se shift hui", "bed 9 <name> ko tremors"
 _LOW_LINE_NAME = re.compile(r"(?m)^[ \t]*(?:[0-9]{1,2}[:.][0-9]{2}[ \t]*(?:hrs?)?[ \t]*[-:]?[ \t]*)"
                             r"([a-z]{3,}[ \t]+[a-z]{3,})[ \t]+(?=(?:ot|ward|icu|opd|ko|ne|ka|ki|ke|se|[0-9]{1,3}[ \t]*(?:y|yr|yrs|/)"
@@ -1484,8 +1509,11 @@ def _layer_prose_names(cx: _Ctx) -> None:
         ws = m.group(1).split()
         if any(_low(w) in _STOP or _low(w) in _DISTRICTS for w in ws[:1]):
             continue
-        if len(ws) == 2 and _low(ws[1]) in _STOP:
-            cx.add(m.start(1), m.start(1) + len(ws[0]), "PERSON", "", 4)
+        k = 1
+        while k < len(ws) and _low(ws[k]) not in _STOP and _low(ws[k]) not in _DISTRICTS:
+            k += 1
+        if k < len(ws):
+            cx.add(m.start(1), m.start(1) + len(" ".join(ws[:k])), "PERSON", "", 4)
         else:
             cx.add(m.start(1), m.end(1), "PERSON", "", 4)
     for rx in (_LOW_LINE_NAME, _LOW_BED_NAME):
@@ -1753,7 +1781,10 @@ def _layer_kinship(cx: _Ctx) -> None:
         le = len(t) if le < 0 else le
         nm = _take_name(t, m.end(), le, "cap", max_tok=3)
         if nm and _is_dev(t[nm[0]]):
-            cx.add(nm[0], nm[1], "RELATIVE_NAME", m.group(1), 3)
+            ws = t[nm[0]:nm[1]].split()
+            while len(ws) > 1 and (_low(ws[-1]) in _DISTRICTS or _low(ws[-1]) in _HI_FUNC):
+                ws.pop()                       # "बेटा <X> <Y> सूरत में": the town is not part of the name
+            cx.add(nm[0], nm[0] + len(" ".join(ws)), "RELATIVE_NAME", m.group(1), 3)
 
 
 def _layer_honorifics(cx: _Ctx) -> None:
@@ -2074,6 +2105,7 @@ _SMALL_OWN = 48
 
 
 def reset_caches() -> None:
+    patterns.reset_protected_cache()
     _KCACHE.clear()
     _WKEY.clear()
     _RCACHE.clear()
