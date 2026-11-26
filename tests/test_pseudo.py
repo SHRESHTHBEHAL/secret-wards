@@ -61,3 +61,29 @@ class PseudoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShiftBookTest(unittest.TestCase):
+    def test_distinct_offsets_while_they_last(self):
+        from raksha.pseudo import Keys, ShiftBook
+        keys = ["uhid:P%04d" % i for i in range(250)]
+        sb = ShiftBook(Keys(b"s"), keys, 180, 30)
+        offs = [sb.get(k) for k in keys]
+        self.assertEqual(len(set(offs)), 250)
+        self.assertTrue(all(30 <= abs(o) <= 180 for o in offs))
+
+    def test_deterministic_and_order_free(self):
+        from raksha.pseudo import Keys, ShiftBook
+        keys = ["k%d" % i for i in range(80)]
+        a = ShiftBook(Keys(b"s"), keys); b = ShiftBook(Keys(b"s"), list(reversed(keys)))
+        self.assertEqual([a.get(k) for k in keys], [b.get(k) for k in keys])
+        c = ShiftBook(Keys(b"other"), keys)
+        self.assertNotEqual([a.get(k) for k in keys], [c.get(k) for k in keys])
+
+    def test_overflow_spreads_evenly(self):
+        from raksha.pseudo import Keys, ShiftBook
+        keys = ["k%d" % i for i in range(700)]
+        sb = ShiftBook(Keys(b"s"), keys, 180, 30)
+        import collections
+        load = collections.Counter(sb.get(k) for k in keys)
+        self.assertLessEqual(max(load.values()), 3)

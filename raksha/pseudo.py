@@ -75,3 +75,50 @@ class Keys:
         if n < 1 or n > 51:
             raise ValueError("n must be in 1..51")
         return _crockford(_mac(self._k_psn, "opaque\x00" + tag), n)
+
+
+class ShiftBook:
+    """Per-patient date shifts with no two patients on the same offset (while offsets remain).
+
+    The targeted attack (docs/ATTACKS.md, A5) un-shifts the whole release as soon as two re-identified people
+    agree on one offset. Independent keyed offsets from ~300 values collide by the birthday paradox; here each key
+    starts at its own keyed offset and walks a keyed permutation to the next free one. Deterministic: keys are
+    placed in HMAC order, never input order, and unknown keys are placed on first use in sorted file order.
+    """
+
+    def __init__(self, keys: "Keys", patient_keys, max_days: int = 180, min_days: int = 30) -> None:
+        self._keys = keys
+        self.min_days = max(1, int(min_days))
+        self.max_days = max(self.min_days, int(max_days))
+        self._offsets = [d for d in range(-self.max_days, self.max_days + 1) if abs(d) >= self.min_days]
+        self._index = {d: i for i, d in enumerate(self._offsets)}
+        self._load = {}  # type: dict
+        self._of = {}  # type: dict
+        for k in sorted(set(patient_keys), key=lambda k: _mac(keys._k_shift, "order\x00" + k)):
+            self.get(k)
+
+    def get(self, key: str) -> int:
+        if key in self._of:
+            return self._of[key]
+        n = len(self._offsets)
+        base = self._keys.shift_days(key, self.max_days, self.min_days)
+        i = self._index.get(base, 0)
+        step = 1 + int.from_bytes(_mac(self._keys._k_shift, "step\x00" + key)[:4], "big") % max(1, n - 1)
+        while n > 1 and _gcd(step, n) != 1:
+            step += 1
+        floor = min(self._load.get(d, 0) for d in self._offsets)
+        for _ in range(n):
+            d = self._offsets[i]
+            if self._load.get(d, 0) <= floor:
+                break
+            i = (i + step) % n
+        d = self._offsets[i]
+        self._load[d] = self._load.get(d, 0) + 1
+        self._of[key] = d
+        return d
+
+
+def _gcd(a: int, b: int) -> int:
+    while b:
+        a, b = b, a % b
+    return a

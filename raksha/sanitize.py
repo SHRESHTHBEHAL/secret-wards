@@ -31,6 +31,7 @@ class Env:
     policy: Dict[str, Any]
     pseudonyms: Dict[str, str] = field(default_factory=dict)
     records: Dict[str, List[Record]] = field(default_factory=dict)   # rel -> harvested records
+    shifts: Any = None                                                # pseudo.ShiftBook: collision-free offsets
 
 
 @dataclass
@@ -260,6 +261,8 @@ class _File:
 
     def _shift(self, key: str) -> int:
         try:
+            if self.env.shifts is not None:
+                return self.env.shifts.get(key)
             return self.env.keys.shift_days(key, self.smax, self.smin)
         except Exception:  # noqa: BLE001
             return self.smin

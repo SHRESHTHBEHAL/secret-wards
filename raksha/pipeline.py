@@ -23,7 +23,7 @@ from .harvest import harvest_file
 from .ingest import R_INTERNAL, R_UNSUPPORTED, dump_json, escapes_root, link_marker_sha, load, walk
 from .link import link
 from .normalize import digits_only, to_ascii_digits
-from .pseudo import Keys
+from .pseudo import Keys, ShiftBook
 from .report import (
     build_report, file_entry, record_line, records_text, report_text, sort_records,
 )
@@ -278,8 +278,15 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
         err("gate", exc)
         fb = None
 
+    try:   # every patient on its own date-shift offset (defeats global-shift recovery)
+        shifts = ShiftBook(keys, list(book), int(policy.get("date_shift_max_days", 180)),
+                           int(policy.get("date_shift_min_days", 30)))
+    except Exception as exc:  # noqa: BLE001 - fall back to independent keyed offsets
+        err("shifts", exc)
+        shifts = None
     env = Env(keys=keys, assign=assign, book=book, policy=policy, pseudonyms=pseudonyms,
-              records={it.rel: it.records for it in items if not it.reason})
+              records={it.rel: it.records for it in items if not it.reason},
+              shifts=shifts)
 
     # 5-6. sanitize + leak gate
     gate_hits = 0
