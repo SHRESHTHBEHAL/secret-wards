@@ -336,8 +336,8 @@ def _load_inner(path: Path, rel: str, sha: str, raw: bytes) -> ParsedFile:
         pf = _load_json(rel, sha, text)
         # A .json file (or a too-deep payload) stays quarantined. Other files that merely start with a bracket
         # but are not JSON (for example "[30/05/26, 9:32 pm] ..." chat exports) fall through to text / CSV.
-        if pf.kind != KIND_QUARANTINE or ext == ".json" or pf.reason != R_JSON:
-            return pf
+        if pf.kind != KIND_QUARANTINE or ext in (".json", ".ndjson", ".jsonl") or pf.reason != R_JSON:
+            return pf       # a JSON Lines file with a broken line is malformed JSON, never plain text
     elif ext == ".json":
         return _quarantine(rel, sha, R_JSON)
     if head == "<" and (stripped.startswith("<?xml") or stripped[1:2].isalpha() or stripped[1:2] == "!"):
