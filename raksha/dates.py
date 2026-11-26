@@ -54,6 +54,7 @@ _MON_ALT = "|".join(re.escape(n) for n in sorted(_MONTHS, key=lambda x: (-len(x)
 _MON = "(?:%s)" % _MON_ALT
 
 # ---------------------------------------------------------------- patterns
+_ANY_D = re.compile(_D)
 _PRE = r"(?<![A-Za-z0-9०-९/\-+_])(?<![0-9०-९]\.)"
 _ISO_RE = re.compile(
     _PRE + r"(?P<y>%s{4})(?P<s>[-/.])(?P<m>%s{1,2})(?P=s)(?P<d>%s{1,2})" % (_D, _D, _D)
@@ -73,6 +74,9 @@ _MDY_NAME_RE = re.compile(
     r"(?<![%s])(?P<mon>%s)(?P<dot>\.)?(?P<s1>\s|-|/)(?P<d>%s{1,2})(?P<ord>st|nd|rd|th)?(?P<s2>,\s?|\s|-|/)"
     % (_LET, _MON, _D)
     + r"(?P<y>%s{4})(?![%s0-9०-९])" % (_D, _LET), re.IGNORECASE)
+
+# necessary for _MDY_NAME_RE (separator, day, separator, four-digit year): a cheap scan before the month alternation
+_MDY_HINT = re.compile(r"(?:\s|-|/)%s{1,2}(?:st|nd|rd|th)?(?:,\s?|\s|-|/)%s{4}" % (_D, _D), re.IGNORECASE)
 
 
 @dataclass
@@ -284,7 +288,7 @@ def _hits_name(text: str, default_year: Optional[int]) -> List[DateHit]:
         if _has_deva_digit(m.group(0)):
             fmt = "deva|" + fmt
         out.append(DateHit(m.start(), m.end(), date, fmt, has_year, False))
-    for m in _MDY_NAME_RE.finditer(text):
+    for m in (_MDY_NAME_RE.finditer(text) if _MDY_HINT.search(text) else ()):
         word = m.group("mon")
         mo = _MONTHS[word.lower()][0]
         d_raw = m.group("d")
@@ -307,6 +311,8 @@ def find_dates(text: str, order: str = "dmy", default_year: Optional[int] = None
 
     Partial dates without a year ("5 September") are only returned when `default_year` is given.
     """
+    if not _ANY_D.search(text):
+        return []                         # every date shape has a digit
     cands = _hits_iso(text) + _hits_num(text, order) + _hits_name(text, default_year) + _hits_num_sp(text, order)
     cands.sort(key=lambda h: (h.start, -(h.end - h.start)))
     out: List[DateHit] = []
@@ -471,6 +477,8 @@ _DUR_SUFFIX = re.compile(
 
 def find_ages(text: str) -> List[Tuple[int, int, int]]:
     """(start, end, age) of each age number written in an age form; durations are skipped."""
+    if not _ANY_D.search(text):
+        return []                         # every age shape has a digit
     cands: List[Tuple[int, int, int]] = []
 
     def add(m: "re.Match[str]", check_duration: bool) -> None:
