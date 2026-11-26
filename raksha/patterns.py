@@ -273,6 +273,27 @@ def _phone_vetoed(t: str, tl: str, start: int) -> bool:
     return bool(_RE_REF_BEFORE.search(tl, max(0, start - 24), start))
 
 
+# a landline labelled as a facility's desk or line ("Hospital enquiry 0xxxx-...", "Lab ext. ...", "Emergency: ...",
+# "TEL;TYPE=WORK:...;ext=12") is the institution's number, not the patient's
+_RE_FACILITY_LINE = re.compile(
+    r"(?<![a-z])(?:hospital|hosp|rugnalaya|chikitsalaya|aspatal|clinic|nursing\s*home|medical\s*college|chc|phc|sdh|"
+    r"desk|help\s*desk|enquiry|enquiries|reception|casualty|emergency|appointments?|opd|ipd|ward|lab|laboratory|"
+    r"pharmacy|blood\s*bank|office|board\s*line|exchange|ext|extn|अस्पताल|रुग्णालय|चिकित्सालय|पूछताछ|कार्यालय)(?![a-z])")
+_RE_PERSONAL_LINE = re.compile(
+    r"(?<![a-z])(?:patient|pt|home|residence|resi|res|relative|attendant|husband|wife|son|daughter|father|mother|"
+    r"brother|sister|guardian|kin|mob|mobile|cell|contact|own|his|her|family|informant|caller|mareez|marij|"
+    r"मरीज|रोगी|पति|पत्नी|पिता|परिजन)(?![a-z])")
+_RE_STD_SHAPE = re.compile(r"0[1-9][0-9]{1,3}[ \-][2-9][0-9]{5,7}")
+_RE_EXT_AFTER = re.compile(r"[ \t]*(?:;[ \t]*ext[ \t]*=|\(?[ \t]*(?:ext|extn)\b)", re.I)
+
+
+def _institution_landline(tl: str, start: int, end: int) -> bool:
+    seg = _segment_before(tl, start, 40)
+    if _RE_FACILITY_LINE.search(seg) and not _RE_PERSONAL_LINE.search(seg):
+        return True
+    return bool(_RE_EXT_AFTER.match(tl, end)) and not _RE_PERSONAL_LINE.search(seg)
+
+
 # OCR wrap inside a number: "90031\n77462", "6620 1947\n3085"
 _RE_PHONE_WRAP = re.compile(r"(?<![0-9A-Za-z+])[6-9][0-9]{4}[ \t]*\n[ \t]*[0-9]{5}(?![0-9A-Za-z])")
 _RE_AADHAAR_WRAP = re.compile(_NB + r"[2-9][0-9]{3}[ \t\n\-]+[0-9]{4}[ \t]*\n[ \t]*[0-9]{4}" + _NA
@@ -378,6 +399,8 @@ def find_identifiers(text: str) -> List[Span]:
     for rx in (_RE_PHONE_PLUS, _RE_PHONE, _RE_PHONE_PAREN, _RE_PHONE_WRAP):
         for m in rx.finditer(t):
             p = norm_phone(m.group())
+            if p and _RE_STD_SHAPE.fullmatch(m.group()) and _institution_landline(tl, m.start(), m.end()):
+                continue                  # "0836-2447100" after "Emergency:": an STD landline, not 0 + mobile
             if p and not _phone_vetoed(t, tl, m.start()):
                 c.append((7, m.start(), m.end(), "PHONE", p))
     for m in (_RE_PHONE_WORDS.finditer(t) if _RE_NUMWORD_HINT.search(tl) else ()):
@@ -386,7 +409,7 @@ def find_identifiers(text: str) -> List[Span]:
         if len(d) == 10 and d[0] in "6789" and words >= 4:
             c.append((7, m.start(), m.end(), "PHONE", d))
     for m in _RE_LANDLINE.finditer(t):
-        if not _phone_vetoed(t, tl, m.start()):
+        if not _phone_vetoed(t, tl, m.start()) and not _institution_landline(tl, m.start(), m.end()):
             c.append((8, m.start(), m.end(), "PHONE", _digits(m.group())))
     for m in _RE_AADHAAR_WRAP.finditer(t):
         c.append((5, m.start(), m.end(), "AADHAAR", _digits(m.group())))
@@ -837,6 +860,7 @@ Sarmiento Gallows Hamilton-Russell Bryant Buck Dunlop Perkins Charnley Exeter Mu
 Bateman Hastings Neer Copeland Swanson Silastic Starr-Edwards Starr Edwards Bjork-Shiley Bjork Shiley Carpentier
 Hancock Medtronic Palmaz Wallstent Greenfield Fogarty Swan Ganz Pulmonary Dotter Judkins Amplatz Sones Cournand
 Seldinger Tuohy Quincke Whitacre Sprotte Veress Hasson Verres Tru-Cut Menghini Jamshidi Klima Salah Chiba Cope
+Pritchard Zuspan Calot Hesselbach Scarpa
 """.replace("-", " ").split()) | frozenset(w.lower() for w in """
 Child-Pugh Hunt-Hess Kellgren-Lawrence Salter-Harris Swan-Ganz Ziehl-Neelsen Weil-Felix Guillain-Barre Stevens-Johnson
 Austin-Moore Denis-Browne Wong-Baker Cockcroft-Gault Kayser-Fleischer Cheyne-Stokes Mallory-Weiss Reed-Sternberg
@@ -851,7 +875,7 @@ _EP_WEAK = (r"grade|grading|type|test|sign|method|procedure|operation|repair|app
             r"tube|drain|needle|valve|pouch|gait|position|view|projection|fracture|dislocation|deformity|contracture|"
             r"disease|disorder|anomaly|tumou?r|sarcoma|lymphoma|cells?|bodies|body|nodes?|nodules?|spots|lines?|law|"
             r"formula|equation|rule|protocol|regimen|stage|level|point|triad|phenomenon|palsy|ulcer|cyst|space|"
-            r"pump|tonometer|stain|staining|reaction|maneuvre|bag|mask|circuit|blade|laryngoscope|chart|ratio")
+            r"pump|tonometer|stain|staining|reaction|maneuvre|bag|mask|circuit|blade|laryngoscope|chart|ratio|triangle")
 _EP_RUN = r"(?:[A-Z][A-Za-zéèöüçä]+(?:[\-][A-Z]?[A-Za-zéèöüçä]+)*)"
 # tail first (cheap), then the capitalised run just before it
 _RE_EP_TAIL = re.compile(r"(?<=[ \t])(?:(" + _EP_STRONG + r")|(" + _EP_WEAK + r"))(?![A-Za-z])", re.I)
