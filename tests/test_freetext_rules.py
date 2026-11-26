@@ -492,3 +492,60 @@ class WrappedNumberGuard(unittest.TestCase):
         self.assertIn("9876501234", covered)
         self.assertNotIn("\n", covered)
         self.assertNotIn("19", covered.replace("9876501234", ""))
+
+
+class AddressCues(unittest.TestCase):
+    """Address parts named by their cue words (invented places)."""
+
+    def test_locality_tail_and_next_village(self):
+        k = kinds("Bhoi Sahi, Ratanpura — family mobile")
+        self.assertIn(("LOCALITY", "Bhoi Sahi"), k)
+        self.assertIn(("VILLAGE", "Ratanpura"), k)
+        self.assertIn(("LOCALITY", "Lotha Khel"), kinds("House No. 3, Lotha Khel"))
+
+    def test_named_house(self):
+        k = kinds("Lives at Puthenpura Manzil, Kadavoor; father accompanies him.")
+        self.assertIn("Puthenpura Manzil", [v for _, v in k])
+        self.assertIn(("HOUSE", "Puthenpura Manzil"), kinds("Discharged home to Puthenpura Manzil, Kadavoor."))
+        self.assertNotIn("father", [v for _, v in k])
+        self.assertEqual(kinds("Discussed at the Guest House canteen", "HOUSE"), [])
+
+    def test_house_number_shapes(self):
+        self.assertIn(("HOUSE", "Qr. No. F/22"), kinds("Qr. No. F/22, Railway Colony"))
+        self.assertIn(("HOUSE", "H/No. 7"), kinds("Old Bazar, H/No. 7"))
+        self.assertIn(("HOUSE", "Makan No. 31"), kinds("ghar school ke paas, Makan No. 31."))
+
+    def test_at_po_and_post_office(self):
+        k = kinds("At/Po Belapada, Ward 4, Behera Sahi, Belapada")
+        self.assertIn(("VILLAGE", "Belapada"), k)
+        k = kinds("House : Kizhakke House, Manjoor, Kallara P.O. - 686611")
+        self.assertIn(("ADDRESS", "Kallara P.O."), k)
+
+    def test_last_part_is_village_unless_district(self):
+        k = kinds("C/O : Ramesh Nayak, Plot No. 12/B, Kumbhar Sahi, Golanthara - 761008")
+        self.assertIn(("VILLAGE", "Golanthara"), k)
+        k = kinds("Address: H.No. 4, Gandhi Colony, Ganjam")
+        self.assertIn(("DISTRICT", "Ganjam"), k)
+
+    def test_address_part_stops_at_field_gap(self):
+        k = kinds("S/o Ravi Das, r/o Teli Sahi, Golanthara   Mob: 98610 00000")
+        self.assertIn(("VILLAGE", "Golanthara"), k)
+        self.assertFalse(any("Mob" in v for _, v in k))
+
+    def test_bengali_house_and_para(self):
+        k = kinds("ঠিকানা: বাড়ি নং ১২, উত্তরপাড়া, গ্রাম কালীতলা")
+        self.assertIn(("HOUSE", "বাড়ি নং ১২"), k)
+        self.assertIn(("LOCALITY", "উত্তরপাড়া"), k)
+
+
+class DocumentShapes(unittest.TestCase):
+    def test_dob_after_dot_leader(self):
+        self.assertIn(("DOB", "০৩/০২/১৯৯০"), kinds("জন্ম তারিখ ......... ০৩/০২/১৯৯০"))
+
+    def test_licence_and_plate_starting_like_a_dose(self):
+        self.assertIn(("REF_ID", "OD 05 20120001234"), kinds("DL No. OD 05 20120001234; mole on chin."))
+        self.assertIn(("REF_ID", "OD 05 CD 1111"), kinds("RTA: rider's motorcycle OD 05 CD 1111; truck not traced."))
+
+    def test_ocr_split_admission_number(self):
+        self.assertIn(("MRN", "ABCD/IPD/26/ 01 23"), kinds("IPD No           : ABCD/IPD/26/ 01 23\nWard: 2"))
+        self.assertIn(("MRN", "ABC/26/0012"), kinds("UHID: ABC/26/0012 / 5 tabs"))
