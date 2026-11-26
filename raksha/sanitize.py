@@ -1808,10 +1808,23 @@ def _out_rel(pf: ParsedFile, fs: _File) -> str:
 # ----------------------------------------------------------------------------- entry point
 
 def _default_year(text: str, order: str) -> Optional[int]:
+    """Year of the first dated (with year) date in the first 200000 characters. Scanned over growing
+    prefixes: a hit ending well before a prefix's cut is the one the full scan finds first (dates are
+    short local matches taken left to right), so most files stop after a few kilobytes."""
+    full = text[:200000]
+    n = 4096
     try:
-        for h in dates.find_dates(text[:200000], order):
-            if h.has_year:
-                return h.date.year
+        while True:
+            part = full[:n]
+            last = n >= len(full)
+            for h in dates.find_dates(part, order):
+                if h.has_year:
+                    if last or h.end <= n - 256:
+                        return h.date.year
+                    break
+            if last:
+                return None
+            n *= 4
     except Exception:  # noqa: BLE001
         pass
     return None
