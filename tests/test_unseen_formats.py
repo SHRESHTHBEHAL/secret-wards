@@ -127,3 +127,39 @@ class FreshDataFixesTest(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         (d / "a.hl7").write_text("MSH|^~\\&|HIS|X\rPID|1||KMT/2026/1||Rao^Lavanya\r")
         self.assertEqual(ingest.load(d / "a.hl7", d).kind, "quarantine")
+
+
+class AdversarialVariantsTest(unittest.TestCase):
+    def _kinds(self, s):
+        from raksha import detect
+        return [(x.kind, s[x.start:x.end]) for x in detect.detect(s)]
+
+    def test_misspelt_and_ocr_labels(self):
+        for s in ("Patinet Nmae: Kavitha Hegde", "Pat1ent Narne: Kavitha Hegde"):
+            self.assertIn(("PATIENT_NAME", "Kavitha Hegde"), self._kinds(s))
+
+    def test_surname_first_with_comma(self):
+        self.assertIn(("PATIENT_NAME", "HEGDE, KAVITHA"), self._kinds("Patient Name: HEGDE, KAVITHA"))
+        self.assertIn(("RELATIVE_NAME", "SHARMA, RAJESH"), self._kinds("Father: SHARMA, RAJESH"))
+
+    def test_initials_after_patient_word(self):
+        self.assertIn(("PATIENT_NAME", "C. Rathod"), self._kinds("Pt C. Rathod (71 y/o female) seen"))
+        self.assertIn(("PATIENT_NAME", "K. Choudhary"), self._kinds("Pt K. Choudhary seen"))
+
+    def test_one_letter_drug_forms_still_protected(self):
+        from raksha import patterns
+        for s in ("C. Pan-D 40 mg OD", "T. Dolo 650 1-0-1", "T. Crocin SOS"):
+            self.assertEqual(self._kinds(s), [], s)
+            self.assertIn("DOSE", [x.kind for x in patterns.protected_spans(s)], s)
+
+    def test_double_spaced_aadhaar(self):
+        self.assertEqual(self._kinds("Aadhaar 9553  0422  8134"), [("AADHAAR", "9553  0422  8134")])
+
+    def test_reference_numbers_redacted_not_linked(self):
+        from raksha import detect
+        self.assertEqual(self._kinds("ref no NMC/25/137211"), [("REF_ID", "NMC/25/137211")])
+        self.assertEqual(detect.text_facts("ref no NMC/25/137211").ids, [])
+
+    def test_initial_is_not_a_name_key(self):
+        from raksha import sanitize
+        self.assertEqual(sanitize._name_keys("R. Hegde"), [sanitize._name_keys("Hegde")[0]])

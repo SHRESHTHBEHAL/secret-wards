@@ -176,7 +176,7 @@ _RE_PHONE_STD = re.compile(r"(?<![0-9A-Za-z])\(0[1-9][0-9]{1,4}\)[ \t\-]?[2-9][0
 # "+91 (98765) 43210", "(98765) 43210", "0091 (98765)-43210"
 _RE_PHONE_PAREN = re.compile(r"(?<![0-9A-Za-z+])(?:(?:\+|00)[ \t]?91[ \t.\-]*)?\([ \t]?[6-9][0-9]{4}[ \t]?\)"
                              r"[ \t.\-]?[0-9]{5}(?![0-9A-Za-z])")
-_RE_AADHAAR_SPACED = re.compile(_NB + r"[2-9][0-9]{3}([ \-.])[0-9]{4}\1[0-9]{4}" + _NA)
+_RE_AADHAAR_SPACED = re.compile(_NB + r"[2-9][0-9]{3}( {1,2}|[\-.])[0-9]{4}\1[0-9]{4}" + _NA)
 _RE_AADHAAR_SOLID = re.compile(r"(?<![0-9A-Za-z+])[2-9][0-9]{11}" + _NA)
 _RE_AADHAAR_MASK = re.compile(
     _NB + r"(?:[xX*\u2022]{4}[ \-]?[xX*\u2022]{4}[ \-]?|[xX*\u2022]{8})([0-9]{4})" + _NA
@@ -820,8 +820,11 @@ _RE_BRAND = re.compile(
     r"(?:[ \t]*[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*(?:mg|mcg|µg|g|gm|ml|mL|IU|iu|%))?"
     r"|(?<![A-Za-z])[A-Z][A-Za-z]{2,}(?:-[A-Z0-9]{1,3})?[ \t]+[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*"
     r"(?:mg|mcg|µg|gm|ml|mL|IU|iu)(?![A-Za-z])"
-    r"|(?<![A-Za-z])(?:Tab|Cap|Inj|Syp|Syr|Susp|Oint|Rotacap|Respule|Respules|Sachet|Supp|T|C|I)\.[ \t]*[A-Z][A-Za-z]{2,}"
-    r"(?:-[A-Z0-9]{1,3})?(?![A-Za-z])")
+    r"|(?<![A-Za-z])(?:Tab|Cap|Inj|Syp|Syr|Susp|Oint|Rotacap|Respule|Respules|Sachet|Supp)\.[ \t]*[A-Z][A-Za-z]{2,}"
+    r"(?:-[A-Z0-9]{1,3})?(?![A-Za-z])"
+    # one-letter forms (T. / C. / I.) look like initials ("Pt C. Rathod"): only with a strength or frequency after
+    r"|(?<![A-Za-z])(?:T|C|I)\.[ \t]*[A-Z][A-Za-z]{2,}(?:-[A-Z0-9]{1,3})?(?![A-Za-z])"
+    r"(?=[ \t]*(?:[0-9]|(?:OD|BD|BID|TDS|TID|QID|HS|SOS|STAT|stat|PRN)(?![A-Za-z])))")
 _BRAND_NOT = frozenset("""
 mr mrs ms dr shri smt sri kumar kumari devi singh age aged ward bed room day days dose total
 """.split())

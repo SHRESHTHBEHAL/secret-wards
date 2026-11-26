@@ -287,12 +287,42 @@ _LABEL_RE = re.compile(
     r"[ \t]*([A-Za-zऀ-ॿ][A-Za-zऀ-ॿ0-9 .'’/()#&_\-]{0,40}?)[ \t]*[:：](?:[ \t]*[:：])?[ \t]*")
 
 
+_LABEL_VOCAB = ("patient", "name", "mobile", "phone", "contact", "address", "father", "husband", "mother",
+                "guardian", "relative", "village", "district", "gender", "birth", "registration", "aadhaar",
+                "aadhar", "email", "attendant", "number")
+_OCR_FIX = str.maketrans({"1": "i", "0": "o", "5": "s", "|": "l"})
+
+
+def _fix_label_word(w: str) -> str:
+    """'patinet' -> 'patient', 'nmae' -> 'name', 'pat1ent' -> 'patient', 'narne' -> 'name' (labels only)."""
+    if len(w) < 4 or not w.isascii() or w in _LABEL_VOCAB or not re.search(r"[a-z]", w):
+        return w
+    o = w.translate(_OCR_FIX).replace("rn", "m")
+    if o in _LABEL_VOCAB:
+        return o
+    for v in _LABEL_VOCAB:
+        if v[0] == o[0] and abs(len(v) - len(o)) <= 1 and _osa1(o, v):
+            return v
+    return w
+
+
+def _osa1(a: str, b: str) -> bool:
+    """Optimal string alignment distance <= 1 (one substitution, insertion, deletion or swap)."""
+    if a == b:
+        return True
+    if len(a) == len(b):
+        d = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(d) == 1 or (len(d) == 2 and d[1] == d[0] + 1 and a[d[0]] == b[d[1]] and a[d[1]] == b[d[0]])
+    s, l_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(l_[:i] + l_[i + 1:] == s for i in range(len(l_)))
+
+
 def _lw(label: str) -> List[str]:
     t = _nfc(label.lower())
     t = re.sub(r"(?<![a-z])([sdwhcfmbr])\s*/\s*o(?![a-z])", r" \1/o ", t)
     t = re.sub(r"/(?!o(?![a-z]))", " ", t)
     t = re.sub(r"[^a-z0-9ऀ-ॿ/]+", " ", t)
-    return [scripts.alias_label_word(w) for w in t.split()]
+    return [scripts.alias_label_word(_fix_label_word(w)) for w in t.split()]
 
 
 def _has(ws: List[str], stems: Tuple[str, ...], exact: Tuple[str, ...] = ()) -> bool:
@@ -713,6 +743,9 @@ def _layer_pid_labels(cx: _Ctx) -> None:
         cx.add(v.start(), v.end(), "MRN", patterns.norm_id(g), 1)
 
 
+_REF_SHAPED = re.compile(r"(?<![A-Za-z0-9/#\-])[A-Z]{2,6}(?:[/#\-][0-9]{2,4})?[/#\-][0-9]{5,10}(?![A-Za-z0-9/\-])")
+
+
 def _layer_identifiers(cx: _Ctx) -> None:
     t = cx.text
     for sp in patterns.find_identifiers(t):
@@ -723,6 +756,12 @@ def _layer_identifiers(cx: _Ctx) -> None:
             cx.enc_starts.add(sp.start)
     for sp in patterns.find_pins(t):
         cx.add(sp.start, sp.end, "PIN", sp.value, 1)
+    # Hospital-shaped codes that the patient-id rules vetoed as reference numbers ("ref no NMC/25/137211"):
+    # they may well be the patient's number, so they are redacted, but never used to link records.
+    taken = [(c[1], c[2]) for c in cx.cands]
+    for m in _REF_SHAPED.finditer(t):
+        if not any(a < m.end() and m.start() < b for a, b in taken):
+            cx.add(m.start(), m.end(), "REF_ID", "", 7)
 
 
 _DOSE_AFTER = re.compile(r"[ \t]+[0-9]{1,4}(?:\.[0-9]+)?[ \t]*(?:mg|mcg|ml|iu|units?|µg)?[ \t]*"
@@ -1015,8 +1054,9 @@ _PATH_NAME = re.compile(r"(?:(?<=[\\/])|^)((?:[A-Z][a-z]+[_ ]){1,3})([A-Z]{1,3}[
 _PT_ANCHOR = re.compile(r"(?<![A-Za-z])(?:Pt\.?|PT\.?|Patient|PATIENT|patient|pt\.)[ \t]+(?=[A-Z])")
 
 
-_NOT_NAME_SUFFIX = re.compile(r"(?:ed|ing|tion|sion|ment|ness|ity|ance|ence|ive|ous|ful|less|ary|ory|ics|ism|ally)$", re.I)
+_NOT_NAME_SUFFIX = re.compile(r"(?:ed|ing|tion|sion|ment|ness|ity|ance|ence|ive|ous|ful|less|ics|ism|ally)$", re.I)
 _ADMIN_WORDS = frozenset("""details detail education information info history profile summary record records care consent
+primary secondary dietary category directory laboratory dispensary inventory mandatory voluntary temporary
 counselling counseling stable unstable critical shifted referred discharged admitted transferred expired died reviewed
 examined seen complains complained presented known came has was is had status condition id no number name list
 """.split())
@@ -1026,10 +1066,34 @@ def _name_shaped(w: str) -> bool:
     return not (w.isupper() and len(w) > 1) and not _NOT_NAME_SUFFIX.search(w) and _low(w) not in _ADMIN_WORDS
 
 
+_INITIALS_NAME = re.compile(r"((?:[A-Z]\.[ \t]*){1,3}[A-Z][a-z]{2,}(?:[ \t]+[A-Z][a-z]{2,})?)")
+
+
+_SURNAME_FIRST = re.compile(r"([A-Z][A-Za-z'\-]+|[A-Z]{2,}),[ \t]*([A-Z][A-Za-z'\-]+|[A-Z]{2,})(?![A-Za-z])")
+
+
+def _layer_surname_first(cx: _Ctx) -> None:
+    t = cx.text
+    for ls, line in _lines(t):
+        m = _LABEL_RE.match(line)
+        if not m:
+            continue
+        cls = _classify_label(m.group(1))
+        if cls not in ("name", "relative"):
+            continue
+        sm = _SURNAME_FIRST.match(line, m.end())
+        if sm and not _is_stopish(sm.group(1)) and not _is_stopish(sm.group(2)) and _name_shaped(sm.group(2).title()):
+            cx.add(ls + sm.start(), ls + sm.end(), "PATIENT_NAME" if cls == "name" else "RELATIVE_NAME", "", 2)
+
+
 def _layer_patient_anchor(cx: _Ctx) -> None:
     """"Pt Ravi", "Patient Ravi complains of ...": a capitalised name right after the patient word."""
     t = cx.text
     for m in _PT_ANCHOR.finditer(t):
+        im = _INITIALS_NAME.match(t, m.end())
+        if im and _name_shaped(im.group(1).split()[-1]) and not _is_stopish(im.group(1).split()[-1]):
+            cx.add(im.start(1), im.end(1), "PATIENT_NAME", "", 6)    # "Pt S. Iyer", "Patient K. R. Nair"
+            continue
         le = t.find("\n", m.end())
         nm = _take_name(t, m.end(), le if le >= 0 else len(t), "cap", 3)
         if not nm:
@@ -2551,6 +2615,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_places(cx)
     _layer_path_names(cx)
     _layer_patient_anchor(cx)
+    _layer_surname_first(cx)
     _layer_residence(cx)
     _layer_house_markers(cx)
     _layer_landmarks(cx)

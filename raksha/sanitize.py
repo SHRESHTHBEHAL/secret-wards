@@ -76,6 +76,7 @@ class Sanitized:
 _ID_PH = {
     "PHONE": "[PHONE]", "AADHAAR": "[AADHAAR]", "AADHAAR_MASKED": "[AADHAAR]", "ABHA_NUMBER": "[ABHA]",
     "ABHA_ADDRESS": "[ABHA-ADDRESS]", "EMAIL": "[EMAIL]", "PAN": "[PAN]", "INSURANCE_ID": "[INSURANCE-ID]",
+    "REF_ID": "[REF]",     # a hospital-shaped number under a reference label: redacted, never used for linking
 }
 _ADDR_KINDS = frozenset({"HOUSE", "LOCALITY", "LANDMARK", "VILLAGE", "TEHSIL", "ADDRESS"})
 _COUNT_NAME = {
@@ -171,7 +172,8 @@ def _facts_empty(f: Facts) -> bool:
 
 def _name_keys(name: str) -> List[str]:
     try:
-        return [k for k in (name_key(t) for t in name_tokens(name)) if k]
+        # an initial ("R.") keys to one letter: it would match any word starting with it ("RA" in "on RA")
+        return [k for k in (name_key(t) for t in name_tokens(name)) if k and len(k) >= 2]
     except Exception:  # noqa: BLE001
         return []
 
@@ -684,7 +686,7 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
         if sp.start < 0 or sp.end > len(text) or sp.end <= sp.start:
             continue
         if mode in ("ids", "label"):
-            if sp.kind in ID_KINDS:
+            if sp.kind in ID_KINDS or sp.kind == "REF_ID":
                 keep.append(sp)
             elif sp.kind in NAME_KINDS and _is_known_name(text[sp.start:sp.end], ctx):
                 keep.append(sp)
@@ -1651,7 +1653,7 @@ def _out_rel(pf: ParsedFile, fs: _File) -> str:
         except Exception:  # noqa: BLE001
             spans = []
         for sp in spans:
-            ok = sp.kind in ID_KINDS or sp.kind == "PIN"
+            ok = sp.kind in ID_KINDS or sp.kind in ("PIN", "REF_ID")
             if sp.kind in NAME_KINDS and _is_known_name(var[sp.start:sp.end], ctx):
                 ok = True
             if ok:
