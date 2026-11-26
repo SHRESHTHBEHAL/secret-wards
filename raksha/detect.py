@@ -346,7 +346,10 @@ def _classify_label(label: str) -> str:
     j = " ".join(ws)
     if all(w in ("mr", "mrs", "ms", "smt", "shri", "sri", "km", "miss", "master", "baby") for w in ws):
         return "name"                               # "Mr/Mrs:", "Smt.:" as the label itself
-    if _has(ws, ("address", "addr", "residen", "पता", "निवास"), ("add", "pata", "r/o", "lives", "stays")):
+    if _has(ws, ("address", "addr", "residen", "पता", "निवास", "mugavari", "ठिकाना"),
+            ("add", "pata", "r/o", "lives", "stays", "thikana")) or \
+            ws[-1] in ("house", "street", "locality", "landmark") and len(ws) <= 3 and not _has(
+                ws, ("surg", "officer", "doctor", "physician", "keep", "staff", "job"), ("in", "out")):
         return "address"
     if _has(ws, ("dob", "birth", "janm", "जन्म", "d/o/b")) or j.startswith("d o b"):
         return "dob"
@@ -404,11 +407,13 @@ def _classify_label(label: str) -> str:
 # ---------------------------------------------------------------- address parts
 
 _A_HOUSE = re.compile(
-    r"(?:H\.?\s*No\.?|D\.?\s*No\.?|#|Barrack|House(?:\s*No\.?)?|Makan(?:\s*No\.?)?|Flat(?:\s*No\.?)?|Plot(?:\s*No\.?)?|Qtr\.?(?:\s*No\.?)?|"
-    r"Door\s*No\.?|मकान(?:\s*(?:नं|नंबर|न)\.?)?|म\.?\s*नं\.?|प्लॉट)\s*[:#\-]?\s*[0-9०-९A-Za-z/\-]*[0-9०-९]", re.I)
+    r"(?:H[./]?\s*No\.?|D\.?\s*No\.?|#|Barrack|House(?:\s*No\.?)?|Makan(?:\s*No\.?)?|Flat(?:\s*No\.?)?|Plot(?:\s*No\.?)?|Qtr\.?(?:\s*No\.?)?|"
+    r"Qr\.?\s*No\.?|Quarter(?:\s*No\.?)?|Kothi(?:\s*No\.?)?|"
+    r"Door\s*No\.?|मकान(?:\s*(?:नं|नंबर|न)\.?)?|म\.?\s*नं\.?|प्लॉट|बा(?:ड़|ड)[िी]\s*नं\.?|कतवु\s*ऎण्)\s*[:#\-]?\s*[0-9०-९A-Za-z/\-]*[0-9०-९]", re.I)
 _A_LOC = re.compile(r"(?:Mohalla|Mohallah|Mohalla|Muhalla|Ward|Sector|Colony|Gali|Lane|Street|Block|Basti|"
                     r"मोहल्ला|मुहल्ला|वार्ड|गली|सेक्टर|कॉलोनी|बस्ती)(?![A-Za-z])", re.I)
 _A_LOC_TAIL = re.compile(r"(?:Nagar|Colony|Basti|Bazar|Bazaar|Marg|Road|Chowk|Enclave|Puram|Vihar|Mohalla|Tola|Leikai|Veng|"
+                         r"Sahi|Khel|Patti|Wadi|Peth|पाड़ा|पाडा|साही|तॆरु|तेरु|"
                          r"नगर|कॉलोनी|बस्ती|बाजार|बाज़ार|मार्ग|रोड|चौक|विहार|टोला)\s*$", re.I)
 _A_LAND = re.compile(r"(?:near|nr\.?|opp\.?|opposite|behind|beside|next\s+to|in\s+front\s+of|close\s+to)(?![A-Za-z])", re.I)
 _A_LAND_TAIL = re.compile(r"के\s+(?:पास|पीछे|सामने|निकट|बगल)\s*$|(?:के\s+)?नज़दीक\s*$")
@@ -418,7 +423,11 @@ _A_DIST = re.compile(r"(?:Distt\.?|Dist\.?|District|Jila|Zila|जिला|ज�
 _A_POST = re.compile(r"(?:P\.?\s*O\.?|Post|डाक|पोस्ट|डाकघर)(?![A-Za-z])[ \t]*[:.\-]?[ \t]*", re.I)
 # police station / block / panchayat-level administrative names are kept (not a home address)
 _A_PS = re.compile(r"(?:Thana|P\.?S\.?|Police[ \t]+Station|थाना|प्रखंड)(?![A-Za-zऀ-ॿ])[ \t]*[:.\-]?[ \t]*")
-_A_KIN = re.compile(r"(?:[CSDWH])[ \t]*/[ \t]*[Oo]\.?[ \t]*:?[ \t]*")
+_A_KIN = re.compile(r"(?:[CSDWH]|[sdw](?=[ \t]*/[ \t]*o\.?[ \t]*:?[ \t]*[A-Z]))[ \t]*/[ \t]*[Oo]\.?[ \t]*:?[ \t]*")
+# "Puthuppally P.O.", "Kanjikuzhy Post": a post-office part of an address
+_A_POST_TAIL = re.compile(r"(?<![A-Za-z])(?:P\.?[ \t]?O\.?|Post)[ \t]*$")
+# "At/Po Kukudakhandi", "At-Po", "At & Po": the village of an eastern-India address
+_A_ATPO = re.compile(r"(?:At[ \t]*[/\-&][ \t]*P\.?[ \t]*O\.?|At[ \t]+and[ \t]+Post)(?![A-Za-z])[ \t]*[:.\-]?[ \t]*", re.I)
 _A_PIN_TAIL = re.compile(r"[ \t]*[\-–][ \t]*([1-9][0-9]{5}|[१-९][०-९]{5})[ \t]*$")
 _PIN_ONLY = re.compile(r"(?:pin(?:code)?\s*[:\-]?\s*)?([1-9][0-9]{5}|[१-९][०-९]{5})$", re.I)
 
@@ -444,6 +453,8 @@ def _addr_part_kind(part: str) -> str:
         return "HOUSE"
     if _A_VILL.match(part) and len(part) > 4:
         return "VILLAGE"
+    if _A_ATPO.match(part) and len(part) > 6:
+        return "ATPO"
     if _A_TEH.match(part):
         return "TEHSIL"
     if _A_DIST.match(part):
@@ -452,7 +463,7 @@ def _addr_part_kind(part: str) -> str:
         return "LANDMARK"
     if _A_LOC.match(part) or _A_LOC_TAIL.search(part):
         return "LOCALITY"
-    if _A_POST.match(part) and len(part) > 4:
+    if _A_POST.match(part) and len(part) > 4 or _A_POST_TAIL.search(part) and re.match(r"[A-Zऀ-ॿ]", part):
         return "ADDRESS"
     if _PIN_ONLY.match(part):
         return "PIN"
@@ -486,8 +497,19 @@ def is_district(part: str) -> bool:
     return 0 < len(core) < len(ws) and " ".join(core) in _DISTRICTS
 
 
+def _last_is_area(part: str) -> bool:
+    """The last address part may stay only when it is a district, a state or the country."""
+    p = _clean(part)
+    lw = [_low(w) for w in p.split()]
+    return (is_district(p) or _nfc(p.replace(" ", "").lower()) in _DISTRICTS or bool(lw) and (lw[0] in _STATES or lw[-1] in ("india", "bharat"))
+            or bool(_A_DIST.match(p)) or bool(re.search(r"(?i)(?<![a-z])(?:dist|distt|district)\.?$", p)))
+
+
 def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_keep: bool = False) -> int:
     """Classify comma-separated parts of text[s:e]; returns number of classified parts."""
+    g = _FIELD_GAP.search(text, s, e)
+    if g and g.start() > s and text[s:g.start()].strip():
+        e = g.start()                          # "..., Hinjilicut   Mob: ...": the next field is not the address
     parts = []
     i = s
     for m in re.finditer(r"[,;]", text[s:e]):
@@ -518,8 +540,12 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
                 got += 1
             rest = text.find(" ", nm[1]) if nm else -1
             continue
-        if k in ("VILLAGE", "TEHSIL", "DISTRICT"):
-            rx = {"VILLAGE": _A_VILL, "TEHSIL": _A_TEH, "DISTRICT": _A_DIST}[k]
+        if k == "ATPO":
+            k = "VILLAGE"
+            rx = _A_ATPO
+        else:
+            rx = {"VILLAGE": _A_VILL, "TEHSIL": _A_TEH, "DISTRICT": _A_DIST}.get(k)
+        if rx is not None:
             m = rx.match(part)
             vs, ve = _strip_span(text, ps + m.end(), pe)
             gap = _FIELD_GAP.search(text, vs, ve)
@@ -542,7 +568,10 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
             got += 1
             continue
         if strict and idx == n - 1 and got and _PLACE_NAME.fullmatch(part) and not _is_stopish(part):
-            add(ps, pe, "DISTRICT", _clean(part), 3)      # "..., Gandhi Colony, Uttara Kannada - 581401"
+            if _last_is_area(part):
+                add(ps, pe, "DISTRICT", _clean(part), 3)  # "..., Gandhi Colony, Uttara Kannada - 581401"
+            else:
+                add(ps, pe, "VILLAGE", "", 3)             # "..., Gosaninuagaon Sahi, Lanjipalli - 760008"
             continue
         if strict:
             # an unlabelled name-like part between known address parts and a later district / tehsil /
@@ -562,7 +591,10 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
             add(ps, pe, "DISTRICT", _clean(part), 3)
             continue
         if idx == n - 1 and (got or (last_keep and n > 1)) and not re.search(r"[0-9०-९]", part):
-            add(ps, pe, "DISTRICT", _clean(part), 3)      # trailing town / district name: kept
+            if _last_is_area(part):
+                add(ps, pe, "DISTRICT", _clean(part), 3)  # trailing district / state name: kept
+            else:
+                add(ps, pe, "VILLAGE", "", 3)             # trailing village / town after house and street
             continue
         add(ps, pe, "ADDRESS", "", 3)
     return got
@@ -605,7 +637,7 @@ _CASE_LAT = re.compile(
     re.M)
 _DOB_RE = re.compile(r"(?<![A-Za-z])(?:DOB|D\.O\.B\.?|Date\s+of\s+Birth|Birth\s*Date|B'?day|Janm\s*Tithi|"
                      r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक)|Born(?:[ \t]+on)?|Janm|Janam|"
-                     r"(?:जन्म|जनम)(?:[ \t]*(?:तिथि|तिथी|तारीख|तारिख|दिनांक|मिती|मिति|तारीक))?)[ \t]*[:\-]?[ \t]*", re.I)
+                     r"(?:जन्म|जनम)(?:[ \t]*(?:तिथि|तिथी|तारीख|तारिख|दिनांक|मिती|मिति|तारीक))?)(?:[ \t]*\.{3,})?[ \t]*[:\-]?[ \t]*", re.I)
 _COMPACT_DOB = re.compile(r"[0-9०-९]{8}(?![0-9०-९A-Za-z])")
 # "birth_date": "19870314", dob=14031987: a key-style birth label before eight compact digits
 _COMPACT_DOB_KEY = re.compile(r"(?i)(?<![a-z])(?:dob|birth[_ ]?date|date[_ ]?of[_ ]?birth|birth[_ ]?dt|janm[_ ]?tithi)[\"']?"
@@ -781,6 +813,10 @@ def _layer_identifiers(cx: _Ctx) -> None:
         cx.add(sp.start, sp.end, "PIN", sp.value, 1)
     # passport / licence / ration / bank / family-id / vehicle / UPI numbers: redacted, never linked
     for sp in patterns.find_personal_docs(t):
+        if sp.kind == "REF_ID" and re.match(r"[A-Z]{2}[ \-]?[0-9]{1,2}[ \-]?(?:[A-Z]{1,3}|(?:19|20)[0-9]{2})", t[sp.start:sp.end]):
+            # a plate / licence in its state-code shape: "OD 07 ..." is not the once-daily dose it starts like
+            cx.cands.append((0, sp.start, sp.end, sp.kind, sp.value))
+            continue
         cx.add(sp.start, sp.end, sp.kind, sp.value, 0)
     # Hospital-shaped codes that the patient-id rules vetoed as reference numbers ("ref no NMC/25/137211"):
     # they may well be the patient's number, so they are redacted, but never used to link records.
@@ -858,6 +894,8 @@ def _layer_labels(cx: _Ctx) -> None:
             _apply_label(cx, cls, label, vs, ve)
 
 
+# the rest of a labelled hospital number that a scan broke after a separator: "/ 02 19"
+_ID_SPLIT_TAIL = re.compile(r"[/\-][ \t]{1,2}[0-9]{1,6}(?:[ \t][0-9]{1,6}){0,2}(?![0-9A-Za-z/])")
 _SPACED_ID = re.compile(r"(?<=[ \t:])[A-Z]{2,5}(?:[ ][0-9]{2,8}){2,4}(?![0-9A-Za-z])")
 _LETTER_SPACED = re.compile(r"[ \t]*([A-Z](?: [A-Z]){2,9})(?![A-Za-z])")
 
@@ -1046,9 +1084,11 @@ def _apply_label(cx: _Ctx, cls: str, label: str, vs: int, ve: int) -> None:
         if not (m and len(patterns._digits(m.group())) >= 5 and re.search(r"[A-Z]", m.group())
                 and " " in m.group()):
             m = _ID_TOKEN.search(t, vs, ve)
-        if m and len(patterns._digits(m.group())) >= 3:
-            v = patterns.norm_id(m.group())
-            cx.add(m.start(), m.end(), "MRN", v, 1)
+        cm = _ID_SPLIT_TAIL.match(t, m.end(), ve) if m else None
+        e = cm.end() if cm else (m.end() if m else 0)   # "BJAK/IPD/26/ 02 19": split by an OCR blank
+        if m and len(patterns._digits(t[m.start():e])) >= 3:
+            v = patterns.norm_id(re.sub(r"[ \t]+", "", t[m.start():e]))
+            cx.add(m.start(), e, "MRN", v, 1)
             if cls == "enc":
                 cx.enc_starts.add(m.start())
     elif cls == "phone":
@@ -1296,13 +1336,14 @@ def _layer_address_lines(cx: _Ctx) -> None:
 # ---------------------------------------------------------------- reference-annotator rules
 
 # residence trigger in running prose: "resident of 14/2 X Street, Y, Z dist.", "निवासी मकान सं. 27, ..."
-_RESIDE_RE = re.compile(r"(?<![A-Za-z])(?:resident[ \t]+of|residing[ \t]+at|r/o|R/O|lives[ \t]+(?:at|in)|living[ \t]+at|"
+_RESIDE_RE = re.compile(r"(?<![A-Za-z])(?:[Rr]esident[ \t]+of|[Rr]esiding[ \t]+at|r/o|R/O|[Ll]ives[ \t]+(?:at|in)|[Ll]iving[ \t]+at|"
                         r"stays[ \t]+at|staying[ \t]+at|resides[ \t]+at|(?:[Ww]e|I|i|[Tt]hey)[ \t]+(?:live|stay)[ \t]+(?:at|in)|"
                         r"address[ \t]+(?:is|for[ \t]+[a-z]+)|from[ \t]+(?=(?:Flat|House|Plot|H\.[ \t]*No|D\.[ \t]*No|Door)\b))[ \t]*[:\-]?[ \t]*"
                         r"|(?<![ऀ-ॿ])(?:निवासी|निवास|रहने[ \t]+वाले|रहने[ \t]+वाली)[ \t]*[:\-]?[ \t]*")
 _DIST_WORD = re.compile(r"(?<![A-Za-zऀ-ॿ])(?:dist|distt|district|जिला|ज़िला|जनपद)(?![A-Za-zऀ-ॿ])", re.I)
 _RESIDE_STOP = _ws("""
 was is are has had her his who with aged age and since for presented presenting came come admitted so but which
+father mother husband wife son daughter brother sister accompanied accompanies attendant
 अपने अपनी अपना जो की का के ने को है हैं था थी उम्र आयु
 """)
 _ABBR_DOT = _ws("dist distt no nr opp rd st teh vill p o po h sec sr sn ps सं नं म")
@@ -1330,12 +1371,12 @@ def _sentence_end(t: str, pos: int, limit: int) -> int:
 
 
 _HOUSE_ANY = re.compile(
-    r"(?<![A-Za-z0-9])(?:(?:H|D)\.?[ \t]*No\.?|House[ \t]*No\.?|House|Flat[ \t]*No\.?|Flat|Plot[ \t]*No\.?|Plot|Door[ \t]*No\.?|"
+    r"(?<![A-Za-z0-9])(?:(?:H|D)[./]?[ \t]*No\.?|House[ \t]*No\.?|Qr\.?[ \t]*No\.?|Makan[ \t]*No\.?|Kothi[ \t]*No\.?|House|Flat[ \t]*No\.?|Flat|Plot[ \t]*No\.?|Plot|Door[ \t]*No\.?|"
     r"Qtr\.?[ \t]*No\.?|Quarter[ \t]*No\.?|Barrack|#|Old[ \t]+No\.?|New[ \t]+No\.?|मकान[ \t]*(?:सं\.?|संख्या|नं\.?|नंबर)?|फ्लैट|प्लॉट|"
     r"Holding[ \t]*No\.?|Ghar[ \t]*No\.?|Kholi[ \t]*No\.?|Row[ \t]+House[ \t]*(?:No\.?)?|Khasra[ \t]*No\.?|"
     r"Survey[ \t]*No\.?|Sy\.?[ \t]*No\.?|Gat[ \t]*No\.?|Bungalow[ \t]*No\.?|Chawl[ \t]*No\.?|Room[ \t]*No\.?(?=[^\n]{0,40},)|"
-    r"घर[ \t]*(?:नं\.?|नंबर|सं\.?)|कोठी[ \t]*(?:नं\.?|नंबर|सं\.?)?|भूखंड[ \t]*(?:नं\.?|संख्या|सं\.?)?)"
-    r"[ \t]*[:\-]?[ \t]*[0-9०-९][0-9०-९A-Za-z/\-]*(?:[ \t]+room[ \t]+[0-9]+)?(?![0-9A-Za-z])", re.I)
+    r"घर[ \t]*(?:नं\.?|नंबर|सं\.?)|कोठी[ \t]*(?:नं\.?|नंबर|सं\.?)?|भूखंड[ \t]*(?:नं\.?|संख्या|सं\.?)?|बा(?:ड़|ड)[िी][ \t]*नं\.?|कतवु[ \t]*ऎण्)"
+    r"[ \t]*[:\-]?[ \t]*(?:[A-Za-z][/\-])?[0-9०-९][0-9०-९A-Za-z/\-]*(?:[ \t]+room[ \t]+[0-9]+)?(?![0-9A-Za-z])", re.I)
 _LANE_ANY = re.compile(
     r"(?<![A-Za-z])(?:Sector|Bye-?lane|Lane|Gali|Street|Cross|Main|Block|Phase)[ \t]*(?:No\.?)?[ \t]*[0-9][0-9A-Za-z\-]*(?![0-9A-Za-z])"
     r"|(?<![ऀ-ॿ])(?:(?:[ऀ-ॿ]+[ \t]+){0,2}गली[ \t]*(?:नं\.?|नंबर|सं\.?)?[ \t]*[0-9०-९]+)")
@@ -1382,6 +1423,54 @@ def _layer_street_names(cx: _Ctx) -> None:
             ws = ws[1:]
         if len(ws) >= 2:
             cx.add(s, e, "LOCALITY", "", 4)
+
+
+_LOC_TAIL_RE = re.compile(r"(?<![A-Za-z])((?:[A-Z][a-z]+[ \t]+){1,2}(?:Sahi|Tola|Khel|Patti|Pada|Wadi|Peth|Basti|Mohalla|Leikai|Veng))"
+                          r"(?![A-Za-z])(?![ \t]*[0-9])")
+# Kerala / Deccan house names: "Thottathil Manzil", "Puthen Veedu"; "<Name> House" / "Villa" only in a residence frame
+_HOUSE_NAME_RE = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{3,}(?:[ \t]+[A-Z][a-z]{3,})?[ \t]+(?:(Manzil|Veedu|Bhavanam|Illam)|"
+                            r"House|Villa|Bhavan|Nivas|Niwas|Cottage))(?![A-Za-z])")
+# the next comma part after a house / locality: "<locality>, <village>" ends at a comma, stop, dash, gap or PIN
+_NEXT_PLACE = re.compile(r"[ \t]*,[ \t]*([A-Z][a-z]{2,}(?:[ \t]+[A-Z][a-z]{2,})?)"
+                         r"(?=[ \t]*(?:$|[,.;|\n—–\-]|[ \t]{2}|[0-9]{3}[ \t]?[0-9]{3}(?![0-9])))", re.M)
+_HOUSE_NAME_STOP = _ws("""guest rest white light opera court club nursing ware store power pump farm tree green full open
+in out half safe dog bird boat glass ice round mad""")
+
+
+def _next_place(cx: _Ctx, e: int) -> None:
+    m = _NEXT_PLACE.match(cx.text, e)
+    if not m:
+        return
+    name = m.group(1)
+    if is_district(name) or any(_low(w) in _STATES or _low(w) in _STOP for w in name.split()):
+        return
+    cx.add(m.start(1), m.end(1), "VILLAGE", "", 4)
+
+
+def _layer_locality_tails(cx: _Ctx) -> None:
+    """"Jena Sahi, Kukudakhandi", "Merhuma Khel": a locality named by its tail word, and the village
+    written right after it; "Thottathil Manzil, Kumarakom": a named house and its village."""
+    t = cx.text
+    for m in _LOC_TAIL_RE.finditer(t):
+        s, e = m.span(1)
+        ws = t[s:e].split()
+        if any(_low(w) in _STOP or _low(w) in _HEADER_WORDS for w in ws[:-1]):
+            continue
+        cx.add(s, e, "LOCALITY", "", 4)
+        _next_place(cx, e)
+    for m in _HOUSE_NAME_RE.finditer(t):
+        s, e = m.span(1)
+        ws = t[s:e].split()
+        if any(_low(w) in _STOP or _low(w) in _HOUSE_NAME_STOP for w in ws[:-1]):
+            continue
+        if not m.group(2):
+            ls = t.rfind("\n", 0, s) + 1
+            if not (_STREET_CUE.search(t, max(ls, s - 60), s) or _ADDR_CONTEXT.search(t, max(ls, s - 60), s)):
+                continue
+            if _STREET_FACILITY.search(t, max(ls, s - 40), min(len(t), e + 25)):
+                continue
+        cx.add(s, e, "HOUSE", "", 4)
+        _next_place(cx, e)
 
 
 def _layer_residence(cx: _Ctx) -> None:
@@ -2947,6 +3036,7 @@ def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
     _layer_surname_first(cx)
     _layer_residence(cx)
     _layer_street_names(cx)
+    _layer_locality_tails(cx)
     _layer_house_markers(cx)
     _layer_landmarks(cx)
     _layer_place_words(cx)
