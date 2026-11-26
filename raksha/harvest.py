@@ -673,6 +673,11 @@ def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
 
 # ---------------------------------------------------------------- per kind
 
+_HEAD_NAME = re.compile(r"\b(?:Mr|Mrs|Ms|Smt|Shri|Sri|Kum|Master|Baby)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})")
+_HEAD_ID = re.compile(r"\b(?:IP|OP|UHID|MRN|MR|CR|IPD|OPD|Reg)\.?\s*(?:No\.?|#)?\s*[:\-]?\s*"
+                      r"([A-Z0-9][A-Z0-9/\-]{3,}[A-Z0-9])")
+
+
 def _csv_records(pf: ParsedFile) -> List[Record]:
     header, rows, _hl = csv_view(pf)
     width = max([len(header)] + [len(r or []) for r in rows])
@@ -691,9 +696,40 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
     file_patient = any(t in _PATIENT_SIGNAL for t in types)
     text_order = _date_order([v for r in rows[:300] for v in (r or []) if isinstance(v, str)
                               and _DATEISH.search(v)])
+    # A header cell that is a sentence about one patient ("Vitals chart: Mr X (IP ..) Ph ..") makes
+    # every row that patient's.
+    head_facts: List[Facts] = []
+    if _hl == 1:
+        for h in header:
+            hs = _s(h)
+            if len(hs) >= 20 and len(hs.split()) >= 3 and re.search(r"\d{3}", hs):
+                try:
+                    g = _text_facts(hs, "dmy")
+                except Exception:  # noqa: BLE001
+                    g = None
+                if g is None:
+                    continue
+                for m in _HEAD_NAME.finditer(hs):
+                    if m.group(1) not in g.names:
+                        g.names.append(m.group(1))
+                for m in _HEAD_ID.finditer(hs):
+                    v = m.group(1)
+                    if re.search(r"\d", v):
+                        t = ID_UHID + ":" + re.sub(r"[\W_]", "", v).upper()
+                        if t not in g.ids:
+                            g.ids.append(t)
+                        if v not in g.raw_ids:
+                            g.raw_ids.append(v)
+                if g.names and g.ids:
+                    g.ref_date = None
+                    head_facts.append(g)
+    if head_facts:
+        file_patient = True
     out: List[Record] = []
     for i, row in enumerate(rows):
         fb = _FB()
+        for g in head_facts:
+            fb.merge(g)
         for c, v in enumerate(row or []):
             if c < len(types):
                 put(fb, types[c], v, orders[c] or text_order)
@@ -749,10 +785,11 @@ def _json_records(pf: ParsedFile) -> List[Record]:
         return out
     fb = _FB()
     _harvest_tree(fb, data, [], orders)
-    _file_name_facts(fb, pf.rel)
     f = fb.finish()
     f.is_patient = fb.signal or _has_patient_facts(f)
-    if _mixed_patients(f):
+    mixed = _mixed_patients(f)
+    _merge_file_name(f, pf.rel)
+    if mixed:
         # an index / roster keyed by several patients: scrub every id and name, link to nobody
         for t in f.ids:
             raw = t.split(":", 1)[-1]
@@ -793,8 +830,8 @@ def _text_records(pf: ParsedFile) -> List[Record]:
     order = _date_order(_DATEISH.findall(text))
     fb = _FB()
     fb.merge(_text_facts(text, order))
-    _file_name_facts(fb, pf.rel)
     f = fb.finish()
+    _merge_file_name(f, pf.rel)
     f.is_patient = _looks_patient(f)
     if _multi_patient_text(text, f):
         # a census / register extract / roster: scrub every id and name, link to nobody
@@ -1027,13 +1064,45 @@ def _fhir_records(pf: ParsedFile) -> List[Record]:
         if g is not None:
             g.ref_date = None
             fb.merge(g)
-    _file_name_facts(fb, pf.rel)
     f = fb.finish()
+    _merge_file_name(f, pf.rel)
     f.is_patient = True
     return [Record(rel=pf.rel, loc="doc", facts=f)]
 
 
 # ---------------------------------------------------------------- file names
+
+def _merge_file_name(f: Facts, rel: str) -> None:
+    """File-name names / ids are scrubbed everywhere but are identity evidence for the content only
+    when they agree with it: a name that contradicts the content's names, and ids of a file whose
+    content has hard ids of its own, are kept for scrubbing and hidden from the linker."""
+    fb = _FB()
+    _file_name_facts(fb, rel)
+    fn = fb.finish()
+    skip = list(getattr(f, "link_skip", None) or [])
+    own = list(f.names)
+    for n in fn.names:
+        if n in f.names:
+            continue
+        f.names.append(n)
+        if own and not any(_same_name(n, m) for m in own):
+            skip.append(n)
+    agree = not own or not fn.names or any(n not in skip for n in fn.names)
+    hard = any(t.split(":", 1)[0] in _STRONG_ID_TYPES + (ID_PHONE,) for t in f.ids)
+    for t in fn.ids:
+        if t in f.ids:
+            continue
+        if agree and not hard:
+            f.ids.append(t)
+        raw = t.split(":", 1)[-1]
+        if raw and raw not in f.raw_ids:
+            f.raw_ids.append(raw)
+    for r in fn.raw_ids:
+        if r not in f.raw_ids:
+            f.raw_ids.append(r)
+    if skip:
+        f.link_skip = skip
+
 
 def _file_name_facts(fb: _FB, rel: str) -> None:
     """Names and identifiers carried by the file name of a single-record file."""

@@ -144,7 +144,9 @@ class JsonTests(unittest.TestCase):
         recs = harvest.harvest_file(_json(data, rel="lab/9012345678_report_0001.json"))
         self.assertEqual([r.loc for r in recs], ["doc"])
         f = recs[0].facts
-        self.assertIn("phone:9012345678", f.ids)
+        # the file name is scrubbed but is not identity evidence: the content has hard ids of its own
+        self.assertNotIn("phone:9012345678", f.ids)
+        self.assertIn("9012345678", f.raw_ids)
         self.assertIn("phone:9988776655", f.ids)
         self.assertIn("uhid:QQH0001111", f.ids)
         self.assertEqual(f.age, 50)
