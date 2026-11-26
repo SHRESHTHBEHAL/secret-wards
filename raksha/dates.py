@@ -39,7 +39,11 @@ _HI = [["जनवरी"], ["फरवरी", "फ़रवरी"], ["मा�
        ["जुलाई"], ["अगस्त"], ["सितंबर", "सितम्बर"], ["अक्टूबर", "अक्तूबर"],
        ["नवंबर", "नवम्बर"], ["दिसंबर", "दिसम्बर"]]
 
-# lowercase name -> (month, kind, variant) where kind in en_full, en_abbr, en_sept, hi
+# Marathi spellings ("१२ डिसेंबर १९७०"); a Marathi date shifts to a Marathi month
+_MR = ["जानेवारी", "फेब्रुवारी", "मार्च", "एप्रिल", "मे", "जून", "जुलै", "ऑगस्ट", "सप्टेंबर", "ऑक्टोबर",
+       "नोव्हेंबर", "डिसेंबर"]
+
+# lowercase name -> (month, kind, variant) where kind in en_full, en_abbr, en_sept, hi, mr
 _MONTHS: Dict[str, Tuple[int, str, int]] = {}
 for _i, _n in enumerate(_EN_FULL):
     _MONTHS[_n] = (_i + 1, "en_full", 0)
@@ -49,6 +53,9 @@ _MONTHS["sept"] = (9, "en_sept", 0)
 for _i, _vs in enumerate(_HI):
     for _j, _n in enumerate(_vs):
         _MONTHS[_n] = (_i + 1, "hi", _j)
+for _i, _n in enumerate(_MR):
+    if _n not in _MONTHS and len(_n) > 2:      # "मे" alone is too short to trust
+        _MONTHS[_n] = (_i + 1, "mr", 0)
 
 _MON_ALT = "|".join(re.escape(n) for n in sorted(_MONTHS, key=lambda x: (-len(x), x)))
 _MON = "(?:%s)" % _MON_ALT
@@ -134,6 +141,8 @@ def _mon_style(word: str) -> str:
         kind = "en_abbr"            # "May" written as an abbreviation shifts to "Jun", not "June"
     if kind == "hi":
         return "hi%d" % var
+    if kind == "mr":
+        return "mr"
     if word.isupper() and len(word) > 1:
         case = "U"
     elif word.islower():
@@ -154,6 +163,8 @@ def _render(fmt: str, d: dt.date) -> str:
     body = fmt[5:] if deva else fmt
 
     def mon(style: str) -> str:
+        if style == "mr":
+            return _MR[d.month - 1]
         if style.startswith("hi"):
             vs = _HI[d.month - 1]
             v = int(style[2:])
@@ -264,7 +275,7 @@ def _hits_num_sp(text: str, order: str) -> List[DateHit]:
 def _partial_ok(word: str) -> bool:
     low = word.lower()
     kind = _MONTHS[low][1]
-    if kind in ("en_full", "hi"):
+    if kind in ("en_full", "hi", "mr"):
         return True
     return word[:1].isupper()
 
