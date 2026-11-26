@@ -220,12 +220,47 @@ _CONFLICT_TYPES = (ID_AADHAAR, ID_ABHA, ID_PAN)
 _KEY_PREF = (ID_ENC, ID_AADHAAR, ID_ABHA, ID_ABHA_ADDR, ID_PAN, ID_INS, ID_EMAIL, ID_PHONE)
 
 
+# Values filed as a patient's hospital number that are not one. A bank IFSC and an event number (lab
+# accession, image, batch / lot, claim, UTR / UPI / transaction, bill, receipt, protocol) never link;
+# a government-scheme / insurance / ration card is household-level: linked only as insurance (with
+# compatible names), never as the canonical id.
+_IFSC = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+_EVENT_NO = re.compile(r"^(?:[A-Z]{2}LAB|LAB|LB|LIS|ACCN?|IMG|BATCH|LOT|CLM|CLAIM|UTR|UPI|TXN|BILL|INV|RCPT|RCT|PROT)"
+                       r"[A-Z]{0,4}[0-9]{4,}[A-Z0-9]*$")
+_SCHEME_NO = re.compile(r"^(?:BSKY|PMJAY|ABPMJAY|ABPMJ|MJPJAY|CMCHIS|RSBY|BSBY|AAROGYASRI|ESIC|CGHS|ECHS|SS|NHIS|"
+                        r"MEDISEP|TPA|RC|RATION)[A-Z]{0,6}[0-9]{6,}[A-Z0-9]*$")
+# a combined "ID proof" cell filed as a PAN: typed by the document word inside it
+_PROOF_AADHAAR = re.compile(r"^(?:AADHAAR|AADHAR|ADHAAR|UID)([0-9X]{12})$")
+_PROOF_PAN = re.compile(r"^PAN([A-Z]{5}[0-9]{4}[A-Z])$")
+
+
+def _retype(typ: str, val: str) -> Optional[Tuple[str, str]]:
+    if typ in (ID_UHID, ID_ENC):
+        if _IFSC.match(val) or _EVENT_NO.match(val):
+            return None
+        if _SCHEME_NO.match(val):
+            return ID_INS, val
+    elif typ == ID_PAN:
+        m = _PROOF_AADHAAR.match(val)
+        if m:
+            return (ID_AADHAAR, m.group(1)) if m.group(1).isdigit() else None   # masked: never linked
+        m = _PROOF_PAN.match(val)
+        if m:
+            return ID_PAN, m.group(1)
+    return typ, val
+
+
 def _norm_token(tok: str) -> Optional[str]:
     if not tok or ":" not in tok:
         return None
     typ, val = tok.split(":", 1)
     typ = typ.strip().lower()
     val = val.strip()
+    if typ in (ID_UHID, ID_ENC, ID_PAN):
+        got = _retype(typ, re.sub(r"[\W_]", "", val).upper())
+        if got is None:
+            return None
+        typ, val = got
     if typ == ID_EMAIL:
         val = val.lower()
     elif typ == ID_PHONE:
@@ -638,7 +673,7 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
         for t in r.ids:
             by_tok.setdefault(t, []).append(r.i)
 
-    def id_rule(types: Tuple[str, ...], need_names: bool = False) -> None:
+    def id_rule(types: Tuple[str, ...], need_names: bool = False, both_named: bool = False) -> None:
         for t in sorted(by_tok):
             if t.split(":", 1)[0] not in types or t in demoted:
                 continue
@@ -648,6 +683,8 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
                 for b in members[:idx]:
                     if need_names:
                         ga, gb = lk.groups[lk.find(b)], lk.groups[lk.find(j)]
+                        if both_named and not (ga.names and gb.names):
+                            continue
                         if ga.names and gb.names and not _names_compat(ga.names, gb.names):
                             continue
                     if lk.union(b, j):
@@ -655,7 +692,8 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
 
     id_rule((ID_UHID,))
     id_rule((ID_ENC,))
-    id_rule(_RULE3)
+    id_rule(tuple(t for t in _RULE3 if t != ID_INS))
+    id_rule((ID_INS,), need_names=True, both_named=True)   # a scheme / insurance card is household-level
 
     # A shared phone is demoted (a family / attendant number) only when the groups holding it, after
     # the identifier rules, carry incompatible names.
