@@ -92,6 +92,17 @@ class DateHit:
 PIVOT_YY = 30   # two-digit years up to 30 are 20yy, later ones 19yy: a date never lands after 2030
 
 
+def compact_date(s: str, order: str = "dmy") -> Optional[dt.date]:
+    """Eight compact digits after a date-of-birth label: ddmmyyyy (mmddyyyy under order 'mdy') or
+    yyyymmdd. None unless exactly one reading is a real date."""
+    t = _ascii(str(s).strip())
+    if len(t) != 8 or not t.isdigit():
+        return None
+    a, b = (t[2:4], t[:2]) if order == "mdy" else (t[:2], t[2:4])
+    cands = {x for x in (_mk(int(t[4:]), int(b), int(a)), _mk(int(t[:4]), int(t[4:6]), int(t[6:]))) if x}
+    return cands.pop() if len(cands) == 1 else None
+
+
 def _year2(yy: int) -> int:
     return 2000 + yy if yy <= PIVOT_YY else 1900 + yy
 
