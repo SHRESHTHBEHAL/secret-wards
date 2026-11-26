@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from .normalize import decode_layers, digits_only, norm_text
 from .scripts import fold
@@ -296,13 +296,16 @@ def _merge(hits: List[Hit]) -> List[Tuple[int, int]]:
     return [(s, e) for s, e in merged]
 
 
-def _replace(text: str, spans: List[Tuple[int, int]], placeholder: str, keep: str) -> str:
+def _replace(text: str, spans: List[Tuple[int, int]], placeholder: Any, keep: str) -> str:
+    """`placeholder` is a string, or a callable from the leaked segment to its replacement."""
     parts = []
     last = 0
     for s, e in spans:
         parts.append(text[last:s])
         seg = text[s:e]
-        if keep:
+        if callable(placeholder):
+            parts.append(placeholder(seg))
+        elif keep:
             pieces = re.split("([" + re.escape(keep) + "])", seg)
             parts.append("".join(p if (p and p in keep) else (placeholder if p else "") for p in pieces))
         else:
@@ -312,7 +315,7 @@ def _replace(text: str, spans: List[Tuple[int, int]], placeholder: str, keep: st
     return "".join(parts)
 
 
-def clean(text: str, fb: Forbidden, placeholder: str = "[REDACTED]", keep: str = "",
+def clean(text: str, fb: Forbidden, placeholder: Any = "[REDACTED]", keep: str = "",
           rounds: int = 3) -> Tuple[str, int]:
     """Replace every hit with `placeholder` and re-scan, up to `rounds` times.
 

@@ -22,7 +22,7 @@ from . import detect as _detect_mod
 from . import gate
 from . import harvest as _harvest_mod
 from .harvest import harvest_file
-from .ingest import R_INTERNAL, R_UNSUPPORTED, dump_json, escapes_root, link_marker_sha, load, walk
+from .ingest import R_INTERNAL, R_UNSUPPORTED, dump_json, escapes_root, is_ndjson, link_marker_sha, load, walk
 from .link import link
 from .normalize import digits_only, to_ascii_digits
 from .pseudo import Keys, ShiftBook
@@ -104,8 +104,16 @@ def _leaves(v: Any, out: List[str]) -> None:
             out.append(repr(x))
 
 
-def _clean_json(v: Any, fb: gate.Forbidden) -> Any:
+# FHIR / JSON reference-like keys: a leak inside one becomes a keyed token (same value, same token), so an
+# id and every reference to it stay equal and keep the id syntax ([A-Za-z0-9.-])
+_REF_KEYS = frozenset({"id", "fullUrl", "reference"})
+_REF_SHAPE = re.compile(r"^[A-Za-z0-9\-.:/_#|]+$")
+
+
+def _clean_json(v: Any, fb: gate.Forbidden, tok: Optional[Any] = None, key: str = "") -> Any:
     if isinstance(v, str):
+        if tok is not None and key in _REF_KEYS and _REF_SHAPE.match(v):
+            return gate.clean(v, fb, tok)[0]
         return gate.clean(v, fb, PLACEHOLDER)[0]
     if isinstance(v, bool) or v is None:
         return v
@@ -114,7 +122,7 @@ def _clean_json(v: Any, fb: gate.Forbidden) -> Any:
             return 0 if isinstance(v, int) else 0.0
         return v
     if isinstance(v, list):
-        return [_clean_json(x, fb) for x in v]
+        return [_clean_json(x, fb, tok, key) for x in v]
     if isinstance(v, dict):
         out = {}  # type: Dict[str, Any]
         for k, x in v.items():
@@ -123,7 +131,7 @@ def _clean_json(v: Any, fb: gate.Forbidden) -> Any:
             while nk in out:
                 nk = "%s_%d" % (base, n)
                 n += 1
-            out[nk] = _clean_json(x, fb)
+            out[nk] = _clean_json(x, fb, tok, str(k))
         return out
     return v
 
@@ -132,8 +140,10 @@ def _csv_shape(text: str, delim: str) -> List[int]:
     return [len(r) for r in csv.reader(io.StringIO(text, newline=""), delimiter=delim, strict=False)]
 
 
-def gate_content(content: str, kind: str, delim: str, fb: gate.Forbidden) -> Tuple[Optional[str], int]:
-    """Leak-gate one output text. Returns (clean text or None when it must be quarantined, hits)."""
+def gate_content(content: str, kind: str, delim: str, fb: gate.Forbidden,
+                 tok: Optional[Any] = None) -> Tuple[Optional[str], int]:
+    """Leak-gate one output text. Returns (clean text or None when it must be quarantined, hits).
+    `tok` (leaked surface -> keyed token) keeps FHIR ids and references consistent when one holds a leak."""
     hits = 0
     if kind in (KIND_JSON, KIND_FHIR):
         try:
@@ -147,7 +157,7 @@ def gate_content(content: str, kind: str, delim: str, fb: gate.Forbidden) -> Tup
             return content, 0
         hits += len(h_flat)
         if h_flat:
-            content = dump_json(_clean_json(data, fb))
+            content = dump_json(_clean_json(data, fb, tok))
         content, n = gate.clean(content, fb, PLACEHOLDER, keep='"{}[]:,\n')
         hits += n
         try:
@@ -328,8 +338,14 @@ def _run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any
             _quarantine(it, R_INTERNAL)
             return 0
         try:
-            content, n = gate_content(res.content, it.pf.kind, it.pf.delimiter or ",", fb)
+            content, n = gate_content(res.content, it.pf.kind, it.pf.delimiter or ",", fb,
+                                      tok=lambda seg: "x" + keys.opaque("ref|" + seg, 10).lower())
             hits += n
+            if content is not None and is_ndjson(it.pf):
+                # JSON Lines in, JSON Lines out: one value per line, gated again as written
+                content = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in json.loads(content))
+                if gate.scan(content, fb):
+                    content = None
             out_rel = res.out_rel
             if gate.scan(out_rel, fb):
                 out_rel, n = gate.clean(out_rel, fb, keys.opaque(it.pf.sha256 or it.rel), keep="/.")
@@ -433,8 +449,13 @@ def _run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any
                 identifiers += int(v)
             elif k.isupper():
                 entities[k] = entities.get(k, 0) + int(v)
+        ndj = is_ndjson(it.pf)
         for loc, psn, status in it.result.records:
             loc = str(loc)
+            if ndj:   # JSON Lines: line N of data is record row:N
+                m = re.match(r"^/([0-9]+)$", loc)
+                if m:
+                    loc = "row:%s" % m.group(1)
             if not _ROW_LOC.match(loc) and fb is not None and gate.scan(loc, fb):
                 loc, n = gate.clean(loc, fb, "REDACTED", keep="/")
                 gate_hits += n
