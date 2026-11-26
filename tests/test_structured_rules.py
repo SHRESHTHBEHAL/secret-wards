@@ -494,3 +494,65 @@ class HindiKeyVisitsAndGuards(unittest.TestCase):
         recs = [Record(rel="r/a.csv", loc="row:0", facts=a), Record(rel="d/b.txt", loc="doc", facts=b)]
         mapping, _ = link(recs)
         self.assertNotEqual(mapping[("r/a.csv", "row:0")], mapping[("d/b.txt", "doc")])
+
+
+class LinkRecallRules(unittest.TestCase):
+    def test_country_code_mobile_aadhaar_without_own_phone_does_not_conflict(self):
+        reg = Facts(names=["Temjen Longkumer"], ids=["uhid:QZK77001", "aadhaar:445566778899", "phone:9876512345"])
+        slip = Facts(names=["Temjen Longkumer"], ids=["uhid:QZK77001", "aadhaar:919876512345"])
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="p/s.txt", loc="doc", facts=slip)]
+        mapping, _ = link(recs)
+        self.assertEqual(mapping[("r/a.csv", "row:0")], mapping[("p/s.txt", "doc")])
+
+    def test_unlabelled_birth_date_in_text_gives_birth_year(self):
+        reg = Facts(names=["Hemlata Dhurve"], ids=["uhid:QZK88001", "aadhaar:445566771122"],
+                    dob=_dt.date(1991, 3, 4), age=35, gender="F", ref_date=_dt.date(2026, 1, 2))
+        other = [Facts(names=["Rupa Kerketta"], ids=["uhid:QZK88%03d" % i], ref_date=_dt.date(2026, 2, i + 1))
+                 for i in range(2, 5)]
+        note = Facts(names=["Hemlata Dhurve"], ids=["uhid:QZK88001"], age=35, gender="F",
+                     ref_date=_dt.date(1991, 3, 4))
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="d/b.txt", loc="doc", facts=note)]
+        recs += [Record(rel="r/a.csv", loc="row:%d" % (i + 1), facts=f) for i, f in enumerate(other)]
+        mapping, _ = link(recs)
+        self.assertEqual(mapping[("r/a.csv", "row:0")], mapping[("d/b.txt", "doc")])
+
+    def test_admission_column_holding_the_hospital_number_links_with_same_name(self):
+        reg = Facts(names=["Lalthansanga Pachuau"], ids=["uhid:QZKH4400123"], age=52)
+        ot = Facts(names=["Lalthansanga Pachuau"], ids=["enc:QZKH4400123"], age=52)
+        stranger = Facts(names=["Imkong Jamir"], ids=["enc:QZKH4400999"])
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="o/ot.csv", loc="row:0", facts=ot),
+                Record(rel="o/ot.csv", loc="row:1", facts=stranger)]
+        mapping, _ = link(recs)
+        self.assertEqual(mapping[("r/a.csv", "row:0")], mapping[("o/ot.csv", "row:0")])
+        self.assertNotEqual(mapping[("r/a.csv", "row:0")], mapping[("o/ot.csv", "row:1")])
+
+    def test_admission_number_equal_to_hospital_number_needs_compatible_names(self):
+        reg = Facts(names=["Lalthansanga Pachuau"], ids=["uhid:QZKH4400123"])
+        ot = Facts(names=["Imkong Jamir"], ids=["enc:QZKH4400123"])
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="o/ot.csv", loc="row:0", facts=ot)]
+        mapping, _ = link(recs)
+        self.assertNotEqual(mapping[("r/a.csv", "row:0")], mapping[("o/ot.csv", "row:0")])
+
+    def test_hamlet_key_is_a_village(self):
+        self.assertEqual(F.classify_label("hamlet"), F.VILLAGE)
+
+    def test_emergency_contact_name_is_not_the_patient(self):
+        self.assertEqual(F.json_key_type(["contact", "emergency", "name"], "Ngurthanzuali Ralte"), F.RELATIVE)
+        self.assertEqual(F.json_key_type(["patient", "name"], "Ngurthanzuali Ralte"), F.NAME)
+
+    def test_state_scheme_card_is_insurance(self):
+        self.assertEqual(F.classify_label("karunya_card"), F.INSURANCE)
+
+    def test_file_name_sender_is_no_second_patient(self):
+        f = Facts(names=["Akum Imchen"], ids=["uhid:QZK99001"])
+        f.link_skip = ["Moasangla Pongen"]
+        f.names.append("Moasangla Pongen")
+        self.assertFalse(harvest._multi_patient_text("Akum Imchen seen today.", f))
+
+    def test_default_year_prefix_scan_matches_full_scan(self):
+        from raksha import dates, sanitize
+        filler = "x " * 3000
+        for text in ["no date here " * 500, filler + "seen 03/04/2025 then 05/06/2024",
+                     "visit 5 March then " + filler + " on 2023-01-09", filler[:4090] + "12/11/2021" + filler]:
+            full = next((h.date.year for h in dates.find_dates(text[:200000], "dmy") if h.has_year), None)
+            self.assertEqual(sanitize._default_year(text, "dmy"), full)
