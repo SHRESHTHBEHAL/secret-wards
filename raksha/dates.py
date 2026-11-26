@@ -306,13 +306,34 @@ def _hits_name(text: str, default_year: Optional[int]) -> List[DateHit]:
     return out
 
 
+_FCACHE = {}  # type: dict
+_FCACHE_MAX = 20000
+
+
+def reset_cache() -> None:
+    _FCACHE.clear()
+
+
 def find_dates(text: str, order: str = "dmy", default_year: Optional[int] = None) -> List[DateHit]:
     """All non-overlapping dates in `text`, sorted by position.
 
     Partial dates without a year ("5 September") are only returned when `default_year` is given.
+    Memoised per (text, order, default_year); callers get fresh DateHit objects.
     """
     if not _ANY_D.search(text):
         return []                         # every date shape has a digit
+    key = (text, order, default_year)
+    hit = _FCACHE.get(key)
+    if hit is None:
+        hit = tuple((h.start, h.end, h.date, h.fmt, h.has_year, h.has_time)
+                    for h in _find_dates(text, order, default_year))
+        while len(_FCACHE) >= _FCACHE_MAX:
+            del _FCACHE[next(iter(_FCACHE))]
+        _FCACHE[key] = hit
+    return [DateHit(*h) for h in hit]
+
+
+def _find_dates(text: str, order: str, default_year: Optional[int]) -> List[DateHit]:
     cands = _hits_iso(text) + _hits_num(text, order) + _hits_name(text, default_year) + _hits_num_sp(text, order)
     cands.sort(key=lambda h: (h.start, -(h.end - h.start)))
     out: List[DateHit] = []
