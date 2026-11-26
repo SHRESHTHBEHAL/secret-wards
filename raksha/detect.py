@@ -2554,6 +2554,7 @@ def reset_caches() -> None:
     _WKEY.clear()
     _RCACHE.clear()
     _PCACHE.clear()
+    _TCACHE.clear()
     dates.reset_cache()
 
 
@@ -2736,14 +2737,15 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
                     break
     if full:
         n = len(words)
+        # okrun[i]: how many consecutive word gaps from gap i on are a plain space ("A B", "A. B")
+        okrun = [0] * (n + 1)
+        gap_ok = _FULL_GAP.fullmatch
+        for j in range(n - 2, -1, -1):
+            if gap_ok(t, words[j][1], words[j + 1][0]):
+                okrun[j] = okrun[j + 1] + 1
         for L in sorted(full):
             for i in range(0, n - L + 1):
-                ok = True
-                for j in range(i, i + L - 1):
-                    if not re.fullmatch(r"\.?[ \t]+", t[words[j][1]:words[j + 1][0]]):
-                        ok = False
-                        break
-                if not ok:
+                if okrun[i] < L - 1:
                     continue
                 ks = tuple(sorted(keys[i:i + L]))
                 if "" in ks:
@@ -2768,6 +2770,7 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
                     break
 
 
+_FULL_GAP = re.compile(r"\.?[ \t]+")
 _SPACED_LETTERS = re.compile(r"(?<![A-Za-z.])[A-Za-z](?:(?:[ ]|\.[ ]?)[A-Za-z]){2,}\.?(?![A-Za-z])")
 _CAMEL_RUN = re.compile(r"(?<![A-Za-z])[A-Z][a-z]+(?:[A-Z][a-z]+)+(?![A-Za-z])")
 _OCR_GAP = re.compile(r"[ \t]{1,2}|-?[ \t]*\n[ \t]*")
@@ -3085,8 +3088,18 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     if known is not None:
         _layer_known(cx, known)
     _layer_phone_proximity(cx)
-    _layer_unknown_pairs(cx)
-    _layer_ages(cx)
+    # unknown pairs and ages read only the text (never the candidates so far): their additions are the
+    # same on every run of this (text, order), so they are computed once and replayed in place
+    tail = _TCACHE.get(pkey)
+    if tail is None:
+        n0 = len(cx.cands)
+        _layer_unknown_pairs(cx)
+        _layer_ages(cx)
+        while len(_TCACHE) >= _PCACHE_MAX:
+            del _TCACHE[next(iter(_TCACHE))]
+        _TCACHE[pkey] = tuple(cx.cands[n0:])
+    else:
+        cx.cands.extend(tail)
     _lift_covering_names(cx)
     _layer_labelled_recur(cx)
     first = _resolve(cx.cands)
@@ -3120,6 +3133,7 @@ def _layer_labelled_recur(cx: _Ctx) -> None:
 # known sets (facts) and again with them (sanitising), so the shared prefix runs once. Cleared by reset_caches().
 _PCACHE = {}  # type: Dict[Tuple[str, str], Tuple[Any, ...]]
 _PCACHE_MAX = 16000
+_TCACHE = {}  # type: Dict[Tuple[str, str], Tuple[Any, ...]]
 
 
 def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
