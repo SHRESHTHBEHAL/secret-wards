@@ -5,13 +5,15 @@ from pathlib import Path
 from typing import Any, Dict
 
 DEFAULTS = {
-    "age_band_years": 5,
+    "age_band_years": 10,
     "age_top": 85,
+    "dob_mode": "remove",
+    "geo_min_cell": 3,
     "date_shift_max_days": 180,
     "date_shift_min_days": 30,
     "rare_k": 3,
     "rare_cap_pct": 8,
-    "rare_rule": "on",
+    "rare_rule": "off",
 }  # type: Dict[str, Any]
 
 
