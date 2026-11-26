@@ -147,3 +147,13 @@ class AgeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LowerAgeSexTest(unittest.TestCase):
+    def test_lower_case_age_gender(self):
+        from raksha.dates import band_age_text, find_ages
+        self.assertEqual([a for _, _, a in find_ages("Tarla Mhatre, 27 yrs, female, QRH1")], [27])
+        self.assertEqual(band_age_text("97 yrs, male", 5, 85), "85+ yrs, male")
+        self.assertEqual(band_age_text("45 years, M", 5, 85), "45-49 years, M")
+        for t in ("x 12 yrs, female", "since 7 yrs", "7 yrs back", "for 3 yrs, male"):
+            self.assertEqual(find_ages(t), [], t)

@@ -381,6 +381,10 @@ _AGE_GENDER_RE = re.compile(
 _AGE_YRS_RE = re.compile(_NOPRE + _N + r"\s*(?:Yrs|Years|Yr)\b\.?")
 _AGE_OLD_RE = re.compile(_NOPRE + _N + r"[\s\-]*(?:years?|yrs?|Years?|Yrs?)[\s\-]*old\b", re.IGNORECASE)
 _AGE_HI_RE = re.compile(_NOPRE + _N + r"\s*वर्ष(?![ऀ-ॿ])")
+# "27 yrs, female" / "45 years, M" (FHIR narratives): lower-case unit, then a gender word
+_AGE_SEXWORD_RE = re.compile(
+    _NOPRE + _N + r"\s*(?i:yrs|yr|years|year|y)\.?(?:\s*,\s*|\s+)(?:F|M|Female|Male|female|male|FEMALE|MALE)"
+    r"(?![A-Za-z])")
 
 _DUR_PREFIX = re.compile(
     r"(?:\bx|×|\bsince|\bfor|\bfrom|\blast|\bpast|\bover|\bwithin|\bin)\s*$", re.IGNORECASE)
@@ -410,7 +414,7 @@ def find_ages(text: str) -> List[Tuple[int, int, int]]:
         add(m, False)
     for m in _AGE_GENDER_RE.finditer(text):
         add(m, False)
-    for rx in (_AGE_YRS_RE, _AGE_OLD_RE, _AGE_HI_RE):
+    for rx in (_AGE_YRS_RE, _AGE_OLD_RE, _AGE_HI_RE, _AGE_SEXWORD_RE):
         for m in rx.finditer(text):
             add(m, True)
     cands.sort()
