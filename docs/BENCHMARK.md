@@ -11,6 +11,8 @@ so we measure on data with **new hospitals, name pools, villages, ID formats, la
 | synthetic seed 5 (held out) | `scripts/synth_gen.py out 5` | — | — | — | 98.4 |
 | chaos 7 / 8 / 9 (held out) | `scripts/chaos.py --level 3 --seed N` | 0.0% | 98.5% | 1.00 | — |
 | 10 native-script notes | `tests/test_scripts.py` | 0 / 32 | 16 / 16 | — | — |
+| new layouts x 8 seeds (held out) | `scripts/synth_gen2.py out N`: native-script notes in 8 languages, WhatsApp, e-mail, HL7, JSONL, nested JSON, headerless CSV, patient-named folders, data-URI attachments | 0.0% | 99.6-100% | 1.00 | — |
+| chaos x 6 more seeds, synthetic x 6 more seeds (held out) | as above | 0.0% | 98.5-100% | 1.00 | — |
 
 \* `scripts/score_composite.py` follows docs/SCORING.md and scoring.toml for every computable part; the
 hidden attacker is approximated by direct-identifier and quasi-identifier exposure, so use

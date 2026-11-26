@@ -102,3 +102,28 @@ class CrossFileIds(unittest.TestCase):
         out = H.harvest_all([a, b])
         self.assertEqual([r.facts.ids for r in out["b.csv"]], [["uhid:QX110"], ["uhid:QX120"]])
         H.prepare([])
+
+
+class FreshDataFixesTest(unittest.TestCase):
+    def test_native_script_pin_after_village_label(self):
+        from raksha import detect
+        for s in ("கிராமம்: மேலூர், மதுரை - 625106", "ਪਿੰਡ: ਰਾਏਕੋਟ, ਲੁਧਿਆਣਾ - ੧੪੧੧੦੯", "ગામ: બોરસદ, આણંદ - ૩૮૮૫૪૦"):
+            self.assertIn("PIN", [x.kind for x in detect.detect(s)], s)
+
+    def test_country_code_mobile_without_separator(self):
+        from raksha import detect
+        s = "Contact: 919656922594"
+        self.assertEqual([x.kind for x in detect.detect(s)], ["PHONE"])
+
+    def test_doctor_value_under_person_key_is_kept(self):
+        from raksha import fields
+        self.assertEqual(fields.json_key_type(["encounters", "attending"], "Dr. Ketan Vyas"), fields.DOCTOR)
+        self.assertEqual(fields.json_key_type(["guardian", "name"], "Dr. Ajay"), fields.RELATIVE)
+
+    def test_hl7_is_quarantined(self):
+        import tempfile
+        from pathlib import Path
+        from raksha import ingest
+        d = Path(tempfile.mkdtemp())
+        (d / "a.hl7").write_text("MSH|^~\\&|HIS|X\rPID|1||KMT/2026/1||Rao^Lavanya\r")
+        self.assertEqual(ingest.load(d / "a.hl7", d).kind, "quarantine")

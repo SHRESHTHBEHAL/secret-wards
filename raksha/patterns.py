@@ -332,6 +332,7 @@ def find_identifiers(text: str) -> List[Span]:
         g = m.group()
         # a 91-prefixed mobile is far likelier than an Aadhaar failing its checksum
         if g.startswith("91") and g[2] in "6789" and not verhoeff_ok(g):
+            c.append((7, m.start(), m.end(), "PHONE", g[2:]))    # "919876543210": country code + mobile
             continue
         if _phone_vetoed(t, tl, m.start()) and not re.search(r"aadhaa?r|aadhar|uid|आधार", _segment_before(tl, m.start(), 30)):
             continue                      # "Lab Ref 2508...": a 12-digit accession number
@@ -503,9 +504,12 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
 
 # ---------------------------------------------------------------- PIN codes
 
+# address cues in every script: native village / address / district labels arrive folded onto Devanagari
+_FOLDED_ADDR_CUES = tuple(w for w, c in scripts.LABEL_ALIAS.items() if c in ("ग्राम", "पता", "जिला"))
 _ADDR_CUE_RX = re.compile(
     r"(?<![a-z\u0900-\u097f])(?:" + "|".join(
-        re.escape(c) for c in sorted(lexicon.ADDRESS_CUES, key=len, reverse=True) if len(c) >= 3
+        re.escape(c) for c in sorted(set(lexicon.ADDRESS_CUES) | set(_FOLDED_ADDR_CUES), key=len, reverse=True)
+        if len(c) >= 3
     ) + r")(?![a-z])"
 )
 _RE_PIN = re.compile(r"(?<![0-9A-Za-z.,/:\-])[1-9][0-9]{5}(?![0-9A-Za-z]|[.,/:][0-9]|-[0-9A-Za-z])")
@@ -518,7 +522,7 @@ _RE_MONEY_BEFORE = re.compile(r"(?:rs\.?|inr|₹|amount|amt|total|paid|fee|charg
 def find_pins(text: str) -> List[Span]:
     """6-digit PIN codes after an address cue, a PIN label, or an address-line dash."""
     t = _to_ascii_digits(text)
-    tl = t.lower()
+    tl = scripts.fold(t).lower()      # same length: native-script cues (கிராமம், ਪਿੰਡ, ગામ) read as Devanagari
     out: List[Span] = []
     for rx in (_RE_PIN, _RE_PIN_SPACED):
         for m in rx.finditer(t):

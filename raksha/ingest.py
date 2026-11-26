@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
@@ -305,6 +306,8 @@ def _load_inner(path: Path, rel: str, sha: str, raw: bytes) -> ParsedFile:
         return _quarantine(rel, sha, R_JSON)
     if head == "<" and (stripped.startswith("<?xml") or stripped[1:2].isalpha() or stripped[1:2] == "!"):
         return _quarantine(rel, sha, R_UNSUPPORTED)
+    if re.match(r"(?:MSH|FHS|BHS)\|", stripped):
+        return _quarantine(rel, sha, R_UNSUPPORTED)    # HL7 v2 messages: a format we do not parse safely
     if ext in (".csv", ".tsv"):
         header_line = _first_line(text)
         if not header_line:

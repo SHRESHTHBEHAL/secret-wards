@@ -867,6 +867,10 @@ _JOB_WORDS = frozenset({"occupation", "profession", "job", "designation", "emplo
 _COMPANION_WORDS = frozenset({"companion", "attendant", "escort", "bystander", "caretaker", "caregiver"})
 
 
+_KIN_KEY_WORDS = frozenset({"father", "mother", "husband", "wife", "guardian", "son", "daughter", "relative",
+                            "relation", "kin", "nok", "spouse", "parent", "pita", "pati", "patni", "mata"})
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
     keys = [str(k) for k in path_keys if not isinstance(k, int)]
@@ -878,6 +882,10 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     lt = _label_type(toks)
     vh = _value_hint(value)
     owner = _owner(parents)
+    # "attending": "Dr. Ketan Vyas" - a value written as a doctor is a doctor, unless the key names a relative
+    if isinstance(value, str) and _RE_DOCTOR.match(value.strip()) and not any(
+            t in _KIN_KEY_WORDS for t in toks + tuple(x for p in parents for x in _tokens(p))):
+        return DOCTOR
 
     # A job title is not a name; a companion / attendant / escort is a private person, not a date.
     if any(t in _JOB_WORDS for t in toks):
