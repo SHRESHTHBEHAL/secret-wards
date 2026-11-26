@@ -456,7 +456,7 @@ _LAT_NAME = r"(?:[A-Z][A-Za-z'\-]*\.?|[A-Z]\.)"
 _QUAL = r"(?:\s*\((?:[^()\n]{1,40})\))?"
 _RE_DOCTOR = re.compile(
     r"(?<![A-Za-z])(?:Dr|DR|dr|Doctor|DOCTOR)\.?\s*(?:" + _LAT_NAME + r"(?:[ \t]+" + _LAT_NAME + r"){0,3})" + _QUAL
-    + r"|(?:(?:" + "|".join(re.escape(w) for w in scripts.DOCTOR_PREFIXES) + r")(?:[\.ः][ \t]*|[ \t]+)|(?:डॉ|डा|डाॅ|डॉक्टर)\.?\s*)" + _DEVA_WORD + r"(?:[ \t]+" + _DEVA_WORD + r"){0,2}" + _QUAL
+    + r"|(?:(?:" + "|".join(re.escape(w) for w in scripts.DOCTOR_PREFIXES) + r")(?:[\.ः][ \t]*|[ \t]+)|(?:डॉक्टर|डॉ|डाॅ|डा)(?:\.\s*|\s+))" + _DEVA_WORD + r"(?:[ \t]+" + _DEVA_WORD + r"){0,2}" + _QUAL
 )
 
 _UNITS = (r"(?:mg/dl|mg/dL|g/dl|g/dL|mmol/l|mmol/L|meq/l|mEq/L|iu/l|IU/L|u/l|U/L|ng/ml|ng/mL|pg/ml|pg/mL|"
@@ -625,6 +625,9 @@ def protected_spans(text: str) -> List[Span]:
         if end > m.end():
             c.append((0, m.start(), end, "HISTORY", ""))
     for m in _RE_DOCTOR.finditer(t):
+        if not re.match(r"(?:Dr|DR|dr|Doctor|DOCTOR|डॉ|डा|डाॅ)", m.group()) and \
+                re.search(r"[ऀ-ॿ][ \t]+$", t[max(0, m.start() - 4):m.start()]):
+            continue   # "<given> <given> वैद्य": a surname after a name, not the "Vaidya <name>" title
         if m.end() - m.start() > 3:
             c.append((1, m.start(), m.end(), "DOCTOR", ""))
     for m in _RE_EPONYM.finditer(t):
