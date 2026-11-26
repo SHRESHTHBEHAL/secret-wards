@@ -228,6 +228,37 @@ def _own(facts: Sequence[Facts]) -> Tuple[frozenset, frozenset]:
     return frozenset(keys), frozenset(ids)
 
 
+def _patient_own(env: Env, key: str, decisions: Dict[str, privacy.Decision],
+                 pol: privacy.Policy) -> Tuple[frozenset, frozenset, Optional[privacy.Decision]]:
+    """(own name keys, own id values, decision) of one patient, built once per Env and shared."""
+    memo = getattr(env, "_raksha_patown", None)
+    if memo is None:
+        memo = {}
+        try:
+            setattr(env, "_raksha_patown", memo)
+        except Exception:  # noqa: BLE001
+            pass
+    hit = memo.get(key)
+    if hit is None:
+        pat = (env.book or {}).get(key)
+        keys, ids = _own(list(pat.facts) if pat is not None and pat.facts else [])
+        hit = (keys, ids, decisions.get(key))
+        memo[key] = hit
+    return hit
+
+
+def _intern(env: Env, fs: frozenset) -> frozenset:
+    """One shared frozenset object per distinct content (so per-set caches in detect hit)."""
+    memo = getattr(env, "_raksha_intern", None)
+    if memo is None:
+        memo = {}
+        try:
+            setattr(env, "_raksha_intern", memo)
+        except Exception:  # noqa: BLE001
+            pass
+    return memo.setdefault(fs, fs)
+
+
 class _File:
     """Per-file state: one context per record plus file-level contexts."""
 
@@ -277,17 +308,26 @@ class _File:
         key = self.env.assign.get((self.pf.rel, r.loc)) if self.env.assign else None
         psn = self.env.pseudonyms.get(key) if key else None
         if key and psn:
-            pat = (self.env.book or {}).get(key)
-            facts = list(pat.facts) if pat is not None and pat.facts else []
-            facts.append(r.facts)
+            pk, pi, pdec = _patient_own(self.env, key, self.decisions, self.pol)
+            rk, ri = _own([r.facts])
+            # share the patient's frozensets; only union when the record adds something new
+            own_keys = pk if rk <= pk else pk | rk
+            own_ids = pi if ri <= pi else pi | ri
+            own_keys, own_ids = _intern(self.env, own_keys), _intern(self.env, own_ids)
             shift = self._shift(key)
-            dec = self.decisions.get(key) or privacy.unlinked(facts, self.pol)
+            if pdec is not None:
+                dec = pdec
+            else:
+                pat = (self.env.book or {}).get(key)
+                facts = list(pat.facts) if pat is not None and pat.facts else []
+                facts.append(r.facts)
+                dec = privacy.unlinked(facts, self.pol)
         else:
             psn = None
             facts = [r.facts]
             shift = self._shift("rec:%s:%s" % (self.pf.sha256, r.loc))
             dec = privacy.unlinked(facts, self.pol)
-        own_keys, own_ids = _own(facts)
+            own_keys, own_ids = _own(facts)
         self.psns[r.loc] = psn
         return self._ctx_for(own_keys, own_ids, psn, shift, order, default_year, dec)
 
@@ -477,6 +517,29 @@ def _dob(surface: str, ctx: _Ctx) -> str:
         except Exception:  # noqa: BLE001
             return "[DOB]"
     return _shift_dob(surface, ctx)
+
+
+def _compact_date(v: Any, d: Any, ftype: str, ctx: _Ctx) -> Any:
+    """A compact yyyymmdd value under a date-typed field, shifted (or generalised for a DOB)."""
+    as_int = isinstance(v, int)
+    if ftype == fields.DOB:
+        ctx.count("DOB")
+        ctx.generalized = True
+        mode = ctx.pol.dob_mode
+        if mode == "remove":
+            return "[DOB]"
+        if mode == "year":
+            return d.year if as_int else str(d.year)
+    elif not ctx.do_shift:
+        return v
+    else:
+        ctx.generalized = True
+    new = dates.shift_date(d, ctx.shift).strftime("%Y%m%d")
+    if as_int:
+        return int(new)
+    sv = str(v)
+    lead = sv[:len(sv) - len(sv.lstrip())]
+    return lead + new + sv[len(lead) + 8:]
 
 
 def _shift_dob(surface: str, ctx: _Ctx) -> str:
@@ -737,6 +800,10 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
                 return 0
             return int(s[:3] + "0" * (len(s) - 3)) if len(s) > 3 else 0
         return _pin_mask(v, ctx)
+    if ftype in (fields.DOB, fields.DATE):
+        cd = dates.compact_ymd(v) if (not num or isinstance(v, int)) and not isinstance(v, bool) else None
+        if cd is not None:
+            return _compact_date(v, cd, ftype, ctx)
     if ftype == fields.DOB:
         if num:
             if ctx.pol.dob_mode == "remove":
