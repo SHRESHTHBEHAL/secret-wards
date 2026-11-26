@@ -32,8 +32,14 @@ def _digits(s: str) -> str:
 
 
 def norm_id(s: str) -> str:
-    """Upper-case, Indic digits to ASCII, separators removed."""
+    """Canonical hospital-id key: upper-case ASCII alphanumerics only (Indic digits to ASCII; every
+    separator, '#', '.', space and bracket removed). Used by harvest and link alike."""
     return re.sub(r"[^0-9A-Z]", "", _to_ascii_digits(s).upper())
+
+
+def norm_digits(s: str) -> str:
+    """Canonical Aadhaar / ABHA key: ASCII digits only."""
+    return _digits(s)
 
 
 def id_core(s: str) -> str:
@@ -121,16 +127,16 @@ _NB = r"(?<![0-9A-Za-z])"          # not glued to a letter or digit on the left
 _NA = r"(?![0-9A-Za-z])"           # ... or on the right
 
 _RE_PHONE = re.compile(
-    r"(?<![0-9A-Za-z+])(?:(?:\+|00)\s?91" + _SEP + r"*|91" + _SEP + r"+|0" + _SEP + r"?)?"
+    r"(?<![0-9A-Za-z+])(?:\(?(?:\+|00)\s?91\)?" + _SEP + r"*|\(?91\)" + _SEP + r"*|91" + _SEP + r"+|\(?0\)?" + _SEP + r"?)?"
     r"[6-9](?:" + _SEP + r"?[0-9]){9}(?![0-9A-Za-z])"
 )
 _RE_PHONE_PLUS = re.compile(r"\+91[0-9]{10}(?![0-9])")
-_RE_AADHAAR_SPACED = re.compile(_NB + r"[2-9][0-9]{3}([ \-])[0-9]{4}\1[0-9]{4}" + _NA)
+_RE_AADHAAR_SPACED = re.compile(_NB + r"[2-9][0-9]{3}([ \-.])[0-9]{4}\1[0-9]{4}" + _NA)
 _RE_AADHAAR_SOLID = re.compile(r"(?<![0-9A-Za-z+])[2-9][0-9]{11}" + _NA)
 _RE_AADHAAR_MASK = re.compile(
     _NB + r"(?:[xX*\u2022]{4}[ \-]?[xX*\u2022]{4}[ \-]?|[xX*\u2022]{8})([0-9]{4})" + _NA
 )
-_RE_ABHA_SEP = re.compile(_NB + r"[0-9]{2}([ \-])[0-9]{4}\1[0-9]{4}\1[0-9]{4}" + _NA)
+_RE_ABHA_SEP = re.compile(_NB + r"[0-9]{2}([ \-.])[0-9]{4}\1[0-9]{4}\1[0-9]{4}" + _NA)
 _RE_ABHA_SOLID = re.compile(_NB + r"[0-9]{14}" + _NA)
 _RE_ABHA_ADDR = re.compile(
     r"(?<![\w.@])[A-Za-z0-9][A-Za-z0-9._\-]{1,63}@(?:abdm|sbx|ndhm|abha)(?![\w.])", re.I
@@ -143,7 +149,7 @@ _RE_PAN = re.compile(r"(?<![0-9A-Za-z])[A-Z]{5}[0-9]{4}[A-Z](?![0-9A-Za-z])", re
 
 # code-like token: letters first, then letter/digit groups with optional separators
 _RE_CODE = re.compile(
-    r"(?<![0-9A-Za-z])[A-Za-z]{1,10}(?:[\-/._]?(?:[A-Za-z]{1,10}|[0-9]{1,14}))*(?![0-9A-Za-z])"
+    r"(?<![0-9A-Za-z])[A-Za-z]{1,10}(?:(?:[\-/._]|#\s?|\s?#)?(?:[A-Za-z]{1,10}|[0-9]{1,14}))*(?![0-9A-Za-z])"
 )
 _RE_ANY_TOKEN = re.compile(r"(?<![0-9A-Za-z])[A-Za-z0-9](?:[A-Za-z0-9]|[\-/._](?=[A-Za-z0-9])){3,40}")
 
@@ -255,6 +261,9 @@ def _underscore_id(tok: str) -> bool:
     return lead not in _UNDERSCORE_WORDS
 
 
+_RE_FILE_EXT = re.compile(r"\.(?:txt|csv|tsv|json|pdf|xml|html?|log|md|docx?|xlsx?|jpe?g|png)$", re.I)
+
+
 def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
     """Hospital / registration / admission numbers (kind MRN), value = norm_id."""
     t = _to_ascii_digits(text)
@@ -280,13 +289,17 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
             continue
         toks.append((m.start(), m.end(), tok))
     for ms, me, tok in toks:
+        ext = _RE_FILE_EXT.search(tok)
+        if ext:                                   # "P.00454.txt": the extension is not part of the id
+            tok = tok[:ext.start()]
+            me = ms + len(tok)
         if len(_digits(tok)) < 5:
             continue
         if any(bs < me and ms < be for bs, be in blobs):
             continue
         lead = re.match(r"[A-Za-z]+", tok).group()
-        if len(lead) < 2:
-            continue
+        if len(lead) < 2 and not (len(tok) > 2 and tok[1] in ".-/#" and tok[2].isdigit()):
+            continue                                                 # "P.00432" / "P-00432" pass
         first = lead.upper()
         if first in _NON_PATIENT_PREFIXES or first in _INS_PREFIXES:
             continue
