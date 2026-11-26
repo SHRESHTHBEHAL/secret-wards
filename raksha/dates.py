@@ -323,6 +323,7 @@ _FCACHE_MAX = 20000
 
 def reset_cache() -> None:
     _FCACHE.clear()
+    _ACACHE.clear()
 
 
 def find_dates(text: str, order: str = "dmy", default_year: Optional[int] = None) -> List[DateHit]:
@@ -507,10 +508,24 @@ _DUR_SUFFIX = re.compile(
     r"^\s*(?:back|ago|before|duration|से|पहले|पूर्व|तक|का\s+इतिहास)", re.IGNORECASE)
 
 
+_ACACHE = {}  # type: dict
+
+
 def find_ages(text: str) -> List[Tuple[int, int, int]]:
-    """(start, end, age) of each age number written in an age form; durations are skipped."""
+    """(start, end, age) of each age number written in an age form; durations are skipped.
+    Memoised per text; callers get a fresh list."""
     if not _ANY_D.search(text):
         return []                         # every age shape has a digit
+    hit = _ACACHE.get(text)
+    if hit is None:
+        hit = tuple(_find_ages(text))
+        while len(_ACACHE) >= _FCACHE_MAX:
+            del _ACACHE[next(iter(_ACACHE))]
+        _ACACHE[text] = hit
+    return list(hit)
+
+
+def _find_ages(text: str) -> List[Tuple[int, int, int]]:
     cands: List[Tuple[int, int, int]] = []
 
     def add(m: "re.Match[str]", check_duration: bool) -> None:
