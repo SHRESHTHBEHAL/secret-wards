@@ -229,9 +229,29 @@ def _edit_distance(a: str, b: str, cap: int) -> int:
 _VOWELS = re.compile("[aeiou]")
 
 
+_VOWEL_RUN = re.compile(r"([aiu])\1+")
+
+
+def _vowel_norm(k: str) -> str:
+    """e/i and o/u merged, vowel runs collapsed: 'perier', 'pereir' -> 'pirir' (spelling slips of
+    long vowels / diphthongs in transliterated names)."""
+    t = k.replace("e", "i").replace("o", "u")
+    t = re.sub(r"[aiu]{2,}", lambda m: m.group(0)[-1] if len(set(m.group(0))) > 1 else m.group(0)[0], t)
+    return _VOWEL_RUN.sub(r"\1", t)
+
+
 def _keys_match(ka: str, kb: str) -> bool:
     if not ka or not kb:
         return False
+    if ka == kb:
+        return True
+    na, nb = _vowel_norm(ka), _vowel_norm(kb)
+    if (na, nb) != (ka, kb) and len(_VOWELS.sub("", na)) >= 3 and _keys_match1(na, nb):
+        return True
+    return _keys_match1(ka, kb)
+
+
+def _keys_match1(ka: str, kb: str) -> bool:
     if ka == kb:
         return True
     longest = max(len(ka), len(kb))
