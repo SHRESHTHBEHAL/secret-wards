@@ -386,6 +386,18 @@ def _addr_part_kind(part: str) -> str:
     return ""
 
 
+_PLACE_NAME = re.compile(r"(?:[A-Z][a-z]+|[ऀ-ॿ]+)(?:[ \t]+(?:[A-Z][a-z]+|[ऀ-ॿ]+)){0,2}")
+
+
+def _is_stopish(part: str) -> bool:
+    return all(_low(w) in _STOP for w in part.split())
+
+
+def _strip_part(text: str, a: int, b: int) -> str:
+    a, b = _strip_span(text, a, b)
+    return text[a:b] if a < b else ""
+
+
 def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
     """Classify comma-separated parts of text[s:e]; returns number of classified parts."""
     parts = []
@@ -436,6 +448,13 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
             got += 1
             continue
         if strict:
+            # an unlabelled name-like part between known address parts and a later district / tehsil /
+            # PIN part ("H.No. 12, Pipariya, Distt. Dewas") is the village or locality
+            if got and _PLACE_NAME.fullmatch(part) and not _is_stopish(part) and any(
+                    _addr_part_kind(_strip_part(text, a, b)) in ("DISTRICT", "TEHSIL", "PIN") or
+                    _A_PIN_TAIL.search(text, a, b) for a, b in parts[idx + 1:]):
+                add(ps, pe, "VILLAGE", "", 3)
+                got += 1
             continue
         if not re.search(r"[A-Za-zऀ-ॿ]", part):
             if re.search(r"[0-9०-९]", part):
@@ -688,6 +707,45 @@ def _layer_dob(cx: _Ctx, order: str) -> None:
         if hits and hits[0].start == 0:
             h = hits[0]
             cx.add(m.end() + h.start, m.end() + h.end, "DOB", h.date.isoformat(), 2)
+
+
+_PN = r"((?:[A-Z][a-z]+[ \t]+){0,2}[A-Z][a-z]+)"
+_PND = r"((?:[ऀ-ॿ]+[ \t]+){0,2}[ऀ-ॿ]+)"
+_PLACE_PHRASES = [
+    # "ghar Khajuri Kalan mein hai", "ghar Bichhiya me", "ghar Raipura pe"
+    re.compile(r"(?<![A-Za-z])(?:ghar|gaon|gaanv|mohalla|basti)[ \t]+" + _PN + r"[ \t]+(?:mein|me|main|mai|par|pe|ka|ki|ke|se)(?![A-Za-z])", re.I),
+    # "Barkhera gaon", "Kanwas village", "Raipura mohalla"
+    re.compile(_PN + r"[ \t]+(?:gaon|gaanv|gaun|village|mohalla|basti|colony|nagar)(?![A-Za-z])"),
+    # "resident of Kanwas", "r/o Raipura", "from village Raipura", "nivasi Pipariya"
+    re.compile(r"(?<![A-Za-z])(?:resident[ \t]+of|residing[ \t]+at|r/o|R/O|from[ \t]+village|native[ \t]+of|nivasi|niwasi|"
+               r"village|vill\.)[ \t]*:?[ \t]*" + _PN, re.I),
+    # Hindi: "खजूरी कलां गांव में", "घर बिछिया में"
+    re.compile(r"(?<![ऀ-ॿ])घर[ \t]+" + _PND + r"[ \t]+(?:में|पर)(?![ऀ-ॿ])"),
+    re.compile(_PND + r"[ \t]+(?:गांव|गाँव|ग्राम|मोहल्ला)[ \t]+(?:में|का|की|के|से)(?![ऀ-ॿ])"),
+]
+_ADDR_CONTEXT = re.compile(r"(?i)(?<![a-z])(?:ghar|house|h\.?\s*no|address|addr|village|vill|gaon|gram|mohalla|colony|"
+                           r"resident|r/o|nivasi|tehsil|distt|district)(?![a-z])|घर|पता|ग्राम|गांव|गाँव|मोहल्ला")
+_LANDMARK_PHRASE = re.compile(r"(?<![A-Za-z])((?:near|behind|opp\.?|opposite|beside|next[ \t]+to|in[ \t]+front[ \t]+of|"
+                              r"close[ \t]+to)[ \t]+(?:the[ \t]+)?(?:[A-Z][A-Za-z.]*[ \t]*){1,4}(?:ki|ka|ke)?[ \t]*"
+                              r"(?:[A-Z][A-Za-z]*)?)")
+
+
+def _layer_places(cx: _Ctx) -> None:
+    """Villages and landmarks written in sentences rather than address lines."""
+    t = cx.text
+    for rx in _PLACE_PHRASES:
+        for m in rx.finditer(t):
+            s, e = m.span(1)
+            name = t[s:e]
+            if _is_stopish(name) or any(_low(w) in _STOP for w in name.split()[:1]):
+                continue
+            cx.add(s, e, "VILLAGE", "", 4)
+    for m in _LANDMARK_PHRASE.finditer(t):
+        ss = max(t.rfind("\n", 0, m.start()) + 1, m.start() - 160)
+        if not _ADDR_CONTEXT.search(t, ss, m.start()):
+            continue   # "near normal", "behind the eye" in clinical prose stay
+        s, e = m.span(1)
+        cx.add(s, len(t[:e].rstrip(" \t.,")), "LANDMARK", "", 4)
 
 
 def _layer_address_lines(cx: _Ctx) -> None:
@@ -1100,6 +1158,7 @@ def _run(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set
     _layer_labels(cx)
     _layer_dob(cx, order)
     _layer_address_lines(cx)
+    _layer_places(cx)
     _layer_kinship(cx)
     _layer_honorifics(cx)
     _layer_verbs(cx)
