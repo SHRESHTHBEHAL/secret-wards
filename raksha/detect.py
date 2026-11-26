@@ -156,6 +156,7 @@ _NEVER_NAME = _ws("""
 dear respected respectfully namaste namaskar namaskaram vanakkam akal pranam pranaam salaam salam johar greetings
 aadhaar aadhar adhaar aadhaarcard voter epic passport licence license abha uhid mrn
 pati patni pita beta beti sasur devar damad
+janm janam janma tarikh tareekh जन्म जन्मतारीख जन्मतिथि जन्मदिनांक दिनांक तारीख
 """)
 
 
@@ -2026,6 +2027,8 @@ def _low_ok(w: str) -> bool:
 def _layer_low_frames(cx: _Ctx) -> None:
     t = cx.text
     for m in _LOW_KIN_NEXT.finditer(t):
+        if re.search(r"[A-Zऀ-ॿ][A-Za-zऀ-ॿ]*[ \t]+$", t[max(0, m.start() - 40):m.start()]):
+            continue                       # "<Name> bhai aavya": an honorific, and the next word is a verb
         if _low_ok(m.group(1)):
             cx.add(m.start(1), m.end(1), "RELATIVE_NAME", "", 6)
     for m in _LOW_GEN.finditer(t):
@@ -2498,6 +2501,10 @@ def _layer_extra_frames(cx: _Ctx) -> None:
             continue
         cx.add(nm[0], nm[1], "PERSON", "", 4)
     for m in (_RE_DEV_ROLE.finditer(t) if _IS_DEVA.search(t) else ()):
+        pw = re.search(r"(" + _DEV + r")[ \t]+$", t[max(0, m.start() - 30):m.start()])
+        if (pw and ":" not in t[m.start():m.start(1)] and _nfc(pw.group(1)) not in _STOP
+                and _nfc(pw.group(1)) not in _HI_FUNC and _nfc(pw.group(1)) not in _DEV_STOP):
+            continue                        # "<नाम> ताई आल्या": an address word after a name, a verb follows
         toks = list(re.finditer(_DEV, m.group(1)))
         keep = []
         for k in toks:
@@ -2510,6 +2517,89 @@ def _layer_extra_frames(cx: _Ctx) -> None:
         if keep and _dev_name_ok([k.group() for k in keep]):
             base = m.start(1)
             cx.add(base + keep[0].start(), base + keep[-1].end(), "PERSON", "", 5)
+
+
+# ---- plain-text formats keyed on line syntax: vCard, iCalendar, YAML / INI "key: value" lines
+_VC_BLOCK = re.compile(r"^BEGIN:VCARD[ \t]*\r?$(.*?)^END:VCARD[ \t]*\r?$", re.M | re.S | re.I)
+_VC_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9\-]*)((?:;[^:\n]*)?):([^\r\n]*)", re.M)
+_IC_LINE = re.compile(r"^(UID|DTSTAMP|ORGANIZER|ATTENDEE)((?:;[^:\n]*)?):([^\r\n]*)", re.M)
+_KV_LINE = re.compile(r"^([ \t]*)(?:-[ \t]+)?([a-z][a-z0-9_./\-]{1,40})[ \t]*(:|=)[ \t]*([^\r\n]*)", re.M)
+_KV_CLIN = frozenset("doctor dr consultant mokalnar signed_by signed referred_by referred surgeon".split())
+_KV_REL = frozenset("pita pitanu father pati husband mata mother nok attendant guardian".split())
+_KV_CLS = {"naam": "name", "nam": "name", "peru": "name", "peyar": "name",
+           "pata": "address", "sarnamu": "address", "mugavari": "address", "thikana": "address", "address": "address",
+           "gaam": "village", "gaon": "village", "gram": "village", "vill": "village", "pin": "pin"}
+
+
+def _layer_formats(cx: _Ctx) -> None:
+    t = cx.text
+    veto = []  # type: List[Tuple[int, int]]
+    if "BEGIN:VCARD" in t.upper():
+        for b in _VC_BLOCK.finditer(t):
+            lines = list(_VC_LINE.finditer(t, b.start(1), b.end(1)))
+            for m in lines:
+                key, vs = m.group(1).upper(), m.start(3)
+                if key == "ADR":        # names, phones, e-mail and NOTE text are found by the other layers
+                    off = vs
+                    for i, part in enumerate(m.group(3).split(";")):
+                        a, e = _strip_span(t, off, off + len(part))
+                        if a < e and re.search(r"[A-Za-z0-9ऀ-ॿ]", t[a:e]):
+                            if i in (0, 1, 2):
+                                cx.add(a, e, "ADDRESS", "", 2)
+                            elif i == 3 and not is_district(t[a:e]):
+                                cx.add(a, e, "VILLAGE", "", 2)
+                            elif i == 5 and re.fullmatch(r"[1-9][0-9]{2}[ ]?[0-9]{3}", t[a:e]):
+                                cx.add(a, e, "PIN", patterns._digits(t[a:e]), 1)
+                        off += len(part) + 1
+    if "BEGIN:V" in t.upper():
+        for m in _IC_LINE.finditer(t):
+            key = m.group(1)
+            cn = re.search(r";CN=(\"?)([^;:\"\n]+)\1", m.group(2))
+            if key in ("UID", "DTSTAMP") or (key == "ORGANIZER" and cn and re.match(r"(?:Dr|DR|Doctor)\b", cn.group(2))):
+                veto.append((m.start(), m.end()))
+            elif key == "ATTENDEE" and cn and not re.match(r"(?:Dr|DR|Doctor)\b", cn.group(2)):
+                _name_value(cx, m.start(2) + cn.start(2), m.start(2) + cn.end(2), "PERSON", "", 2)
+    kv = list(_KV_LINE.finditer(t)) if (": " in t or "=" in t) else []
+    if len(kv) >= 3:
+        for m in kv:
+            parts = [w for w in re.split(r"[_.\-/]+", m.group(2)) if w]
+            if not parts or any(w in _KV_CLIN for w in parts):
+                continue                    # a clinician's name stays
+            last = parts[-1]
+            if any(w in _KV_REL for w in parts):
+                cls = "relative"
+            elif any(w in ("janm", "dob") for w in parts) or m.group(2) in ("janm_tarikh", "janm_tithi"):
+                cls = "dob"
+            else:
+                cls = _KV_CLS.get(last, "")
+            if not cls or (cls in ("name", "relative") and re.search(r"[0-9०-९]", m.group(4))):
+                continue                    # "peyar=PSN-90XM...": a code in a name key is not a name
+            vs, ve = m.start(4), m.end(4)
+            if re.fullmatch(r"[|>][+\-]?[ \t]*", m.group(4)):
+                ind = len(m.group(1).expandtabs())       # a YAML block scalar: the more-indented lines below
+                p = m.end()
+                vs = ve = p + 1
+                while p < len(t):
+                    q = t.find("\n", p + 1)
+                    q = len(t) if q < 0 else q
+                    ln = t[p + 1:q]
+                    if ln.strip() and len(ln) - len(ln.lstrip(" \t")) <= ind:
+                        break
+                    ve = q
+                    p = q
+                if ve <= vs:
+                    continue
+            if cls == "dob":
+                hits = dates.find_dates(t[vs:ve], "ymd" if re.match(r"[ \t]*[0-9]{4}-", t[vs:ve]) else "dmy")
+                if hits:
+                    cx.add(vs + hits[0].start, vs + hits[0].end, "DOB", hits[0].date.isoformat(), 2)
+            elif cls == "address" and ve > m.end(4):
+                for lm in re.finditer(r"[^\n]+", t[vs:ve]):
+                    _parse_address(t, vs + lm.start(), vs + lm.end(), cx.add)
+            else:
+                _apply_label(cx, cls, m.group(2).replace("_", " "), vs, ve)
+    if veto:
+        cx.fmt_veto = veto
 
 
 def _layer_dev_case(cx: _Ctx) -> None:
@@ -2850,6 +2940,9 @@ appointment radiology pathology medical services service health secretary direct
 """)
 
 
+_GLUED_HON = re.compile(r"(?<=[ऀ-ॿ])(?:ताई|बाई)$")
+
+
 def _layer_self_propagate(cx: _Ctx, spans: List[Span]) -> None:
     """Every other whole-word occurrence of a name token found by an anchor, in any case and (through the
     phonetic key) any script. Tokens of strong anchors (prio <= 8: labels, kinship, titles, chat senders,
@@ -2899,6 +2992,14 @@ def _layer_self_propagate(cx: _Ctx, spans: List[Span]) -> None:
                         keymap.setdefault(k, ("PERSON", ""))
     if not keymap and not strong_words:
         return
+    given = {}  # type: Dict[str, Tuple[str, str]]   # first-word keys of patient / relative names
+    if "ताई" in t or "बाई" in t:
+        for sp in spans:
+            if sp.kind in ("PATIENT_NAME", "RELATIVE_NAME"):
+                fw = _WORD_ANY.findall(t[sp.start:sp.end])
+                k = name_key(fw[0]) if fw and len(name_tokens(fw[0])) == 1 else ""
+                if k and k not in _GENERIC_KEYS and len(k) >= 2:
+                    given.setdefault(k, (sp.kind, sp.value))
     pet_parts = {}  # type: Dict[str, Tuple[str, str]]
     for lw, hit in pets.items():
         for n in range(4, len(lw)):
@@ -2918,6 +3019,12 @@ def _layer_self_propagate(cx: _Ctx, spans: List[Span]) -> None:
         if len(toks) != 1:
             continue
         hit = keymap.get(name_key(toks[0]))
+        if not hit and given and _GLUED_HON.search(w):
+            st = _GLUED_HON.sub("", w)      # "<Given>ताई": the stem is a name of this document's patient
+            gh = given.get(name_key(st)) if len(st) >= 2 else None
+            if gh:
+                cx.add(m.start(), m.start() + len(st), gh[0], gh[1], 10)
+                continue
         if not hit and len(lw) >= 4 and not _is_dev(w) and lw not in _EN_COMMON:
             hit = pet_parts.get(lw)
             if not hit and w[0].isupper():
@@ -3106,6 +3213,10 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_wraps(cx, first)
     _layer_self_propagate(cx, first)
     spans = _extend_generic(cx, _reclassify(_resolve(cx.cands), text))
+    fv = cx.__dict__.get("fmt_veto")
+    if fv:
+        spans = [sp for sp in spans if not any(a <= sp.start and sp.end <= b for a, b in fv)
+                 or sp.kind not in NAME_KINDS | ID_KINDS]
     if keep_cells:
         spans = [sp for sp in spans if not (sp.kind in ("PHONE", "PIN", "MRN", "AADHAAR") and
                                             any(a <= sp.start and sp.end <= b for a, b in keep_cells))]
@@ -3172,6 +3283,7 @@ def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
     _layer_verbs(cx)
     _layer_dev_case(cx)
     _layer_extra_frames(cx)
+    _layer_formats(cx)
     return keep_cells
 
 
