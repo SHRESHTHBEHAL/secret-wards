@@ -116,6 +116,30 @@ def split_relative(s: str) -> Tuple[str, str]:
     return rel, m.group(4).strip(" ,;:-")
 
 
+_LABEL_TEXT: Dict[str, bool] = {}
+# a label carries a field word; "Suresh Nagar" (a surname that also reads as a place label) does not
+_LABEL_WORD = re.compile(r"(?i)(?:^|[\s_./(\-])(?:name|naam|uhid|mrn|id|no|number|mobile|phone|contact|"
+                         r"aadhaar|aadhar|uid|village|address|age|sex|gender|dob|date|diagnosis|ward|"
+                         r"district|pin|pincode|tehsil|relation|relative|guardian|husband|father)(?:$|[\s_.:)#\-])|"
+                         r"नाम|मोबाइल|आधार|गाँव|गांव|पता|उम्र|लिंग")
+
+
+def _is_label_text(s: str) -> bool:
+    """A "name" that is a column label (a repeated header row, the label column of a transposed
+    table): never a person, and never a forbidden surface for the whole release."""
+    if len(s) > 40 or len(s.split()) > 4 or not _LABEL_WORD.search(s):
+        return False
+    hit = _LABEL_TEXT.get(s)
+    if hit is None:
+        try:
+            hit = F.classify_label(s) not in ("", F.OTHER) and F.classify_label(s) is not None
+        except Exception:  # noqa: BLE001
+            hit = False
+        if len(_LABEL_TEXT) < 50000:
+            _LABEL_TEXT[s] = hit
+    return hit
+
+
 class _FB:
     """Facts builder with de-duplication and per-group name / relative pairing."""
 
@@ -129,14 +153,14 @@ class _FB:
 
     def name(self, s: str) -> None:
         s = " ".join((s or "").split())
-        if not s or _blank(s) or not _LETTER.search(s):
+        if not s or _blank(s) or not _LETTER.search(s) or _is_label_text(s):
             return
         if s not in self.f.names:
             self.f.names.append(s)
 
     def rel(self, relation: str, name: str) -> None:
         name = " ".join((name or "").split())
-        if not name or _blank(name) or not _LETTER.search(name):
+        if not name or _blank(name) or not _LETTER.search(name) or _is_label_text(name):
             return
         if any(n == name for _r, n in self.f.relatives):
             return
