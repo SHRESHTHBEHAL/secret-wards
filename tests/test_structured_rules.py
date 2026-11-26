@@ -283,3 +283,50 @@ class InstitutionAndReferenceRules(unittest.TestCase):
         from raksha.sanitize import _KIN_TAIL
         out = _KIN_TAIL.sub(lambda m: m.group(1) + "[RELATIVE]", "[NAME] ke parijan Iiii Jjjj: shift kiya")
         self.assertNotIn("Iiii", out)
+
+
+class HeaderlessDetectionTest(unittest.TestCase):
+    """Line 1 is data when its cell shapes agree with the columns under it (invented values)."""
+
+    def _view(self, header, rows):
+        return harvest.csv_view(ParsedFile(rel="m/h.csv", sha256="d" * 64, kind=KIND_CSV,
+                                           header=list(header), rows=[list(r) for r in rows]))
+
+    def test_headerless_mixed_ids(self):
+        rows = [["2025-03-04", "QX-77-1234567", "Tavi Rumen", "41", "M", "9123456780", "fever"],
+                ["2025-03-05", "ZRT-12-883311", "Oma Kesh", "35", "F", "9988776655", "cough"],
+                ["2025-03-06", "QQ-9-11-2233", "Lio Vant", "52", "M", "9012345678", "rash"]]
+        labels, data, hl = self._view(rows[0], rows[1:])
+        self.assertEqual(hl, 0)
+        self.assertEqual(len(data), 3)
+
+    def test_real_header_kept(self):
+        header = ["Reg_No", "Visit Date", "Patient Name", "Age", "Sex", "Mobile", "Complaint"]
+        rows = [["QX1234567", "2025-03-04", "Tavi Rumen", "41", "M", "9123456780", "fever"]]
+        self.assertEqual(self._view(header, rows)[2], 1)
+
+    def test_unnamed_index_column_header(self):
+        header = ["", "uhid", "name", "phone"]
+        rows = [["0", "QX1234567", "Tavi Rumen", "9123456780"], ["1", "QX1234568", "Oma Kesh", "9988776655"]]
+        self.assertEqual(self._view(header, rows)[2], 1)
+
+    def test_one_and_two_row_headerless(self):
+        one = ["2025-03-04", "QX1234567", "Tavi Rumen", "9123456780"]
+        self.assertEqual(self._view(one, [])[2], 0)
+        self.assertEqual(self._view(one, [["2025-03-05", "QX1234568", "Oma Kesh", "9988776655"]])[2], 0)
+
+    def test_title_line_above_header(self):
+        header = ["Ward register 2025", "", "", ""]
+        rows = [["UHID", "Patient Name", "Mobile", "Age"], ["QX1234567", "Tavi Rumen", "9123456780", "41"],
+                ["QX1234568", "Oma Kesh", "9988776655", "35"]]
+        labels, data, hl = self._view(header, rows)
+        self.assertEqual(hl, 2)
+        self.assertEqual(len(data), 2)
+
+    def test_barcode_column_not_phone(self):
+        self.assertEqual(F.classify_column("barcode", ["8123400593", "8123400594"]), F.OTHER_ID)
+        self.assertEqual(F.classify_column("Mobile", ["8123400593", "8123400594"]), F.PHONE)
+
+    def test_document_number_keys_keep_locators(self):
+        self.assertEqual(harvest.key_kind("LAB-2025-000123"), "doc")
+        self.assertEqual(harvest.keyed_record_id("/LAB-2025-000123"), "")
