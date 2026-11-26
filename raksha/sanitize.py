@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import dates, fields, privacy
 from .detect import ID_KINDS, NAME_KINDS, Known, detect
+from .lexicon import DISTRICTS
 from .harvest import csv_view, harvest_file, keyed_record_id
 from .ingest import dump_csv, dump_json
 from .normalize import to_ascii_digits, try_b64_text
@@ -400,6 +401,8 @@ def _detect(text: str, ctx: _Ctx) -> list:
 
 
 def _is_known_name(surface: str, ctx: _Ctx) -> bool:
+    if sum(1 for c in surface if c.isalpha()) < 2:
+        return False              # a lone initial ("K/C/O") is not a name
     ks = _name_keys(surface)
     if not ks:
         return False
@@ -585,6 +588,17 @@ def _gap(text: str, ctx: _Ctx, dates_on: bool, ages_on: bool) -> str:
     return out
 
 
+def _institution_ranges(text: str) -> List[Tuple[int, int]]:
+    if len(text) > 20000 or not _INST_HINT.search(text):
+        return []
+    return [(m.start(), m.end()) for m in fields.RE_INSTITUTION.finditer(text)]
+
+
+_INST_HINT = re.compile(r"Hosp|Home|Clinic|College|Institute|Memorial|Trust|Mission|Cent|Diagnostic|Patholog|Lab|"
+                        r"TPA|Insurance|Assurance|Ward|Wing|Block|Unit|OPD|ICU|Dispensary|Foundation|Society|"
+                        r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|होम|कॉलेज|ट्रस्ट|संस्थान|वार्ड")
+
+
 def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, ages_on: bool = True,
                psn_fallback: bool = False, collapse: bool = False) -> str:
     """Replace identity spans, then shift dates and band ages in the text between them.
@@ -594,8 +608,11 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
     if not isinstance(text, str) or not text:
         return text
     spans = _detect(text, ctx)
+    inst = _institution_ranges(text)
     keep = []
     for sp in spans:
+        if inst and sp.kind in NAME_KINDS and any(a <= sp.start and sp.end <= b for a, b in inst):
+            continue              # "<person> Memorial Hospital": the institution stays
         if sp.start < 0 or sp.end > len(text) or sp.end <= sp.start:
             continue
         if mode in ("ids", "label"):
@@ -620,6 +637,8 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
     for sp in keep:
         surf = text[sp.start:sp.end]
         k = sp.kind
+        if k in NAME_KINDS:
+            _note_name(surf)
         if k == "PATIENT_NAME":
             if sp is psn_name:
                 r = ctx.psn or "[NAME]"
@@ -681,7 +700,20 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
             ctx.count(k)
         pos = e
     parts.append(_gap(text[pos:], ctx, dates_on, ages_on))
-    return "".join(parts)
+    res = "".join(parts)
+    if mode == "full" and _KIN_HINT.search(res):
+        res2 = _KIN_TAIL.sub(lambda m: m.group(1) + "[RELATIVE]", res)
+        if res2 != res:
+            ctx.count("RELATIVE_NAME")
+            res = res2
+    return res
+
+
+# "<patient> ke parijan <relative>": the words after the kinship phrase name the relative.
+_KIN_HINT = re.compile(r"parijan|परिजन|rishtedar|रिश्तेदार", re.I)
+_KIN_WORD = r"(?:[A-Z][a-z]+\.?|[\u0900-\u097F]+|\[NAME\]|\[RELATIVE\]|\[PERSON\])"
+_KIN_TAIL = re.compile(r"((?:\bke|\bki|के|की)\s+(?:parijan|rishtedar|परिजन|रिश्तेदार)\s*[:\-]?\s*)"
+                       r"(?!(?:ko|ne|se|का|को|ने|से)\b)" + _KIN_WORD + r"(?:\s+" + _KIN_WORD + r"){0,3}(?=\s*(?:[:,.;|]|$))")
 
 
 def _scrub_any(text: str, ctx: _Ctx, mode: str = "full", **kw: Any) -> str:
@@ -698,6 +730,25 @@ def _scrub_any(text: str, ctx: _Ctx, mode: str = "full", **kw: Any) -> str:
 
 
 # ----------------------------------------------------------------------------- typed values
+
+_RE_REF_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9#/._\-]{0,30}$")
+_RE_MONEY = re.compile(r"^(?:(?:rs\.?|inr|₹)\s*)?[0-9][0-9,]*(?:\.[0-9]{1,2})?\s*(?:/-)?$", re.I)
+
+
+def _is_reference(v: str, ctx: _Ctx) -> bool:
+    """A single reference-number token or an amount under a reference / quantity column: kept, unless
+    it is an identifier already known for some patient (their phone, Aadhaar or hospital id)."""
+    t = to_ascii_digits(v.strip())
+    if _RE_MONEY.match(t):
+        return True
+    if not _RE_REF_TOKEN.match(t) or not any(c.isdigit() for c in t):
+        return False
+    nv = norm_id(t)
+    dg = "".join(_DIGITS.findall(t))
+    if nv in ctx.all_ids or (len(dg) >= 5 and dg in ctx.all_ids):
+        return False
+    return True
+
 
 def _is_id_number(v: Any, ctx: _Ctx) -> bool:
     s = str(v)
@@ -736,9 +787,58 @@ def _address_segments(v: str, out: str, ctx: _Ctx) -> str:
     return re.sub(r"\[ADDRESS\](?:[ \t]*,[ \t]*\[ADDRESS\])+", "[ADDRESS]", out)
 
 
+_STATES = frozenset(privacy.place_key(x) for x in (
+    "andhra pradesh", "arunachal pradesh", "assam", "bihar", "chhattisgarh", "goa", "gujarat", "haryana",
+    "himachal pradesh", "jharkhand", "karnataka", "kerala", "madhya pradesh", "maharashtra", "manipur",
+    "meghalaya", "mizoram", "nagaland", "odisha", "orissa", "punjab", "rajasthan", "sikkim", "tamil nadu",
+    "telangana", "tripura", "uttar pradesh", "uttarakhand", "west bengal", "delhi", "new delhi",
+    "jammu and kashmir", "ladakh", "puducherry", "chandigarh", "india", "mp", "up", "tn", "ap", "wb"))
+
+
+def _area_segment(w: str, ctx: _Ctx) -> bool:
+    """A comma segment that is only a district / state (with an optional PIN): it may stay."""
+    core = re.sub(r"[\s\-:]*(?:pin\s*[:\-]?\s*)?[0-9०-९]{3}\s*[0-9०-९xX]{3}\s*$", "", w, flags=re.I).strip(" .;:-")
+    if not core:
+        return True
+    pk = privacy.place_key(core)
+    if pk in _STATES or pk in (getattr(ctx.dec, "districts", None) or ()):
+        return True
+    if core.casefold() in DISTRICTS or " ".join(core.casefold().split()) in DISTRICTS:
+        return True
+    try:
+        sps = [sp for sp in _detect(core, ctx) if sp.kind == "DISTRICT"]
+    except Exception:  # noqa: BLE001
+        return False
+    return any(sp.start <= 1 and sp.end >= len(core) - 1 for sp in sps)
+
+
+def _address_cells(v: str, out: str, ctx: _Ctx) -> str:
+    """Address cell (its own column / key): every comma segment that is not just a district or a
+    state is an address part (house, street, landmark, locality, village), whatever its script."""
+    segs = v.split(",")
+    if len(segs) < 2:
+        return out
+    parts = []  # type: List[str]
+    for seg in segs:
+        w = seg.strip(" \t.;:-")
+        lead = seg[:len(seg) - len(seg.lstrip())]
+        if not w or _ADDR_SEG_KEEP.match(w) or not re.search(r"[A-Za-z\u0900-\u097F]", w):
+            parts.append(scrub_text(seg, ctx, "full") if w else seg)
+        elif _area_segment(w, ctx):
+            parts.append(scrub_text(seg, ctx, "full"))
+        else:
+            ctx.count("ADDRESS")
+            ctx.generalized = True
+            parts.append(lead + "[ADDRESS]")
+    res = ",".join(parts)
+    return re.sub(r"\[ADDRESS\](?:[ \t]*,[ \t]*\[ADDRESS\])+", "[ADDRESS]", res)
+
+
 def _address(v: str, ctx: _Ctx) -> str:
     out = scrub_text(v, ctx, "full", collapse=True)
     out = _address_segments(v, out, ctx)
+    if "," in v and "\n" not in v and len(v) <= 300:
+        out = _address_cells(v, out, ctx)
     out2 = _WARD_ADDR.sub("[ADDRESS]", out)
     if out2 != out:
         ctx.count("ADDRESS")
@@ -866,8 +966,12 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
         ctx.count("DISTRICT")
         ctx.generalized = True
         return "[DISTRICT]"
+    if ftype == fields.HOSPITAL and fields.is_institution(v):
+        return v                  # an institution named after a person is still an institution
     if ftype in (fields.DISTRICT, fields.STATE, fields.GENDER, fields.RELATION, fields.DOCTOR, fields.HOSPITAL):
         return scrub_text(v, ctx, "ids", dates_on=False, ages_on=False)
+    if ftype in (fields.CLINICAL, fields.OTHER_ID) and _is_reference(v, ctx):
+        return v                  # batch / sample / call / bill number or an amount: not a person's id
     if ftype in (fields.CLINICAL, fields.OTHER_ID):
         return _scrub_any(v, ctx, "ids", ages_on=False)
     return _scrub_any(v, ctx, "full", psn_fallback=True)
@@ -919,6 +1023,11 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
             orders.append(dates.infer_order(vals, label))
         except Exception:  # noqa: BLE001
             orders.append("dmy")
+    if any(not str(x or "").strip() for x in (labels or [""] * ncol)) or len(labels) < ncol:
+        try:
+            types = fields.refine_unlabelled(labels, types, [[r[i] for r in rows if i < len(r)] for i in range(ncol)])
+        except Exception:  # noqa: BLE001
+            pass
     new_heads = []  # type: List[List[str]]
     for hr in head_rows:
         new_header = []  # type: List[str]
@@ -1410,6 +1519,25 @@ def _text(pf: ParsedFile, fs: _File) -> str:
 _SEG = re.compile(r"[^_ ]+|[_ ]+")
 
 
+# Name words replaced in the content of the file being sanitised (for its output file name).
+_SEEN_NAMES = set()  # type: Set[str]
+_FILE_WORDS = frozenset({"family", "group", "report", "note", "notes", "letter", "summary", "card", "chat",
+                         "export", "query", "reply", "patient", "record", "records", "request", "thread",
+                         "consent", "form", "scan", "page", "copy", "final", "draft", "home", "visit",
+                         "ward", "night", "shift", "round", "referral", "discharge", "admission", "baby",
+                         "mother", "father", "wife", "husband", "son", "daughter", "doctor", "nurse",
+                         "hospital", "clinic", "general", "case", "file", "list", "data", "diary"})
+
+
+def _note_name(surface: str) -> None:
+    if len(_SEEN_NAMES) > 5000:
+        return
+    for w in re.findall(r"[A-Za-z]{4,}", surface):
+        lw = w.casefold()
+        if lw not in _FILE_WORDS and lw not in _GENERIC_KEYS:
+            _SEEN_NAMES.add(lw)
+
+
 def _out_rel(pf: ParsedFile, fs: _File) -> str:
     rel = pf.rel
     folder, base = posixpath.split(rel)
@@ -1431,6 +1559,20 @@ def _out_rel(pf: ParsedFile, fs: _File) -> str:
             if ok:
                 for i in range(max(0, sp.start), min(len(stem), sp.end)):
                     bad[i] = True
+    own = set()  # type: Set[str]
+    for c in fs.ctx.values():
+        own |= c.known.own_keys
+    for m in re.finditer(r"[A-Za-z]{4,}", stem):
+        w = m.group().casefold()
+        if w in _FILE_WORDS:
+            continue
+        hit = w in _SEEN_NAMES
+        if not hit and own:
+            ks = [k for k in _name_keys(w) if k not in _GENERIC_KEYS]
+            hit = bool(ks) and all(k in own for k in ks)
+        if hit:
+            for i in range(m.start(), m.end()):
+                bad[i] = True
     for m in re.finditer(r"[^_ ]+", stem):
         seg = m.group()
         nv = norm_id(seg)
@@ -1501,6 +1643,7 @@ def sanitize_file(pf: ParsedFile, env: Env) -> Sanitized:
     except Exception:  # noqa: BLE001
         pass
     fs = _File(pf, env, recs, order, _default_year(sample, order))
+    _SEEN_NAMES.clear()
 
     if pf.kind == KIND_CSV:
         content = _csv(pf, fs)
