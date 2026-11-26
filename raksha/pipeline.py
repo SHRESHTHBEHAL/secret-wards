@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import gate
 from .harvest import harvest_file
-from .ingest import R_INTERNAL, dump_json, load, walk
+from .ingest import R_INTERNAL, R_UNSUPPORTED, dump_json, escapes_root, link_marker_sha, load, walk
 from .link import link
 from .normalize import digits_only, to_ascii_digits
 from .pseudo import Keys
@@ -208,6 +208,10 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
     by_sha = {}  # type: Dict[str, ParsedFile]
     for path in walk(input_dir):
         rel = path.relative_to(input_dir).as_posix()
+        if escapes_root(path, input_dir):  # never opened: quarantined under a stand-in digest
+            items.append(_Item(rel=rel, pf=ParsedFile(rel=rel, sha256=link_marker_sha(path), kind=KIND_QUARANTINE,
+                                                      reason=R_UNSUPPORTED), reason=R_UNSUPPORTED))
+            continue
         sha = _sha_of(path)
         if sha and sha in by_sha:
             pf = dataclasses.replace(by_sha[sha], rel=rel)
@@ -405,12 +409,10 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
         "leak_gate_hits": gate_hits,
     }
     report = build_report(files, counts, entities, time.monotonic() - t0)
+    if fb is not None:
+        gate_hits += _gate_report(report, fb)
+        report["counts"]["leak_gate_hits"] = gate_hits
     text = report_text(report)
-    if fb is not None and gate.scan(text, fb):
-        report["entities"] = {}
-        text = report_text(report)
-        if gate.scan(text, fb):
-            text = gate.clean(text, fb, "REDACTED", keep='"{}[]:,\n')[0]
     rep_ok = True
     try:
         _write_root(output_dir, "report.json", text)
@@ -422,6 +424,22 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
         counts["files_total"], counts["files_sanitized"], counts["files_quarantined"],
         counts["records_processed"], counts["records_linked"]))
     return 0 if (ok and rec_ok and rep_ok and len(files) == len(items)) else 1
+
+
+def _gate_report(report: Dict[str, Any], fb: gate.Forbidden) -> int:
+    """Gate report.json field by field. Hashes (input_sha256), counts, timing and resources are never
+    touched: they are not personal data, and altering a hash would break the file mapping."""
+    hits = 0
+    for f in report.get("files") or []:
+        for key, keep in (("output", "/."), ("reason", "_")):
+            v = f.get(key)
+            if isinstance(v, str) and gate.scan(v, fb):
+                f[key], n = gate.clean(v, fb, "REDACTED", keep=keep)
+                hits += n
+    ents = report.get("entities") or {}
+    if any(gate.scan(str(k), fb) for k in ents):
+        report["entities"] = {}
+    return hits
 
 
 def _has_forbidden(body: str, fset: frozenset) -> bool:
@@ -455,7 +473,8 @@ def emergency_report(input_dir: Path, output_dir: Path) -> int:
         except Exception:  # noqa: BLE001
             paths = []
         for p in paths:
-            files.append(file_entry(_sha_of(p), None, R_INTERNAL))
+            unsafe = escapes_root(p, Path(input_dir))
+            files.append(file_entry(link_marker_sha(p) if unsafe else _sha_of(p), None, R_INTERNAL))
         counts = {k: 0 for k in ("files_total", "files_sanitized", "files_quarantined", "records_processed",
                                  "identifiers_detected", "records_linked", "records_generalized",
                                  "records_suppressed", "records_quarantined")}

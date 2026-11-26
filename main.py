@@ -29,7 +29,7 @@ def main() -> int:
         sys.setrecursionlimit(max(sys.getrecursionlimit(), 5000))
         from raksha.pipeline import run
         from raksha.policy import load_policy
-        policy = load_policy(HERE / "config" / "policy.yaml")
+        policy = load_policy(Path(os.environ.get("RAKSHA_POLICY") or HERE / "config" / "policy.yaml"))
         secret = os.environ.get("RAKSHA_SECRET", "").encode("utf-8")
         return run(inp, out, secret, policy)
     except BaseException as exc:  # noqa: BLE001 - last resort: still leave a valid report
