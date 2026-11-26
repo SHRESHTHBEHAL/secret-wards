@@ -113,27 +113,31 @@ def _tokens(label: str) -> Tuple[str, ...]:
 # ---------------------------------------------------------------- stems
 # Each stem is compared after _squash. Stems of length >= 5 tolerate small typos.
 _S = {
-    "name": ("name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
+    "name": ("naav", "nav", "peyar", "per", "naw", "nam", "name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
              "labharthi", "nme", "naem", "nmae"),
-    "patient": ("patient", "pt", "pat", "pnt", "patiant"),
-    "first": ("first", "fname", "given", "forename", "firstname"),
-    "last": ("last", "lname", "surname", "family", "lastname", "upnam", "upnaam"),
+    "patient": ("rogi", "mariz", "mareez", "ptnt", "pts", "patnt", "patient", "pt", "pat", "pnt", "patiant"),
+    "first": ("fn", "pratham", "pehla", "fst", "frst", "first", "fname", "given", "forename", "firstname"),
+    "last": ("sirname", "surnam", "kulnam", "kulnaam", "ln", "lst", "last", "lname", "surname", "family", "lastname", "upnam", "upnaam"),
     "local": ("local", "hindi", "devanagari", "regional", "vernacular"),
-    "relative": ("father", "husband", "guardian", "relative", "attendant", "kin", "pita", "pati",
+    "relative": ("attender", "informer", "rishtedar", "parijan", "sambandhi", "fh", "fhname", "gardian", "pitashri", "patidev", "nextofkin", "husbnd", "fathr", "hus", "father", "husband", "guardian", "relative", "attendant", "kin", "pita", "pati",
                  "mata", "mother", "spouse", "wife", "parent", "nok", "so", "do", "wo", "co", "ho",
                  "caretaker", "informant", "escort", "bystander", "pitaji", "abhibhavak", "vali", "wali",
                  "guardain", "gaurdian", "son", "daughter", "putra", "putri", "patni", "beta", "beti"),
     "relation": ("relation", "relationship", "rishta", "rishtaa", "sambandh", "rel"),
-    "doctor": ("doctor", "dr", "doc", "consultant", "physician", "surgeon", "practitioner", "doktar",
+    "doctor": ("dctr", "drname", "doctor", "dr", "doc", "consultant", "physician", "surgeon", "practitioner", "doktar",
                "chikitsak", "referred", "referring", "reviewed", "treating", "clinician", "consultan",
                "examined"),
-    "uhid": ("uhid", "mrn", "mr", "crno", "cr", "regn", "reg", "registration", "panjikran", "panjikaran",
+    "uhid": ("hosp", "hospno", "mrd", "mrdno", "uhidno", "crn", "hn", "hin", "ptid", "patientid", "regd", "regno", "regdno", "registrationno", "hospid", "medrec", "uhid", "mrn", "mr", "crno", "cr", "regn", "reg", "registration", "panjikran", "panjikaran",
              "pid", "uid_hosp"),
+    "idhost": ("hosp", "hospital", "card", "file", "case", "folder", "chart", "record", "enrol", "enroll",
+               "enrolment", "enrollment", "member", "beneficiary", "registration", "regd", "mrd", "patient", "pt",
+               "rogi", "marij", "mariz", "panjikaran", "panjikrit", "nondani", "pravesh_no"),
     "enc": ("ipd", "ip", "adm", "admission", "admit", "encounter", "inpatient", "aipidi", "bharti",
             "ipno", "ipdno"),
     "other_id": ("bill", "invoice", "receipt", "sample", "specimen", "trip", "ticket", "order",
                  "accession", "barcode", "visit", "voucher", "token", "txn", "transaction", "claim",
-                 "request", "booking", "case"),
+                 "request", "booking", "package", "lot", "batch", "serial", "sl", "sno",
+                 "row", "index", "page", "version", "room", "opd"),
     "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
                "kramank", "kod", "key"),
     "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
@@ -144,27 +148,27 @@ _S = {
     "insurance": ("pmjay", "pmjy", "ayushman", "policy", "insurance", "insurer", "tpa", "bima", "cghs",
                   "esic", "echs", "mediclaim", "beema"),
     "email": ("email", "mail", "emel", "imel", "emailid", "gmail"),
-    "phone": ("mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
+    "phone": ("sampark", "samprk", "sampark_no", "durbhash", "durabhash", "dural", "mobno", "mb", "phno", "cont", "cntct", "contct", "whtsapp", "mobileno", "fon", "cel", "mobno", "mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
               "callback", "whatsapp", "cell", "fone", "phon", "fon", "mno", "landline", "cellphone"),
-    "address": ("address", "addr", "adress", "addres", "pata", "street", "residence", "resi",
+    "address": ("niwas", "nivas", "niwasi", "nivasi", "patta", "vilasam", "thikana", "thikaana", "residance", "addrs", "adrs", "address", "addr", "adress", "addres", "pata", "street", "residence", "resi",
                 "residential", "adres", "pta"),
     "line": ("line", "line1", "line2"),
     "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
     "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
                  "sector", "ward_no", "galli", "gali", "lane"),
-    "village": ("village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
+    "village": ("mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
                 "kasba", "qasba", "shahar", "nagar", "gramm"),
-    "tehsil": ("tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
+    "tehsil": ("tahasil", "tehesil", "taluq", "thaluk", "pargana", "upazila", "upzila", "mandalam", "tahsel", "tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
                "subdistrict", "tehsel"),
-    "district": ("district", "distt", "dist", "jila", "zila", "zilla", "jilla", "distric"),
+    "district": ("janpad", "janapad", "jilha", "zillah", "jela", "mavattam", "zilah", "jilah", "district", "distt", "dist", "jila", "zila", "zilla", "jilla", "distric"),
     "state": ("state", "rajy", "rajya", "pradesh", "province"),
     "pin": ("pin", "pincode", "zip", "zipcode", "postal", "postcode", "pinkod"),
-    "dob": ("dob", "birth", "birthdate", "janm", "janam", "born", "bday", "birthday", "dateofbirth"),
-    "age": ("age", "umar", "umr", "umra", "ayu", "aayu", "yrs", "years", "vay", "agee"),
-    "gender": ("sex", "gender", "ling", "gendr", "jinsi", "mf", "gendar"),
-    "date": ("date", "dt", "dated", "tithi", "tarikh", "tarik", "dinank", "datetime", "timestamp",
+    "dob": ("jnm", "janmtithi", "janmdin", "janamdin", "birthdt", "pirantha", "jonmo", "janmatarikh", "dateofbirth", "brth", "dob", "birth", "birthdate", "janm", "janam", "born", "bday", "birthday", "dateofbirth"),
+    "age": ("umer", "umir", "vayas", "vayasu", "vayah", "boyos", "boyosh", "varsh", "varsha", "age", "umar", "umr", "umra", "ayu", "aayu", "yrs", "years", "vay", "agee"),
+    "gender": ("linga", "linag", "lingo", "jender", "jendar", "gndr", "lingbhed", "paal", "gendre", "sx", "sex", "gender", "ling", "gendr", "jinsi", "mf", "gendar"),
+    "date": ("dd", "mm", "yyyy", "yy", "ddmmyyyy", "mmddyyyy", "yyyymmdd", "ddmmyy", "tareekh", "dinaank", "tarikh", "date", "dt", "dated", "tithi", "tarikh", "tarik", "dinank", "datetime", "timestamp",
              "dte"),
-    "dateverb": ("registered", "collected", "reported", "admitted", "discharged", "generated",
+    "dateverb": ("enrolled", "joined", "booked", "seen", "registered", "collected", "reported", "admitted", "discharged", "generated",
                  "exported", "created", "updated", "visited", "received", "issued", "printed",
                  "discharge", "on", "at", "when"),
     "hospital": ("hospital", "facility", "clinic", "lab", "laboratory", "centre", "center",
@@ -227,7 +231,9 @@ def _osa(a: str, b: str, cap: int) -> int:
 _SQ = {k: tuple(sorted(set(_squash(w) for w in v))) for k, v in _S.items()}
 # Stems that must match exactly (too short or too confusable for fuzzy matching).
 _EXACT_GROUPS = frozenset({"dateverb", "relation"})
-_EXACT_ONLY = frozenset({"pati", "pita", "mata", "pata", "pin", "pan", "state", "on", "at", "line",
+_EXACT_ONLY = frozenset({"fullname", "firstname", "lastname", "forename", "patientid", "registrationno", "hospid", "uhidno", "regdno", "mrdno", "hospno", "nextofkin", "drname", "fhname", "filename", "freetext", "card", "file", "case", "chart", "record", "member",
+                         "place", "jela", "paal", "varsha", "cont", "seen", "joined", "booked", "batch", "serial",
+                         "index", "version", "pati", "pita", "mata", "pata", "pin", "pan", "state", "on", "at", "line",
                          "form", "test", "rate", "inpatient", "apartment", "temp", "case", "note", "text", "file", "fee", "flag"})
 
 
@@ -259,11 +265,11 @@ def _has(toks: Sequence[str], group: str) -> bool:
 
 # ---------------------------------------------------------------- label vote
 _BY_DOCTOR = frozenset({"reviewed", "referred", "examined", "treated", "attended", "signed", "verified",
-                        "approved", "prescribed", "consulted", "seen", "checked", "operated", "reported",
-                        "authorised", "authorized", "dictated"})
+                        "prescribed", "consulted", "operated", "dictated", "diagnosed", "admitted"})
 _BY_RELATIVE = frozenset({"accompanied", "brought", "escorted"})
 _BY_PRIVATE = frozenset({"raised", "requested", "submitted", "called", "complained", "booked", "filed",
-                         "lodged"})
+                         "lodged", "reported", "logged", "registered", "enquired", "informed", "made", "sent",
+                         "initiated", "opened", "created_for", "paid", "claimed", "accompanied_by_patient"})
 
 def _label_type(toks: Tuple[str, ...]) -> str:
     t = _label_type1(toks)
@@ -286,6 +292,11 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         if any(t in _BY_PRIVATE for t in toks):
             return NAME
         return FREE_TEXT
+    if is_id and h("idhost") and not (h("other_id") or h("name") or h("phone") or h("aadhaar") or h("abha")
+                                      or h("pan") or h("insurance") or h("email") or h("date") or h("dob")):
+        if h("enc"):
+            return ENC_ID
+        return PATIENT_ID      # "Hosp. No", "Card No", "File No", "Case ID", "Enrolment No", "MRD No"
     if h("free") and not (h("name") or h("phone") or h("address")):
         return FREE_TEXT
     if h("relation") and not h("name"):
@@ -397,6 +408,32 @@ _GENDER_WORDS = frozenset({"m", "f", "o", "t", "male", "female", "other", "trans
 _NAME_TOKEN = re.compile(r"^(?:[A-Za-z][A-Za-z'.\-]*|[ऀ-ॿ]+\.?)$")
 
 
+CODE = "code"          # internal value shape: an identifier-like code (never returned as a slot type)
+_RE_CODE_CHARS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9#/.\-_: ()]*[A-Za-z0-9)]$")
+_RE_NOT_CODE = re.compile(r"^(?:\d{4}-?W\d{1,2}|v?\d+(?:\.\d+){1,3}|\d+(?:\.\d+)?\s*[-/]\s*\d+(?:\.\d+)?)$", re.I)
+_RE_ENC_VALUE = re.compile(r"^\W*(?:ipd?|adm|admn|enc|epi?|in|ip[a-z]{0,2})[\W_]*[0-9]", re.I)
+
+
+def _is_code(s: str) -> bool:
+    """An identifier-looking code: >= 5 digits, few letters, no spaces inside words, not a
+    date / version / range / BP. Phones, Aadhaar, PINs are classified before this."""
+    t = to_ascii_digits(s.strip())
+    if len(t) > 28 or len(t) < 5 or not _RE_CODE_CHARS.match(t) or _RE_NOT_CODE.match(t):
+        return False
+    d = sum(c.isdigit() for c in t)
+    letters = sum(c.isalpha() for c in t)
+    if d < 5 or letters > 8 or " " in t.strip() and not re.match(r"^[A-Za-z]{1,6}[ #.:\-]+[0-9]", t):
+        return False
+    if t.isdigit():
+        return 5 <= len(t) <= 14
+    try:
+        if parse_one(t) is not None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def _digits(s: str) -> str:
     return "".join(c for c in to_ascii_digits(s) if c.isdigit())
 
@@ -416,6 +453,11 @@ def _value_shape(v: str) -> str:
         return AADHAAR
     if _RE_PHONE_CHARS.match(to_ascii_digits(s)):
         d = _digits(s)
+        groups = [len(g) for g in re.findall(r"[0-9]+", to_ascii_digits(s))]
+        if len(d) == 12 and d.startswith("91") and d[2] in "6789" and groups != [4, 4, 4]:
+            return PHONE      # "(+91) 98765 43210", "91-98765-43210", "+91.98765.43210"
+        if len(d) == 12 and d[0] in "23456789" and groups in ([12], [4, 4, 4]) and not s.lstrip().startswith(("+", "(")):
+            return AADHAAR    # "3972 0583 9628", "3972.0583.9628", "397205839628"
         if len(d) == 12 and d[0] in "23456789" and not s.lstrip().startswith("+") and not d.startswith("91"):
             return AADHAAR
         if len(d) == 12 and d.startswith("91") and d[2] in "6789" and (" " not in s.strip() or s.startswith("+")):
@@ -437,6 +479,8 @@ def _value_shape(v: str) -> str:
             return PIN
     if _RE_DOCTOR.match(s):
         return DOCTOR
+    if _is_code(s):
+        return CODE
     if low in _GENDER_WORDS:
         return GENDER
     if _RE_AGE_SEX.match(s) or _RE_SEX_AGE.match(s):
@@ -481,6 +525,28 @@ _VALUE_ORDER = (EMAIL, ABHA_ADDR, PAN, AADHAAR, ABHA, PHONE, PIN, DATE, AGE_SEX,
                 RELATION, DOCTOR, NAME)
 
 
+def _code_vote(values: Sequence[Any], threshold: float = 0.8) -> str:
+    """PATIENT_ID / ENC_ID when most values are identifier-like codes; pure digit codes must also
+    share one length (amounts and counts do not)."""
+    vals = [str(v).strip() for v in values if v is not None and not isinstance(v, (dict, list, bool, float))
+            and str(v).strip()]
+    if len(vals) < 2:
+        return ""
+    codes = [v for v in vals if _value_shape(v) == CODE]
+    if len(codes) < threshold * len(vals):
+        return ""
+    pure = [v for v in codes if to_ascii_digits(v).isdigit()]
+    if pure:
+        lens: dict = {}
+        for v in pure:
+            lens[len(v)] = lens.get(len(v), 0) + 1
+        if max(lens.values()) < 0.9 * len(pure) or len(pure) > 0.5 * len(codes) and min(len(v) for v in pure) < 6:
+            return ""
+    if sum(1 for v in codes if _RE_ENC_VALUE.match(v)) >= 0.6 * len(codes):
+        return ENC_ID
+    return PATIENT_ID
+
+
 def classify_values(values: Sequence[Any], threshold: float = 0.6) -> str:
     """Shape vote over non-empty values. OTHER when no shape reaches `threshold`."""
     n, counts = _shares(values)
@@ -523,9 +589,33 @@ def _combine(lt: str, vt: str) -> str:
     return lt
 
 
+_NOT_PATIENT_CODE_LABEL = frozenset({"bill", "invoice", "receipt", "sample", "specimen", "visit", "package",
+                                     "claim", "token", "bed", "order", "trip", "ticket", "voucher", "txn",
+                                     "transaction", "accession", "barcode", "batch", "lot", "serial", "loinc",
+                                     "icd", "code", "sku", "item", "drug", "test"})
+
+
+def code_column_type(label: str, values: Sequence[Any]) -> str:
+    """PATIENT_ID / ENC_ID for an unlabelled (OTHER) column whose values look like identifier codes;
+    '' otherwise. Labels naming bills, samples, visits, packages, claims, tokens, beds ... never qualify."""
+    toks = _tokens(str(label or ""))
+    if any(_tok_is(t, "other_id") or t in _NOT_PATIENT_CODE_LABEL for t in toks) or _has(toks, "clinical"):
+        return ""
+    v = _code_vote(values)
+    if v == PATIENT_ID and (_has(toks, "enc") or any(t in ("ipd", "ip", "adm", "admission", "encounter",
+                                                            "episode", "inpatient") for t in toks)):
+        return ENC_ID
+    return v
+
+
 def classify_column(label: str, values: Sequence[Any]) -> str:
     """Type of a column from its label and sample values."""
-    return _combine(classify_label(label), classify_values(values))
+    lt = classify_label(label)
+    if lt == OTHER:
+        ct = code_column_type(label, values)
+        if ct:
+            return ct
+    return _combine(lt, classify_values(values))
 
 
 # ---------------------------------------------------------------- JSON paths
@@ -699,9 +789,12 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
             from .patterns import find_patient_ids
             sp = find_patient_ids(value)
             if len(sp) == 1 and sp[0].start == 0 and sp[0].end == len(value):
-                return PATIENT_ID
+                return ENC_ID if _RE_ENC_VALUE.match(value) else PATIENT_ID
         except Exception:  # noqa: BLE001
             pass
+        if vh == CODE and owner in ("", "PRIVATE") and not any(
+                _tok_is(t, "other_id") or t in _NOT_PATIENT_CODE_LABEL for t in toks) and not _has(toks, "clinical"):
+            return ENC_ID if _RE_ENC_VALUE.match(value) or _has(toks, "enc") else PATIENT_ID
         return OTHER
     if lt == OTHER:
         return vh if vh in _STRONG else OTHER
