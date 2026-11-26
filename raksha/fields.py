@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from functools import lru_cache
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .dates import parse_one
 from .lexicon import CLINICAL_WORDS
@@ -272,7 +272,20 @@ _BY_PRIVATE = frozenset({"raised", "requested", "submitted", "called", "complain
                          "lodged", "reported", "logged", "registered", "enquired", "informed", "made", "sent",
                          "initiated", "opened", "created_for", "paid", "claimed", "accompanied_by_patient"})
 
+_MEMO_LABEL_TYPE = {}  # type: Dict[Any, Any]
+
+
 def _label_type(toks: Tuple[str, ...]) -> str:
+    key = tuple(toks)
+    hit = _MEMO_LABEL_TYPE.get(key)
+    if hit is None:
+        if len(_MEMO_LABEL_TYPE) > 200000:
+            _MEMO_LABEL_TYPE.clear()
+        hit = _MEMO_LABEL_TYPE[key] = _label_type_impl(toks)
+    return hit
+
+
+def _label_type_impl(toks: Tuple[str, ...]) -> str:
     t = _label_type1(toks)
     if t == OTHER and len(toks) > 1 and not any(c.isdigit() for c in "".join(toks)):
         t = _label_type1(("".join(toks),))      # "Whats App" -> "whatsapp"
@@ -439,7 +452,20 @@ def _digits(s: str) -> str:
     return "".join(c for c in to_ascii_digits(s) if c.isdigit())
 
 
+_MEMO_VALUE_SHAPE = {}  # type: Dict[Any, Any]
+
+
 def _value_shape(v: str) -> str:
+    key = v
+    hit = _MEMO_VALUE_SHAPE.get(key)
+    if hit is None:
+        if len(_MEMO_VALUE_SHAPE) > 200000:
+            _MEMO_VALUE_SHAPE.clear()
+        hit = _MEMO_VALUE_SHAPE[key] = _value_shape_impl(v)
+    return hit
+
+
+def _value_shape_impl(v: str) -> str:
     s = v.strip()
     if not s:
         return ""
@@ -628,7 +654,20 @@ _NAME_PART_LAST = ("last", "family", "surname", "lname")
 _NAME_PART_LOCAL = ("local", "hindi", "devanagari", "regional", "vernacular")
 
 
+_MEMO_OWNER = {}  # type: Dict[Any, Any]
+
+
 def _owner(keys: Sequence[str]) -> str:
+    key = tuple(str(k) for k in keys)
+    hit = _MEMO_OWNER.get(key)
+    if hit is None:
+        if len(_MEMO_OWNER) > 200000:
+            _MEMO_OWNER.clear()
+        hit = _MEMO_OWNER[key] = _owner_impl(keys)
+    return hit
+
+
+def _owner_impl(keys: Sequence[str]) -> str:
     """Who a name/ID under these ancestor keys belongs to: RELATIVE, DOCTOR, HOSPITAL, CLINICAL,
     PATIENT or '' (unknown). Nearest ancestor wins."""
     for k in reversed(list(keys)):
