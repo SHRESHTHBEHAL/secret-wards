@@ -340,3 +340,29 @@ class TextFactsRolesTest(unittest.TestCase):
         f = detect.text_facts("Lakshmi Pillai ji ka BP 132/78 tha. Unke husband Venkatesh ji ne bataya.")
         self.assertEqual(f.names, ["Lakshmi Pillai"])
         self.assertIn(("husband", "Venkatesh"), f.relatives)
+
+
+class ReferenceNumbers(unittest.TestCase):
+    def test_bare_ref_code_is_redacted(self):
+        self.assertEqual([sp.kind for sp in detect("ref no QZX/25/731942")], ["REF_ID"])
+
+    def test_named_document_numbers_are_kept(self):
+        for s in ("Bill no QZB/26/0071234", "Reply to query on claim QZC/26/4471234", "Lab ref QZL-7712345",
+                  "Death certificate no QZD/26/00412", "Flow cytometry,LOT-771234"):
+            self.assertEqual([sp.kind for sp in detect(s) if sp.kind == "REF_ID"], [], s)
+
+
+class FastPaths(unittest.TestCase):
+    def test_indic_digits_still_mapped(self):
+        from raksha import patterns
+        s = "फोन ९८७६५ ४३२१० " + "x" * 300
+        self.assertEqual(patterns._to_ascii_digits(s)[:16], "फोन 98765 43210 ")
+        self.assertEqual(patterns._to_ascii_digits(s), patterns._to_ascii_digits(s))
+        self.assertEqual(patterns._to_ascii_digits("abc"), "abc")
+
+    def test_digit_free_text_has_no_dates_or_numbers(self):
+        from raksha import dates, patterns
+        self.assertEqual(dates.find_dates("seen in March, review in April"), [])
+        self.assertEqual(dates.find_ages("aged and frail"), [])
+        self.assertEqual(patterns.find_identifiers("mail qz.test@example.org"), [patterns.find_identifiers("mail qz.test@example.org")[0]])
+        self.assertEqual(len(dates.find_dates("seen on March 5, 2026")), 1)
