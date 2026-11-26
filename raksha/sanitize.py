@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import base64
 import bisect
+import hashlib
 import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import dates, fields, privacy
-from .detect import ID_KINDS, NAME_KINDS, Known, detect
+from .detect import _STOP as _COMMON_WORDS, ID_KINDS, NAME_KINDS, Known, detect
 from .lexicon import DISTRICTS
 from .harvest import csv_view, harvest_file, keyed_record_id
 from .ingest import dump_csv, dump_json
@@ -170,12 +171,65 @@ def _facts_empty(f: Facts) -> bool:
                 or f.tehsil or f.pin or f.address_parts)
 
 
+# measurement units ("52/min", "5 mg/dl"): never a name, whatever a record's name facts say
+_UNIT_WORDS = frozenset("""
+min mins hr hrs sec secs mg mcg ml dl kg gm cm mm mmhg bpm iu meq mmol ng pg fl cc lpm wk wks yr yrs
+""".split())
+_LATIN_TOK = re.compile(r"[A-Za-z]+")
+
+
+def name_key_ok(key: str) -> bool:
+    """A Latin name token sanitize may replace on its own evidence: >= 2 letters, not a unit, and
+    a common / clinical word only when it has >= 4 letters."""
+    if not key or len(key) < 2:
+        return False
+    k = key.lower()
+    if k in _UNIT_WORDS:
+        return False
+    if len(k) < 4 and k in _COMMON_WORDS:
+        return False
+    return True
+
+
+def name_replaceable(surface: str) -> bool:
+    """The one test every name-replacement path applies to the surface it is about to replace."""
+    if sum(1 for c in surface if c.isalpha()) < 2:
+        return False
+    toks = _LATIN_TOK.findall(surface)
+    if len(toks) == 1 and toks[0] == surface.strip(" .,:;'\u2019()"):
+        return name_key_ok(toks[0])
+    return True
+
+
 def _name_keys(name: str) -> List[str]:
     try:
         # an initial ("R.") keys to one letter: it would match any word starting with it ("RA" in "on RA")
-        return [k for k in (name_key(t) for t in name_tokens(name)) if k and len(k) >= 2]
+        out = []
+        for t in name_tokens(name):
+            k = name_key(t)
+            # the unit / common-word test is about the Latin token itself (a Devanagari token's key
+            # is a transliteration and may be short)
+            if k and len(k) >= 2 and (not _LATIN_TOK.fullmatch(t) or name_key_ok(t)):
+                out.append(k)
+        return out
     except Exception:  # noqa: BLE001
         return []
+
+
+def _prot_overlap(text: str) -> "_Overlap":
+    """Protected clinical stretches of `text` (ASHA titles excepted: the worker's name is replaced)."""
+    try:
+        return _Overlap((p.start, p.end) for p in protected_spans(text) if p.kind != "ASHA")
+    except Exception:  # noqa: BLE001
+        return _Overlap([])
+
+
+def name_span_ok(text: str, s: int, e: int, prot: "Optional[_Overlap]") -> bool:
+    """Shared gate for every name replacement sanitize makes: the surface passes
+    name_replaceable and does not overlap a protected span (prot built by _prot_overlap)."""
+    if not name_replaceable(text[s:e]):
+        return False
+    return prot is None or not prot.hit(s, e)
 
 
 def _fact_names(f: Facts) -> List[str]:
@@ -431,6 +485,9 @@ def _detect(text: str, ctx: _Ctx) -> list:
         for sp in alt:
             if sp.kind in ("DISTRICT", "GENDER", "AGE", "DOB"):
                 continue
+            # the separator-free variant loses "52/min" / "D/25/1187" shapes: the name test decides
+            if sp.kind in NAME_KINDS and not name_span_ok(text, sp.start, sp.end, None):
+                continue
             if not any(o.start < sp.end and sp.start < o.end for o in spans):
                 spans.append(sp)
                 added = True
@@ -499,13 +556,10 @@ def _own_token_spans(text: str, ctx: _Ctx, spans: list) -> list:
         cands.append((s, e))
     if not cands:
         return []
-    try:
-        prot = _Overlap((p.start, p.end) for p in protected_spans(text) if p.kind != "ASHA")
-    except Exception:  # noqa: BLE001
-        prot = _Overlap([])
+    prot = _prot_overlap(text)
     out = []
     for s, e in cands:
-        if prot.hit(s, e):
+        if not name_span_ok(text, s, e, prot):
             continue
         if re.search(r"(?:\bDr\.?|डॉ\.?)\s*(?:[A-Z][a-z]+\s+)?$", text[max(0, s - 30):s]):
             continue
@@ -708,6 +762,8 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
         surf = text[sp.start:sp.end]
         k = sp.kind
         if k in NAME_KINDS:
+            if not name_replaceable(surf):
+                continue
             _note_name(surf)
         if k == "PATIENT_NAME":
             if sp is psn_name:
@@ -1236,8 +1292,10 @@ _FHIR_UNTOUCHED = frozenset({"Practitioner", "Organization", "Location", "Practi
 
 
 class _Fhir:
-    def __init__(self, ctx: _Ctx, data: Any) -> None:
+    def __init__(self, ctx: _Ctx, data: Any, entry_ctx: Optional[Dict[str, _Ctx]] = None) -> None:
         self.ctx = ctx
+        self.main = ctx
+        self.entry_ctx = entry_ctx or {}   # "/entry/<i>" -> that entry's record context
         self.person_refs = set()  # type: Set[str]
         try:
             for e in data.get("entry") or []:
@@ -1256,7 +1314,14 @@ class _Fhir:
         out = {}  # type: Dict[str, Any]
         for k, v in data.items():
             if k == "entry" and isinstance(v, list):
-                out[k] = [self.entry(e) for e in v]
+                ents = []
+                for i, e in enumerate(v):
+                    # a collection Bundle holds several patients: each entry gets its own record's
+                    # pseudonym, shift and generalisation
+                    self.ctx = self.entry_ctx.get("/entry/%d" % i, self.main)
+                    ents.append(self.entry(e))
+                self.ctx = self.main
+                out[k] = ents
             elif k == "meta":
                 out[k] = self._meta(v)
             elif k == "timestamp" and isinstance(v, str):
@@ -1488,9 +1553,12 @@ class _Fhir:
                 elif k == "text" and isinstance(v, dict) and "div" in v:
                     out[k] = self.narrative(v)
                 elif k == "data" and isinstance(v, str):
-                    out[k] = self._b64(v)
+                    out[k] = self._b64(v, rt in ("Patient", "RelatedPerson") or "contact" in keys
+                                       or "photo" in keys)
                 else:
                     out[k] = self.generic(v, keys + [k], rt)
+            if isinstance(node.get("data"), str) and out.get("data") != node["data"]:
+                _fix_attachment(out)
             return out
         if isinstance(node, list):
             return [self.generic(x, keys, rt) for x in node]
@@ -1556,14 +1624,36 @@ class _Fhir:
             return out
         return v
 
-    def _b64(self, v: str) -> str:
+    def _b64(self, v: str, personal: bool = False) -> str:
         dec = try_b64_text(v)
         if dec is None:
-            return v
+            # bytes that are not text (a photo): personal when under a person, else kept
+            return _PLACEHOLDER_PNG if personal and v.strip() else v
         clean = scrub_text(dec, self.ctx, "full")
         if clean == dec:
             return v
         return base64.b64encode(clean.encode("utf-8")).decode("ascii")
+
+
+# a 1x1 transparent PNG: what a person's photo / non-text attachment becomes
+_PLACEHOLDER_PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==")
+
+
+def _fix_attachment(att: Dict[str, Any]) -> None:
+    """An Attachment whose data was rewritten: size is the new byte length, hash the new SHA-1."""
+    try:
+        raw = base64.b64decode(att["data"])
+    except Exception:  # noqa: BLE001
+        att.pop("size", None)
+        att.pop("hash", None)
+        return
+    if att["data"] == _PLACEHOLDER_PNG:
+        att["contentType"] = "image/png"
+        att.pop("hash", None)
+    elif "hash" in att:
+        att["hash"] = base64.b64encode(hashlib.sha1(raw).digest()).decode("ascii")
+    if "size" in att or att["data"] == _PLACEHOLDER_PNG:
+        att["size"] = len(raw)
 
 
 def _redact_strings(v: Any) -> Any:
@@ -1580,19 +1670,21 @@ def _fhir(data: Any, fs: _File) -> Any:
     if not isinstance(data, dict):
         return _json(data, fs)
     ctx = fs.main_ctx()
-    out = _Fhir(ctx, data).bundle(data)
-    if ctx.psn and not ctx.psn_placed:
-        try:
-            for e in out.get("entry") or []:
-                r = e.get("resource") or {}
-                if r.get("resourceType") == "Patient" and isinstance(r.get("name"), list) and r["name"]:
-                    n0 = r["name"][0]
-                    if isinstance(n0, dict):
-                        n0["text"] = ctx.psn
-                        ctx.psn_placed = True
-                        break
-        except Exception:  # noqa: BLE001
-            pass
+    ectx = {loc: c for loc, c in fs.ctx.items() if isinstance(loc, str) and re.match(r"^/entry/[0-9]+$", loc)}
+    out = _Fhir(ctx, data, ectx).bundle(data)
+    try:
+        for i, e in enumerate(out.get("entry") or []):
+            c = ectx.get("/entry/%d" % i, ctx)
+            if not c.psn or c.psn_placed:
+                continue
+            r = e.get("resource") or {}
+            if r.get("resourceType") == "Patient" and isinstance(r.get("name"), list) and r["name"]:
+                n0 = r["name"][0]
+                if isinstance(n0, dict):
+                    n0["text"] = c.psn
+                    c.psn_placed = True
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
