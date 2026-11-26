@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import dates, fields, privacy
 from .detect import ID_KINDS, NAME_KINDS, Known, detect
-from .harvest import harvest_file, keyed_record_id
+from .harvest import csv_view, harvest_file, keyed_record_id
 from .ingest import dump_csv, dump_json
 from .normalize import to_ascii_digits, try_b64_text
 from .patterns import find_identifiers, norm_id, protected_spans
@@ -883,7 +883,9 @@ def _scrub_label(s: str, fs: _File) -> str:
     if not isinstance(s, str) or not s or not _LABEL_NEEDS.search(s):
         return s
     u = s.translate(_UNDERSCORE)
-    out = scrub_text(u, fs.label_ctx, "label", dates_on=False, ages_on=False)
+    # a title cell ("Chart: Mr <name> (IP <no>) Ph <no>") is free text, not a column name
+    mode = "full" if (":" in u or len(u.split()) > 4) and len(u) > 24 else "label"
+    out = scrub_text(u, fs.label_ctx, mode, dates_on=False, ages_on=False)
     return out if out != u else s
 
 
@@ -898,13 +900,15 @@ def _unique(name: str, used: Set[str]) -> str:
 # ----------------------------------------------------------------------------- CSV
 
 def _csv(pf: ParsedFile, fs: _File) -> str:
-    header = list(pf.header)
-    rows = [list(r) for r in pf.rows]
-    ncol = max([len(header)] + [len(r) for r in rows]) if (header or rows) else 0
+    labels, rows, hl = csv_view(pf)
+    rows = [list(r) for r in rows]
+    raw_header = list(pf.header)
+    head_rows = [raw_header, list(pf.rows[0]) if pf.rows else []][:hl]
+    ncol = max([len(labels)] + [len(r) for r in rows]) if (labels or rows) else 0
     types = []  # type: List[str]
     orders = []  # type: List[str]
     for i in range(ncol):
-        label = header[i] if i < len(header) else ""
+        label = labels[i] if i < len(labels) else ""
         vals = [r[i] for r in rows if i < len(r)]
         try:
             t = fields.classify_column(label, vals)
@@ -915,14 +919,17 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
             orders.append(dates.infer_order(vals, label))
         except Exception:  # noqa: BLE001
             orders.append("dmy")
-    new_header = []  # type: List[str]
-    used = set()  # type: Set[str]
-    for h in header:
-        nh = _scrub_label(h, fs)
-        if nh != h:
-            nh = _unique(nh, used | set(header))
-        used.add(nh)
-        new_header.append(nh)
+    new_heads = []  # type: List[List[str]]
+    for hr in head_rows:
+        new_header = []  # type: List[str]
+        used = set()  # type: Set[str]
+        for h in hr:
+            nh = _scrub_label(h, fs)
+            if nh != h:
+                nh = _unique(nh, used | set(hr))
+            used.add(nh)
+            new_header.append(nh)
+        new_heads.append(new_header)
     out_rows = []
     for ri, row in enumerate(rows):
         ctx = fs.ctx.get("row:%d" % ri) or fs.file_ctx
@@ -934,8 +941,9 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
             x = typed_value(v, t, ctx, orders[i] if i < len(orders) else None)
             new.append(x if isinstance(x, str) else str(x))
         out_rows.append(new)
+    lines = new_heads + out_rows
     copy = ParsedFile(rel=pf.rel, sha256=pf.sha256, kind=pf.kind, delimiter=pf.delimiter,
-                      header=new_header, rows=out_rows)
+                      header=lines[0] if lines else [], rows=lines[1:])
     return dump_csv(copy)
 
 
