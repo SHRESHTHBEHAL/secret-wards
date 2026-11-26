@@ -1015,9 +1015,29 @@ def cross_release(dev, rel1, rel2):
 
 def _ref(*parts):
     """Opaque 8-hex handle for a file / location / id, so console output never carries record content
-    (input file names and locations can themselves hold personal data). Full detail goes to --json only."""
+    (input file names and locations can themselves hold personal data). The --json file carries the same: figures, counts and handles."""
     import hashlib
     return hashlib.sha256("\x1f".join(str(x) for x in parts).encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def _safe_result(res):
+    """The result as written to --json: figures, counts and opaque handles only. Nothing read from a record
+    (ids, names, hints, file names) is written, so the file is safe to keep next to a release."""
+    out = {}
+    for k, v in res.items():
+        if isinstance(v, (int, float, bool)) or v is None:
+            out[k] = v
+        elif k == "targets_detail":
+            out[k] = [{"target": _ref(t.get("patient")), "success": t.get("success"),
+                       "true_signals": len(t.get("true_signals") or ()), "cond_profiles": t.get("cond_profiles")}
+                      for t in v]
+        elif k == "exposed_patients":
+            out[k] = {kind: len(members) for kind, members in v.items()}
+        elif k == "pseudonym_inversion":
+            out[k] = dict(_nums(v), inverted=len(v.get("inverted") or ()))
+        elif isinstance(v, dict):
+            out[k] = {kk: vv for kk, vv in v.items() if isinstance(vv, (int, float, bool)) or vv is None}
+    return out
 
 
 def _nums(d):
@@ -1120,7 +1140,7 @@ def main():
                                                                   len(ev.phones), len(ev.last4)))
     if a.json:
         with open(a.json, "w") as fh:
-            json.dump(res, fh, indent=1, default=str)
+            json.dump(_safe_result(res), fh, indent=1, default=str)
 
 
 if __name__ == "__main__":
