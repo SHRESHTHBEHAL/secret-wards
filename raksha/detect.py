@@ -103,7 +103,7 @@ spouse son daughter relative relation attendant
 """) | scripts.LABEL_WORDS
 
 _HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन "
-                   "bhau bhaurao baideo bhaideo paaji paji praji chechi chechy ajoba aaji "
+                   "bhau bhaurao baideo baidew bhaideo paaji paji praji chechi chechy ajoba aaji ajji bapa akka "
                    "भाऊ पाजी") \
     | scripts.HONORIFICS
 _HON_KIN = _ws("""
