@@ -163,7 +163,7 @@ _S = {
     "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
     "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
                  "sector", "ward_no", "galli", "gali", "lane", "para", "leikai", "tola", "veng", "patti",
-                 "pada", "chawl", "wada", "khangpa"),
+                 "pada", "chawl", "wada", "khangpa", "pickup"),
     "govid": ("voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
               "kyc", "idproof"),
     "village": ("mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
@@ -293,6 +293,11 @@ _BY_PRIVATE = frozenset({"raised", "requested", "submitted", "called", "complain
                          "initiated", "opened", "created_for", "paid", "claimed", "accompanied_by_patient"})
 
 _MEMO_LABEL_TYPE = {}  # type: Dict[Any, Any]
+_HANDOVER_TO = frozenset({"issued", "given", "handed", "delivered", "released", "dispatched", "handover"})
+_HANDOVER_BY = frozenset({"received", "collected", "receiver", "taken", "claimed"})
+_HANDOVER_NOT = frozenset({"date", "dt", "on", "time", "at", "no", "number", "dated", "ward", "unit", "dept",
+                           "department", "lab", "sample"})
+_WITNESS_WORDS = frozenset({"witness", "witnesses", "witnessed", "gawah", "informant", "informer", "sakshi"})
 _VISIT_WORDS = frozenset({"enc", "encounter", "episode", "epi", "visit", "encid", "visitid", "episodeid"})
 _ADMIT_WORDS = frozenset({"ipd", "ip", "adm", "admn", "admission", "admit", "inpatient", "bharti", "ipno", "ipdno"})
 
@@ -323,6 +328,16 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         return OTHER
     h = lambda g: _has(toks, g)  # noqa: E731
     is_id = h("idword")
+
+    # A hand-over column names the private person on the other end ("Issued To", "Received By",
+    # "Witness", "Informant"), never a date or a free-text note.
+    if not (is_id or h("phone") or any(t in _HANDOVER_NOT for t in toks)):
+        if "to" in toks[1:] and any(t in _HANDOVER_TO for t in toks):
+            return RELATIVE
+        if "by" in toks[1:] and any(t in _HANDOVER_BY for t in toks):
+            return RELATIVE
+        if toks[0] in _WITNESS_WORDS and all(t in _WITNESS_WORDS or t == "name" or t.isdigit() for t in toks):
+            return RELATIVE
 
     if "by" in toks[1:]:
         if h("doctor") or any(t in _BY_DOCTOR for t in toks):
@@ -749,7 +764,33 @@ def refine_unlabelled(labels: Sequence[str], types: List[str], columns: Sequence
             k -= 1
         if len(run) == 2:
             out[run[1]] = VILLAGE      # the column next to the PIN (the district) is left as it is
+    # next to a headerless column of known districts, a short place-like column just before it is the
+    # VILLAGE / locality
+    try:
+        from .detect import is_district
+    except Exception:  # noqa: BLE001
+        return out
+    # (the district column itself keeps its type: typing it would only change the district policy)
+    dist = [blank(j) and t in (OTHER, NAME) and j < len(columns) and _share_fn(columns[j], is_district) >= 0.6
+            for j, t in enumerate(out)]
+    for j, t in enumerate(out):
+        if not dist[j]:
+            continue
+        k = j - 1
+        if k >= 0 and blank(k) and out[k] in (OTHER, NAME) and k < len(columns) \
+                and _share(columns[k], _RE_PLACE_LOOSE) >= 0.6 and _share_fn(columns[k], is_district) < 0.3:
+            out[k] = VILLAGE
     return out
+
+
+_RE_PLACE_LOOSE = re.compile(r"^(?:[A-Z][A-Za-z'.\-]*|[ऀ-ॿ]+)(?:[ ,]+(?:[A-Za-z][A-Za-z'.\-]*|[ऀ-ॿ]+|[0-9]{1,3})){0,4}$")
+
+
+def _share_fn(values: Sequence[Any], fn: Any) -> float:
+    vals = [str(v).strip() for v in values if v is not None and str(v).strip()]
+    if not vals:
+        return 0.0
+    return sum(1 for v in vals if fn(v)) / float(len(vals))
 
 
 def classify_column(label: str, values: Sequence[Any]) -> str:
@@ -759,6 +800,14 @@ def classify_column(label: str, values: Sequence[Any]) -> str:
         ct = code_column_type(label, values)
         if ct:
             return ct
+    if lt in (VILLAGE, TEHSIL) and values:
+        # a "Town" / "City" column filled with known district names is the district column
+        try:
+            from .detect import is_district
+            if _share_fn(values[:500], is_district) >= 0.8:
+                return DISTRICT
+        except Exception:  # noqa: BLE001
+            pass
     vt = classify_values(values)
     if vt in (PHONE, AADHAAR) and lt in (OTHER_ID, ENC_ID, PATIENT_ID, INSURANCE):
         # a 10 / 12 digit number under a label that names a document, admission or registration number
@@ -961,6 +1010,10 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     # Address parts: address/line, address/text, address/street1.
     if owner == ADDRESS and lt in (OTHER, CLINICAL, FREE_TEXT) and not isinstance(value, (int, float)):
         return ADDRESS
+    # "residence": {"at_post": ...}: under an address parent a lettered value that is not a date is a place
+    if owner == ADDRESS and lt in (DATE, DOB, NAME, OTHER_ID) and isinstance(value, str) \
+            and re.search(r"[^\W\d_]", value) and vh not in (DATE, DOB, PHONE, EMAIL):
+        return VILLAGE
 
     # Generic keys ("category", "status", "form", "type") are clinical only under a clinical ancestor:
     # "category": "billing query" or "form": "surgical consent" at the top level are not.
