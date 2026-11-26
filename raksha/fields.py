@@ -52,11 +52,12 @@ CLINICAL = "clinical"
 FREE_TEXT = "free_text"
 OTHER_ID = "other_id"
 OTHER = "other"
+BANK = "bank_account"  # a bank account number: removed, never used for linking
 
 _PII = frozenset({
     NAME, FIRST_NAME, LAST_NAME, LOCAL_NAME, RELATIVE, PATIENT_ID, ENC_ID, PHONE, AADHAAR,
     ABHA, ABHA_ADDR, PAN, INSURANCE, EMAIL, ADDRESS, HOUSE, LOCALITY, VILLAGE, TEHSIL, PIN,
-    DOB, AGE, AGE_SEX,
+    DOB, AGE, AGE_SEX, BANK,
 })
 
 
@@ -115,7 +116,7 @@ def _tokens(label: str) -> Tuple[str, ...]:
 # Each stem is compared after _squash. Stems of length >= 5 tolerate small typos.
 _S = {
     "name": ("naav", "nav", "peyar", "per", "naw", "nam", "name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
-             "labharthi", "nme", "naem", "nmae"),
+             "labharthi", "nme", "naem", "nmae", "alias", "aka"),
     "patient": ("rogi", "mariz", "mareez", "ptnt", "pts", "patnt", "patient", "pt", "pat", "pnt", "patiant"),
     "first": ("fn", "pratham", "pehla", "fst", "frst", "first", "fname", "given", "forename", "firstname"),
     "last": ("sirname", "surnam", "kulnam", "kulnaam", "ln", "lst", "last", "lname", "surname", "family", "lastname", "upnam", "upnaam"),
@@ -159,7 +160,7 @@ _S = {
     "phone": ("sampark", "samprk", "sampark_no", "durbhash", "durabhash", "dural", "mobno", "mb", "phno", "cont", "cntct", "contct", "whtsapp", "mobileno", "fon", "cel", "mobno", "mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
               "callback", "whatsapp", "cell", "fone", "phon", "fon", "mno", "landline", "cellphone"),
     "address": ("niwas", "nivas", "niwasi", "nivasi", "patta", "vilasam", "thikana", "thikaana", "residance", "addrs", "adrs", "address", "addr", "adress", "addres", "pata", "street", "residence", "resi",
-                "residential", "adres", "pta"),
+                "residential", "adres", "pta", "mugavari", "mugavaree", "thikano"),
     "line": ("line", "line1", "line2"),
     "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
     "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
@@ -340,6 +341,12 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         if toks[0] in _WITNESS_WORDS and all(t in _WITNESS_WORDS or t == "name" or t.isdigit() for t in toks):
             return RELATIVE
 
+    # A bank account ("Bank A/c", "Account No", "A/C No", "Khata No"); an account holder's name is a name.
+    if not (h("name") or h("phone") or h("email")) and (
+            any(t in _BANK_WORDS for t in toks) or ("bank" in toks and any(t in ("ac", "no", "number") for t in toks))
+            or (("ac" in toks or "khata" in toks) and is_id)):
+        return BANK
+
     if "by" in toks[1:]:
         if h("doctor") or any(t in _BY_DOCTOR for t in toks):
             return DOCTOR
@@ -406,6 +413,9 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         return ENC_ID
     if h("other_id") and (is_id or len(toks) == 1) and not h("name"):
         return OTHER_ID
+    if len(toks) > 1 and _tok_is(toks[-1], "other_id") and not any(
+            h(g) for g in _OBJECT_NOT):
+        return OTHER_ID     # "claim_batch", "settled_utr", "kit_lot": the object's own number
     if h("uhid") or (h("patient") and is_id):
         return PATIENT_ID
     if h("hospital") and is_id:
@@ -448,9 +458,44 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
     return OTHER
 
 
+_BANK_WORDS = frozenset({"account", "acct", "accountno", "acno", "accno", "acctno", "khata", "khatano"})
+_OBJECT_NOT = ("name", "patient", "uhid", "idhost", "relative", "phone", "aadhaar", "abha", "pan", "insurance",
+               "email", "address", "house", "village", "locality", "dob", "age", "date", "doctor", "hospital")
+# the first segment of a dotted key ("insured.name", "proposer.relation") names the person the rest is about
+_PERSON_PREFIX = frozenset({"insured", "patient", "pt", "claimant", "beneficiary", "member", "applicant",
+                            "proposer", "nominee", "guardian", "attendant", "informant", "kin", "nok",
+                            "relative", "mother", "father", "spouse", "husband", "wife", "policyholder"})
+_RELATIVE_PREFIX = frozenset({"proposer", "nominee", "guardian", "attendant", "informant", "kin", "nok",
+                              "relative", "mother", "father", "spouse", "husband", "wife"})
+_FACILITY_PREFIX = frozenset({"hospital", "facility", "clinic", "provider", "lab", "laboratory", "centre",
+                              "center", "institution", "org", "organisation", "organization", "site"})
+_NAME_TYPES = frozenset({NAME, FIRST_NAME, LAST_NAME, LOCAL_NAME})
+_DOTTED = re.compile(r"^[A-Za-z][A-Za-z_]*(?:\.[A-Za-z0-9_]+)+$")
+
+
 def classify_label(label: str) -> str:
-    """Type of a slot from its label alone. OTHER when unsure."""
-    return _label_type(_tokens(str(label or "")))
+    """Type of a slot from its label alone. OTHER when unsure.
+
+    A dotted key whose first segment names a private person ("insured.house", "proposer.name",
+    "patient.addr.village") is typed by its last segment (a trailing number is skipped); the person
+    prefix is context only: a proposer's / nominee's name is a relative, never an insurance id."""
+    s = str(label or "")
+    t = _label_type(_tokens(s))
+    st = s.strip()
+    if "." in st and _DOTTED.match(st):
+        segs = st.split(".")
+        head = segs[0].lower()
+        if head in _FACILITY_PREFIX and t in (PATIENT_ID, INSURANCE, PHONE, ENC_ID):
+            return OTHER_ID     # "hospital.rohini_id", "facility.phone": the institution's own number
+        if head in _PERSON_PREFIX:
+            rest = [x for x in segs[1:] if not x.isdigit()]
+            if rest:
+                lt = _label_type(_tokens(rest[-1]))
+                if lt != OTHER:
+                    if lt in _NAME_TYPES and head in _RELATIVE_PREFIX:
+                        return RELATIVE
+                    return lt
+    return t
 
 
 # ---------------------------------------------------------------- value vote
