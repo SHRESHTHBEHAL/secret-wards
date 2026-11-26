@@ -29,7 +29,7 @@ from .pseudo import Keys, ShiftBook
 from .report import (
     build_report, file_entry, record_line, records_text, report_text, sort_records,
 )
-from .sanitize import Env, Sanitized, sanitize_file
+from .sanitize import DobWatch, Env, Sanitized, sanitize_file
 from .types import KIND_CSV, KIND_FHIR, KIND_JSON, KIND_QUARANTINE, ParsedFile, Record
 
 R_LEAK = "leak_gate"
@@ -316,40 +316,67 @@ def _run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any
               shifts=shifts)
 
     # 5-6. sanitize + leak gate
-    gate_hits = 0
-    for it in items:
-        if it.reason:
-            continue
+    def _san(it: _Item) -> int:
+        hits = 0
         if fb is None:
             _quarantine(it, R_INTERNAL)
-            continue
+            return 0
         try:
             res = sanitize_file(it.pf, env)
         except Exception as exc:  # noqa: BLE001
             err("sanitize", exc)
             _quarantine(it, R_INTERNAL)
-            continue
+            return 0
         try:
             content, n = gate_content(res.content, it.pf.kind, it.pf.delimiter or ",", fb)
-            gate_hits += n
+            hits += n
             out_rel = res.out_rel
             if gate.scan(out_rel, fb):
                 out_rel, n = gate.clean(out_rel, fb, keys.opaque(it.pf.sha256 or it.rel), keep="/.")
-                gate_hits += n
+                hits += n
                 if gate.scan(out_rel, fb):
                     content = None
         except Exception as exc:  # noqa: BLE001
             err("gate", exc)
             _quarantine(it, R_INTERNAL)
-            continue
+            return 0
         if content is None:
             _quarantine(it, R_LEAK)
-            continue
+            return 0
         if not _safe_rel(out_rel):
             _quarantine(it, R_INTERNAL)
-            continue
+            return 0
         it.result = dataclasses.replace(res, content=content)
         it.out_rel = out_rel
+        return hits
+
+    try:
+        env.dob_watch = DobWatch([r.facts.dob for r in all_records])
+    except Exception as exc:  # noqa: BLE001
+        err("shifts", exc)
+    item_hits = {}  # type: Dict[int, int]
+    for i, it in enumerate(items):
+        if not it.reason:
+            item_hits[i] = _san(it)
+    # a shifted date that equals someone's DOB reads as a DOB leak: move that key a day on, redo its files
+    w = env.dob_watch
+    for _ in range(8):
+        if w is None or not w.hit or shifts is None:
+            break
+        hit = sorted(w.hit)
+        w.hit = set()
+        redo_rel, redo_sha = set(), set()  # type: Set[str], Set[str]
+        for k in hit:
+            shifts.bump(k)
+            if k in book:
+                redo_rel.update(rel for rel, _loc in book[k].records)
+            elif k.startswith("rec:"):
+                redo_sha.add(k.split(":", 2)[1])
+        for i, it in enumerate(items):
+            if not it.reason and it.result is not None and (it.rel in redo_rel or it.pf.sha256 in redo_sha):
+                it.result = None
+                item_hits[i] = _san(it)
+    gate_hits = sum(item_hits[i] for i in sorted(item_hits))
 
     # 7. resolve output path collisions (case-insensitive file systems included)
     used = set()  # type: Set[str]
