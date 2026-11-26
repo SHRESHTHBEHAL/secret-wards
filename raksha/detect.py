@@ -1284,12 +1284,22 @@ def _layer_path_names(cx: _Ctx) -> None:
 
 
 _RO_MARK = re.compile(r"(?<![A-Za-z])r/o(?![A-Za-z])", re.I)
-_RO_NEXT = re.compile(r"[ \t]*[:\-]?[ \t]*\??[ \t]*([A-Za-z][A-Za-z\-']*)(?:[ \t]+([A-Za-z][A-Za-z\-']*))?")
+_RO_NEXT = re.compile(r"[ \t]*[:\-]?[ \t]*\??[ \t]*([A-Za-z][A-Za-z\-']*)(?:[ \t]+([A-Za-z][A-Za-z\-']*))?"
+                      r"(?:[ \t]+([A-Za-z][A-Za-z\-']*))?")
+# a lower-case word with a disease / procedure ending ("pneumothorax", "nephrolithiasis") reads as a diagnosis
+_RO_MED_END = re.compile(r"[a-z]{3,}(?:itis|osis|iasis|oma|aemia|emia|thorax|pathy|algia|ectomy|otomy|ostomy|plasty|"
+                         r"scopy|sclerosis|plegia|penia|ampsia|rrhoea|rrhea|uria|cele)$")
+# the first lower-case word after "r/o" that starts a place, never a diagnosis
+_RO_PLACE_LOW = _ws("""
+village vill gram gaon gaanv gaon gali mohalla ward house h.no hno plot flat sector block near opp opposite behind
+post po tehsil teh taluka distt district dist nagar colony basti tola para pada chawl lane road street at in
+""")
 _RO_CLIN_EXTRA = _ws("""
 acs mi stemi nstemi cva tia dvt pe uti ari urti lrti copd ckd aki dka hhs tb ptb gerd ibs sle ra ectopic
 infection infective obstruction perforation torsion abscess fracture malignancy carcinoma ca tumour tumor
 mass lesion bleed bleeding haemorrhage hemorrhage ischemia ischaemia pathology cause causes etiology
 any other secondary acute chronic viral bacterial fungal enteric cardiac renal hepatic surgical
+envenomation dehiscence scar sepsis
 """)
 
 
@@ -1298,14 +1308,21 @@ def _ro_rule_out(t: str, pos: int) -> bool:
     m = _RO_NEXT.match(t, pos)
     if not m:
         return False
-    for w in (m.group(1), m.group(2)):
+    for n, w in enumerate((m.group(1), m.group(2), m.group(3))):
         if not w:
             continue
         lw = w.lower()
+        if n == 2 and not m.group(1)[:1].islower():
+            return False
         if lw in lexicon.CLINICAL_WORDS or lw in lexicon.COMPLAINT_WORDS or lw in _RO_CLIN_EXTRA:
             return True
         if w[:1].isupper():
             return False
+        if n == 0 and lw in _RO_PLACE_LOW:
+            return False
+        # "r/o mesial temporal sclerosis", "r/o pneumothorax": a lower-case run ending in a disease word
+        if _RO_MED_END.search(lw.split("-")[-1]):
+            return True
     return False
 
 
@@ -1603,7 +1620,8 @@ _PT_PART = re.compile(r"[ \t]*(?:Pt|Part|Ward[ \t]*No)\.?[ \t]*[\-:]?[ \t]*(?:[0
 _PT_POST_TYPES = (r"(?:House(?=[ \t]*,)|Tola|Nagar|Colony|Basti|Pada|Wadi|Para|Patti|Khurd|Kalan|Buzurg|Gali|Chawl|Leikai|Veng|"
                   r"Mohalla|Gaon|Village)")
 _PT_POST = re.compile(r"(?<![A-Za-z])((?:[A-Za-z][a-z]+[ \t]+){1,2})(" + _PT_POST_TYPES + r")(?![A-Za-z])", re.I)
-_DEV_PRE = re.compile(r"(?<![ऀ-ॿ])(?:ग्राम|गाँव|गांव|गाव|टोला|मौजा|डाकघर|मोहल्ला|रा\.|पो\.|पोस्ट)[ \t]*[:\-]?[ \t]*")
+# the marker is a whole word: "ग्रामीण" (rural, as in "<X> ग्रामीण रुग्णालय") is not "ग्राम" (village)
+_DEV_PRE = re.compile(r"(?<![ऀ-ॿ])(?:(?:ग्राम|गाँव|गांव|गाव|टोला|मौजा|डाकघर|मोहल्ला|पोस्ट)(?![ऀ-ॿ])|रा\.|पो\.)[ \t]*[:\-]?[ \t]*")
 _DEV_STOP = _ws("""
 के का की में से को ने पर तक और व एवं तहसील ता. ता जिला ज़िला जनपद थाना प्रखंड ब्लॉक पोस्ट पिन मकान गली
 नामक निवासी रहने रहते रहती वाले वाली है हैं था थी
