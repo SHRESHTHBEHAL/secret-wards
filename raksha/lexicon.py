@@ -236,3 +236,17 @@ canacona mormugao dharashiv shillong
 संबलपुर सारण सतना सीहोर शाहजहांपुर सीतापुर सीवान सोनभद्र सुल्तानपुर उदयपुर उज्जैन उन्नाव वाराणसी
 विदिशा साहिबगंज सिमडेगा पाकुड़ गोड्डा जामताड़ा गढ़वा लातेहार पश्चिमी पूर्वी सिंहभूम जुन्नर पुणे नाशिक
 """)
+# more districts (J&K, Ladakh, the North-East, Jharkhand, Odisha, Tamil Nadu, Bengal, Punjab) and the
+# multi-word names, matched as whole phrases
+DISTRICTS = DISTRICTS | _words("""
+bandipora kulgam ramban poonch budgam kargil wokha phek kiphire longleng peren noklak chumoukedima niuland
+shamator tseminyu latehar sahebganj pakur seraikela boudh malkangiri sonepur deogarh mayiladuthurai tiruvarur
+tenkasi krishnagiri kallakurichi ranipet tirupattur chengalpattu jhargram alipurduar coochbehar kalimpong
+fazilka mansa muktsar mohali nawanshahr malerkotla berhampur brahmapur rourkela bhubaneswar majuli biswanath
+charaideo hojai sribhumi champhai saitual khawzawl hnahthial siaha churachandpur chandel tamenglong thoubal
+bishnupur kakching jiribam kangpokpi noney pherzawl tengnoupal kamjong
+""") | frozenset({"tarn taran", "dima hasao", "karbi anglong", "west karbi anglong", "cooch behar",
+                 "sri muktsar sahib", "fatehgarh sahib", "purba medinipur", "paschim medinipur", "purba bardhaman",
+                 "paschim bardhaman", "uttar dinajpur", "dakshin dinajpur", "east khasi hills", "west khasi hills",
+                 "west garo hills", "east garo hills", "south garo hills", "lower subansiri", "upper subansiri"})
+
