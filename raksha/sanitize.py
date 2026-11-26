@@ -331,9 +331,6 @@ def _is_known_name(surface: str, ctx: _Ctx) -> bool:
     return False
 
 
-_AGE_SEX_LOWER = re.compile(
-    r"(?<![0-9\-])([0-9]{1,3})(\s*(?:yrs?|years?)\.?(?=\s*[,/]\s*(?:male|female|m|f)(?![A-Za-z])))", re.I)
-_ASHA_ROLE = re.compile(r"\s*(?:worker|didi|karyakarta|bahu|sahyogini|sevika)\b", re.I)
 _WORD = re.compile(r"[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+")
 
 
@@ -433,8 +430,6 @@ def _gap(text: str, ctx: _Ctx, dates_on: bool, ages_on: bool) -> str:
     if ages_on and ctx.do_shift:
         try:
             out = dates.band_age_text(out, ctx.width, ctx.top)
-            out = _AGE_SEX_LOWER.sub(lambda m: dates.age_band(int(m.group(1)), ctx.width, ctx.top)
-                                     + m.group(2), out)
         except Exception:  # noqa: BLE001
             pass
     if out != text:
@@ -477,8 +472,6 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
     for sp in keep:
         surf = text[sp.start:sp.end]
         k = sp.kind
-        if k in NAME_KINDS and surf == "ASHA" and _ASHA_ROLE.match(text, sp.end):
-            continue  # the community health worker, not a person's name
         if k == "PATIENT_NAME":
             if sp is psn_name:
                 r = ctx.psn or "[NAME]"
