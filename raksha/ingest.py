@@ -280,9 +280,41 @@ def _load_json(rel: str, sha: str, text: str) -> ParsedFile:
         # NaN / Infinity are not JSON: keep them as text so the export stays valid JSON
         data = json.loads(text, strict=False, parse_constant=lambda c: c)
     except (ValueError, RecursionError):
-        return _quarantine(rel, sha, R_JSON)
+        data = _ndjson(text)
+        if data is None:
+            return _quarantine(rel, sha, R_JSON)
+        return ParsedFile(rel=rel, sha256=sha, kind=KIND_JSON, text=text, data=data)
     kind = KIND_FHIR if isinstance(data, dict) and data.get("resourceType") == "Bundle" else KIND_JSON
     return ParsedFile(rel=rel, sha256=sha, kind=kind, text=text, data=data)
+
+
+def _ndjson(text: str) -> Optional[List[Any]]:
+    """JSON Lines / NDJSON: every non-blank line is one JSON object or array (two lines at least).
+    Returned as a list (one element per line); None when any line does not parse."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    out = []  # type: List[Any]
+    for ln in lines:
+        s = ln.strip()
+        if s[:1] not in ("{", "["):
+            return None
+        try:
+            out.append(json.loads(s, strict=False, parse_constant=lambda c: c))
+        except (ValueError, RecursionError):
+            return None
+    return out
+
+
+def is_ndjson(pf: ParsedFile) -> bool:
+    """A JSON-kind file whose text is JSON Lines (its export is written back one value per line)."""
+    if pf.kind != KIND_JSON or not isinstance(pf.data, list) or not pf.text:
+        return False
+    try:
+        json.loads(pf.text, strict=False, parse_constant=lambda c: c)
+        return False
+    except (ValueError, RecursionError):
+        return True
 
 
 def _load_inner(path: Path, rel: str, sha: str, raw: bytes) -> ParsedFile:
