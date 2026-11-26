@@ -438,3 +438,120 @@ class ReportHashesUntouched(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _fhir(entries) -> str:
+    return json.dumps({"resourceType": "Bundle", "type": "collection", "entry": entries})
+
+
+class HostileSweep(Base):
+    """Shapes the newer layers (header layout, key-indexed JSON, pipe tables, linking) must survive."""
+
+    def one(self, files: Dict[str, object], forbidden: Tuple[str, ...] = IDS) -> Dict:
+        for rel, v in files.items():
+            p = self.inp / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(v, bytes):
+                p.write_bytes(v)
+            else:
+                p.write_text(str(v), encoding="utf-8")
+        return self.check_run(n_files=len(regular_files(self.inp)), forbidden=forbidden)
+
+    def test_csv_shapes(self):
+        n, ph, uh, dob = PEOPLE[0]
+        self.one({
+            "header_only.csv": "patient_id,name,phone,dob\n",
+            "one_row.csv": "patient_id,name,phone,dob\n%s,%s,%s,%s\n" % (uh, n, ph, dob),
+            "two_headers.csv": "Ward register,,,\npatient_id,name,phone,dob\n",
+            "headerless_one.csv": "%s,%s,%s\n" % (uh, n, ph),
+            "ragged.psv": "a|b\n%s|%s|%s\nx\n1|2|3|4|5|6\n|||\n" % (uh, n, ph),
+            "empty_header.csv": ",,,\n%s,%s,%s,%s\n" % (uh, n, ph, dob),
+            "title_only.tsv": "OPD register - ward 7\n",
+        })
+
+    def test_json_shapes(self):
+        (n0, p0, u0, _), (n1, p1, u1, _), (n2, p2, u2, _) = PEOPLE
+        self.one({
+            "by_id_scalar.json": json.dumps({u0: n0, u1: p1}),
+            "by_id_list.json": json.dumps({u0: [n0, p0], u1: []}),
+            "by_id_null.json": json.dumps({u0: None, u1: None}),
+            "by_id_mixed.json": json.dumps({u0: {"name": n0, "phone": p0}, u1: [n1], u2: None, "k": 5}),
+            "mixed_array.json": json.dumps([{"name": n2, "phone": p2, "uhid": u2}, 7, "x", None, [1, 2]]),
+        })
+
+    def test_fhir_shapes(self):
+        n, ph, uh, dob = PEOPLE[1]
+        given, family = n.split()
+        pat = {"resourceType": "Patient", "id": "p1", "birthDate": dob,
+               "identifier": [{"value": uh}], "telecom": [{"system": "phone", "value": ph}],
+               "name": [{"given": [given], "family": family}]}
+        self.one({
+            "no_entries.json": json.dumps({"resourceType": "Bundle", "type": "collection"}),
+            "empty_entries.json": _fhir([]),
+            "no_resource.json": _fhir([{"fullUrl": "urn:uuid:1"}, {"resource": None}, 3]),
+            "no_name.json": _fhir([{"resource": {"resourceType": "Patient", "id": "p9", "birthDate": dob,
+                                                 "telecom": [{"system": "phone", "value": ph}]}}]),
+            "refs.json": _fhir([{"resource": pat},
+                                {"resource": {"resourceType": "Encounter", "id": "e1",
+                                              "subject": {"reference": "Encounter/e1"},
+                                              "partOf": {"reference": "Encounter/e1"}}},
+                                {"resource": {"resourceType": "Observation", "id": "o1",
+                                              "subject": {"reference": "Patient/missing"},
+                                              "valueString": "Hb 11.2 g/dL"}}]),
+            "two_patients.json": _fhir([{"resource": pat},
+                                        {"resource": {"resourceType": "Patient", "id": "p2",
+                                                      "name": [{"text": PEOPLE[2][0]}],
+                                                      "telecom": [{"value": PEOPLE[2][1]}]}}]),
+        })
+
+    def test_text_shapes(self):
+        n, ph, uh, _ = PEOPLE[0]
+        rows = "\n".join("| %d | %s | Hb 1%d.%d g/dL |" % (k, uh if k == 7 else "bed %d" % k, k % 6, k % 10)
+                         for k in range(5000))
+        self.one({
+            "one_line.txt": ("Patient %s phone %s. " % (n, ph)) + ("BP 120/80 stable. " * 110000),
+            "many_lines.txt": "\n".join("t%d BP 1%02d/80" % (k, k % 90) for k in range(50000)),
+            "pipe_table.txt": "| no | id | lab |\n|---|---|---|\n" + rows + "\n",
+        })
+
+    def test_placeholders_and_names(self):
+        n, ph, uh, dob = PEOPLE[2]
+        self.one({
+            "ph.csv": "[NAME],[PHONE],name\n[NAME],[PHONE],[NAME]\nPSN-ABCDEFGHJK,[PHONE],%s\n" % n,
+            "ph.json": json.dumps({"[NAME]": {"[PHONE]": "PSN-ABCDEFGHJK"}, "patient": {"name": "[NAME]"}}),
+            "ph.txt": "Patient: [NAME] (PSN-ABCDEFGHJK), phone [PHONE], DOB [DOB]\n",
+            ("%s %s.txt" % (n, ph)): note(PEOPLE[2]),
+            "Javesh_Pundhir.csv": reg_csv(),
+            "Javesh Pundhir.csv": reg_csv(),
+            "/".join("d%d" % k for k in range(40)) + "/deep.txt": note(PEOPLE[1]),
+        })
+
+    def test_nonsense_age_is_neutral(self):
+        rows = ["patient_id,name,age,diagnosis"]
+        for k, (n, _ph, uh, _d) in enumerate(PEOPLE):
+            rows.append("%s,%s,%s,fever" % (uh, n, ["-5", "130", "-0"][k]))
+        self.one({"ages.csv": "\n".join(rows) + "\n"})
+        out = "".join(p.read_text(encoding="utf-8") for p in regular_files(self.out / "sanitized"))
+        self.assertIn("[AGE]", out)
+        self.assertNotRegex(out, r"(?<![0-9])-[0-9]+-[0-9]")
+        self.assertNotIn("130", out)
+
+
+class DobCollision(unittest.TestCase):
+    def test_watch_flags_shifted_date_on_a_dob(self):
+        import datetime as dt
+        sys.path.insert(0, str(REPO))
+        from raksha.pseudo import Keys, ShiftBook
+        from raksha.sanitize import DobWatch
+        book = ShiftBook(Keys(b"k"), ["p1", "p2"], 180, 30)
+        s = book.get("p1")
+
+        class C:
+            skey, shift = "p1", s
+        w = DobWatch([dt.date(2026, 3, 12) + dt.timedelta(days=s), None])
+        w.check(C, "seen 12/03/2026", "x", "dmy")
+        self.assertEqual(w.hit, {"p1"})
+        self.assertEqual(abs(book.bump("p1")), abs(s) + 1)
+        w.hit.clear()
+        w.check(C, "seen 12/03/2026", "seen 12/03/2026", "dmy")   # unchanged text: nothing shifted
+        self.assertEqual(w.hit, set())
