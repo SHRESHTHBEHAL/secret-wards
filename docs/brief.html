@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>404FoundUs · Raksha · Project Brief</title>
+<style>
+@page { size: A4; margin: 11mm 12mm; }
+* { box-sizing: border-box; }
+body { font: 10pt/1.32 "Helvetica Neue", Arial, sans-serif; color: #15202b; margin: 0; }
+h1 { font-size: 15pt; margin: 0 0 1mm; }
+h2 { font-size: 11pt; margin: 3.2mm 0 1.2mm; color: #0f5c78; border-bottom: 0.6pt solid #c9d6de; padding-bottom: 0.6mm; }
+p { margin: 0 0 1.6mm; }
+ul { margin: 0 0 1.6mm; padding-left: 4.5mm; }
+li { margin: 0 0 0.7mm; }
+.meta { color: #4a5a68; margin-bottom: 1.8mm; }
+.pitch { background: #eef5f8; border-left: 2.5pt solid #0f6c8c; padding: 1.6mm 2.4mm; margin: 0 0 1mm; }
+table { border-collapse: collapse; width: 100%; margin: 0.5mm 0 1.6mm; }
+th, td { border: 0.5pt solid #c9d6de; padding: 0.7mm 1.4mm; text-align: left; vertical-align: top; }
+th { background: #f1f5f8; font-weight: 600; }
+td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+code { font: 9.5pt "SFMono-Regular", Menlo, monospace; background: #f3f5f7; padding: 0 0.6mm; }
+.flow { display: flex; align-items: stretch; gap: 1mm; margin: 1mm 0 1.4mm; }
+.box { flex: 1; border: 0.7pt solid #0f6c8c; border-radius: 1.4mm; padding: 1.1mm 1.2mm; font-size: 8.6pt; line-height: 1.22; background: #fbfdfe; }
+.box b { display: block; font-size: 9pt; color: #0f5c78; margin-bottom: 0.4mm; }
+.arr { align-self: center; color: #0f6c8c; font-size: 11pt; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+.page2 { break-before: page; }
+.small { font-size: 9pt; color: #4a5a68; }
+</style></head><body>
+
+<h1>404FoundUs · Raksha: a measured privacy firewall for Indian hospital records</h1>
+<div class="meta"><b>Track 3 · Secret Wards</b> · Members: Shreshth Behal, Harman Manik ·
+Repo: github.com/SHRESHTHBEHAL/secret-wards</div>
+<div class="pitch"><b>Pitch.</b> Raksha learns every identity from every file first, then scrubs it from every channel,
+in 11 Indian scripts, keeps each medical value exact, links patients with keyed pseudonyms that never merge namesakes,
+and tunes its privacy policy against a replica of the published attacker rather than by guesswork.</div>
+
+<h2>1. In one paragraph</h2>
+<p>A plain PII tool looks for names in one document at a time and in one script. Raksha works on the whole dump:
+a first pass harvests identity facts (names, relatives, IDs, phones, addresses) from all 4 hospitals' CSV, JSON, FHIR
+and notes; a linker turns them into patients; a privacy planner decides each patient's age band, geography and date
+shift; only then is anything written. Because every detector runs on a script-folded copy of the text, the same rules
+read Hindi, Hinglish, Bengali, Punjabi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam and Urdu, and a final leak
+gate re-checks every output channel (content, file names, JSON keys, CSV headers, base64, the report itself) against
+everything learned anywhere. Standard library only: no LLMs, no models, offline, CPU.</p>
+
+<h2>2. Architecture</h2>
+<div class="flow">
+ <div class="box"><b>1 Ingest</b>content sniffing, UTF-8/16/cp1252, quarantine with reason code</div><div class="arr">▸</div>
+ <div class="box"><b>2 Harvest</b>identity facts from every file, typed fields + free text</div><div class="arr">▸</div>
+ <div class="box"><b>3 Link</b>blocking, phonetic keys, rules, cannot-link groups</div><div class="arr">▸</div>
+ <div class="box"><b>4 Pseudonyms</b>HMAC-SHA256 subkeys of <code>RAKSHA_SECRET</code></div><div class="arr">▸</div>
+ <div class="box"><b>5 Privacy plan</b>per-patient band, small-cell geo, collision-free shift</div><div class="arr">▸</div>
+ <div class="box"><b>6 Sanitize</b>format-preserving CSV / JSON / FHIR R4 / text, renames</div><div class="arr">▸</div>
+ <div class="box"><b>7 Leak gate</b>scan all outputs; leftover leak ⇒ quarantine</div>
+</div>
+<p class="small">Outputs: <code>sanitized/</code> (same paths and formats), <code>report.json</code> (SHA-256 per input,
+true counts, timing, memory), <code>records.jsonl</code> (record → pseudonym, null when unsure).</p>
+
+<h2>3. How it works</h2>
+<ul>
+<li><b>Ingestion.</b> Format from content, not extension; UTF-8, BOM, UTF-16 with or without BOM, cp1252; large base64
+fields, NaN and blank header lines handled. Truncated, empty, binary, PDF, XML, over-deep JSON and escaping symlinks are
+quarantined and never copied.</li>
+<li><b>Detection.</b> Field typing by word stems and value shapes (an unlabelled, near-unique, ID-shaped column is an
+identifier). Layered free-text rules: Aadhaar (Verhoeff), ABHA, PAN, UHID/IPD/OPD, phones in any format and digit
+script; labels, kinship anchors (S/o, W/o, पति, ਪਤੀ, తండ్రి), honorifics (ji, sahab, garu); addresses and place
+phrases ("ghar X mein hai"); names in export paths. <b>Protected clinical spans</b> (doses, <code>1-0-1</code>, vitals,
+labs, eponyms, doctor lines, wards) resolve the meaning traps: C/O fever stays, C/O Ramesh goes, Dr. Ramesh stays.</li>
+<li><b>Multi-script.</b> Brahmic Unicode blocks share Devanagari's layout at a fixed offset, so text is folded onto
+Devanagari one code point for one (Urdu by a phonetic table). Spans on folded text index the original exactly.</li>
+<li><b>Linkage &amp; pseudonyms.</b> Phonetic name keys (aspirates, vowel length, w/v, Mohammad/Md) with bounded edit
+distance; rules from strong IDs down to name + DOB / relative / village + age; cannot-link on gender, DOB, Aadhaar,
+ABHA, PAN, birth year checked on whole groups, so chains never over-merge; weak evidence gives <code>null</code>.
+<code>PSN-</code> IDs are HMAC-SHA256 under a derived subkey and never contain the patient's own ID digits.</li>
+<li><b>Privacy layer.</b> DOB removed; one 10-year band per patient; district and PIN prefix only in cells of ≥ 3
+patients; per-patient shifts of 30-180 days with no two patients on one offset; FHIR meta dates shifted too.</li>
+</ul>
+
+<div class="page2"></div>
+<h2>4. USP</h2>
+<ul>
+<li><b>Learn once, scrub everywhere.</b> An ID seen in a registration CSV is removed from a nurse's note, a file name, a
+JSON key and a base64 attachment in another hospital's export.</li>
+<li><b>11 scripts from one rule set</b>, by length-preserving script folding: on native-script clinical notes PII leaks
+fell from 22/32 to 0/32 with every dose and doctor kept, and practice output stayed byte-identical.</li>
+<li><b>Measured privacy.</b> A replica of the published attacker (A1-A7) chose every policy number below; collision-free
+shifts remove the attacker's global-shift recovery outright.</li>
+</ul>
+
+<h2>5. Privacy-utility trade-off (measured)</h2>
+<div class="two">
+<table>
+<tr><th>Practice data</th><th>Value</th></tr>
+<tr><td>Personal data leaked (overall / Hindi / Hinglish)</td><td class="n">0.0% / 0.0% / 0.0%</td></tr>
+<tr><td>Hidden channels (file name, key, header, metadata, base64)</td><td class="n">0.0%</td></tr>
+<tr><td>Canaries in output</td><td class="n">0 / 4</td></tr>
+<tr><td>Medical values kept</td><td class="n">98.5%</td></tr>
+<tr><td>Linking precision / recall / F0.5</td><td class="n">1.00 / 1.00 / 1.00</td></tr>
+<tr><td>Records unique in the voter registry</td><td class="n">0.4% (raw 60.8%)</td></tr>
+<tr><td>Replica attacker combined risk (resistance)</td><td class="n">11.7% (0.88)</td></tr>
+<tr><td>Run time / peak memory, 200 files</td><td class="n">1.6 s / 34 MB</td></tr>
+</table>
+<table>
+<tr><th>Policy decision</th><th>Privacy</th><th>Cost</th></tr>
+<tr><td>Remove DOB</td><td class="n">0.61→0.72</td><td>DOB detail</td></tr>
+<tr><td>10-year band per patient</td><td class="n">0.72→0.77</td><td>age detail</td></tr>
+<tr><td>Geo only in cells ≥ 3</td><td class="n">0.77→0.87</td><td>1.5% probes</td></tr>
+<tr><td>Shift FHIR meta dates</td><td class="n">A7 2.7%→0%</td><td>none</td></tr>
+<tr><td>Collision-free shifts</td><td>no global shift</td><td>none</td></tr>
+<tr><td>Generalise rare diagnoses</td><td class="n">+0.01 only</td><td>23% of dx: <b>rejected</b></td></tr>
+</table>
+</div>
+<p><b>On data we did not tune on</b> (renamed columns, new names and villages, new ID and date formats, new scripts):
+five held-out sets (two fresh synthetic datasets, three "chaos" rewrites of the practice set) all leak 0.0% with
+linking F0.5 1.00 and 98.5-99.5% of medical values kept. On a composite of the published scoring formulas Raksha scores
+98.2-98.4; as a ceiling reference, a frontier LLM doing the same job by hand (forbidden by the rules) scored 94.5 in 342 s
+and is not deterministic.</p>
+<p><b>Why these settings.</b> Exact doses, labs and stay lengths are the research value, so they are never touched; we
+pay instead with age and geography detail, and only where the measured cell is small. Rare diagnoses stay: removing them
+bought almost no privacy for a large clinical loss.</p>
+
+<h2>6. Security design</h2>
+<ul>
+<li><b>No data at rest outside the release:</b> all intermediate data lives in memory; no temp files, caches or logs
+(a test runs with empty <code>TMPDIR</code>/<code>HOME</code> and asserts they stay empty).</li>
+<li><b>Keys away from data:</b> <code>RAKSHA_SECRET</code> comes from the environment, is expanded into HMAC subkeys and
+is never written; the key object hides its value and refuses to be pickled.</li>
+<li><b>PII-free logs and errors:</b> stderr carries only the exception class and stage. A crash still writes a valid
+report; quarantined files appear only as SHA-256 + reason code.</li>
+<li><b>Assume breach:</b> the release is designed to be safe to leak, and releases under different secrets cannot be
+linked (cross-release risk 0%).</li>
+</ul>
+
+<h2>7. Known limitations</h2>
+<ul>
+<li>The targeted attack still succeeds for about 43% of known-fact targets: rare diagnoses and exact stay lengths remain
+by design. Next step: coarsen only the few profiles the replica attacker still re-identifies.</li>
+<li>Tamil lacks voiced consonants and Urdu omits short vowels, so a few cross-script names key differently; linking
+then abstains rather than guesses.</li>
+<li>A capitalised phrase after "near" can be taken for a person ("near Optic Disc"): a small over-redaction.</li>
+<li>10-year bands are coarser than some studies want; it is one line in <code>config/policy.yaml</code>.</li>
+</ul>
+</body></html>
