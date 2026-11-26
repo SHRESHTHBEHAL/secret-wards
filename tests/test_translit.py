@@ -117,3 +117,24 @@ class TestSame(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DistanceBackendTest(unittest.TestCase):
+    def test_rapidfuzz_backend_matches_pure_python(self):
+        import random
+        from raksha import fields, translit
+        try:
+            from rapidfuzz.distance import OSA, Levenshtein
+        except ImportError:
+            self.skipTest("rapidfuzz not installed")
+        r = random.Random(3)
+        for _ in range(3000):
+            a = "".join(r.choice("aeiounrstkm") for _ in range(r.randint(0, 8)))
+            b = "".join(r.choice("aeiounrstkm") for _ in range(r.randint(0, 8)))
+            for cap in (1, 2):
+                saved = translit._RF_LEVENSHTEIN, fields._RF_OSA
+                translit._RF_LEVENSHTEIN = fields._RF_OSA = None
+                py = (translit._edit_distance(a, b, cap) <= cap, fields._osa(a, b, cap) <= cap)
+                translit._RF_LEVENSHTEIN, fields._RF_OSA = saved
+                self.assertEqual(py, (Levenshtein.distance(a, b, score_cutoff=cap) <= cap,
+                                      OSA.distance(a, b, score_cutoff=cap) <= cap))

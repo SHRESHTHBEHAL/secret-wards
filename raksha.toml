@@ -1,5 +1,5 @@
 [submission]
 name  = "404FoundUs"
-# Standard library only: requirements.txt lists no packages, so this installs nothing and exits 0.
+# requirements.txt lists one optional accelerator (rapidfuzz); the pipeline runs on the standard library alone.
 setup = "python -m pip install --disable-pip-version-check -q -r requirements.txt"   # run once, internet allowed
 run   = "python main.py --input {input} --output {output}"                            # run with NO internet

@@ -209,7 +209,16 @@ def name_key(token: str) -> str:
     return t
 
 
+try:   # optional C++ backend: same capped Levenshtein distance, much faster (stdlib fallback below)
+    from rapidfuzz.distance import Levenshtein as _RF_LEVENSHTEIN
+except Exception:  # noqa: BLE001 - the pipeline never depends on it
+    _RF_LEVENSHTEIN = None
+
+
 def _edit_distance(a: str, b: str, cap: int) -> int:
+    """Levenshtein distance of two name keys, or cap + 1 once it exceeds cap (fuzzy name matching)."""
+    if _RF_LEVENSHTEIN is not None:
+        return _RF_LEVENSHTEIN.distance(a, b, score_cutoff=cap)
     if abs(len(a) - len(b)) > cap:
         return cap + 1
     prev = list(range(len(b) + 1))

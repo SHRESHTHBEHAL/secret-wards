@@ -39,7 +39,7 @@ and notes; a linker turns them into patients; a privacy planner decides each pat
 shift; only then is anything written. Because every detector runs on a script-folded copy of the text, the same rules
 read Hindi, Hinglish, Bengali, Punjabi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam and Urdu, and a final leak
 gate re-checks every output channel (content, file names, JSON keys, CSV headers, base64, the report itself) against
-everything learned anywhere. Standard library only: no LLMs, no models, offline, CPU.</p>
+everything learned anywhere. No LLMs, no models, offline, CPU; standard library plus optional <code>rapidfuzz</code>.</p>
 
 <h2>2. Architecture</h2>
 <div class="flow">
@@ -96,7 +96,8 @@ shifts remove the attacker's global-shift recovery outright.</li>
 <tr><td>Linking precision / recall / F0.5</td><td class="n">1.00 / 1.00 / 1.00</td></tr>
 <tr><td>Records unique in the voter registry</td><td class="n">0.4% (raw 60.8%)</td></tr>
 <tr><td>Replica attacker combined risk (resistance)</td><td class="n">11.7% (0.88)</td></tr>
-<tr><td>Run time / peak memory, 200 files</td><td class="n">1.6 s / 34 MB</td></tr>
+<tr><td>Run time / peak memory, 200 files</td><td class="n">1.7 s / 34 MB</td></tr>
+<tr><td>5,000 files (25× replica), growth exponent</td><td class="n">45 s / 221 MB, 1.0</td></tr>
 </table>
 <table>
 <tr><th>Policy decision</th><th>Privacy</th><th>Cost</th></tr>

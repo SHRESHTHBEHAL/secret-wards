@@ -212,8 +212,16 @@ def _segment(t: str) -> Tuple[str, ...]:
     return best[n] if best[n] is not None and len(best[n]) > 1 else (t,)
 
 
+try:   # optional C++ backend: same capped OSA distance (stdlib fallback below)
+    from rapidfuzz.distance import OSA as _RF_OSA
+except Exception:  # noqa: BLE001
+    _RF_OSA = None
+
+
 def _osa(a: str, b: str, cap: int) -> int:
     """Optimal string alignment distance (transposition counts 1), capped."""
+    if _RF_OSA is not None:
+        return _RF_OSA.distance(a, b, score_cutoff=cap)
     if abs(len(a) - len(b)) > cap:
         return cap + 1
     prev2: List[int] = []

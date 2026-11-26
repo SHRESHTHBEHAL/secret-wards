@@ -14,7 +14,8 @@ Devanagari Hindi, Hinglish and nine more Indian scripts) into a research release
 * generalises quasi-identifiers per patient so that a voter-roll attacker cannot single people out, and **measures**
   that with a replica of the published attacker.
 
-Offline, CPU-only, **Python standard library only**, no LLMs and no pretrained models.
+Offline, CPU-only, no LLMs and no pretrained models. Runs on the **Python standard library alone**; `rapidfuzz` is an optional
+C++ backend for the same fuzzy distances (byte-identical output with or without it).
 
 | Measured on the practice data | |
 |---|---|
@@ -23,13 +24,13 @@ Offline, CPU-only, **Python standard library only**, no LLMs and no pretrained m
 | Medical values kept | 98.5% |
 | Linking precision / recall / F0.5 | 1.00 / 1.00 / 1.00 (no wrong merges) |
 | Re-identification risk (replica attacker, A1-A7) | combined **11.7%** (resistance 0.88); record linkage 5.7% of raw, profile re-identification 10.4%; 0.4% of records unique in the registry (raw 60.8%) |
-| Run time / peak memory | 1.6 s / 34 MB for 200 files (limit: 15 min / 4 GB) |
+| Run time / peak memory | 1.7 s / 34 MB for 200 files; 45 s / 221 MB for 5,000 files (growth exponent 1.0; limit 15 min / 4 GB) |
 | On data we never tuned on | 0.0% leaked, F0.5 1.00 on five held-out sets (see [docs/BENCHMARK.md](docs/BENCHMARK.md)) |
 
 ## Setup and run
 
 ```bash
-python -m pip install -r requirements.txt     # installs nothing: standard library only (Python 3.9+)
+python -m pip install -r requirements.txt     # optional rapidfuzz; Python 3.9+ standard library otherwise
 RAKSHA_SECRET=<secret> python main.py --input <input dir> --output <empty output dir>
 ```
 
@@ -65,7 +66,7 @@ in a registration CSV is also removed from a nursing note, a file name or a base
 | Field typing | `raksha/fields.py` | CSV headers and JSON key paths typed by word stems (English, Hinglish, Hindi and the folded Indian scripts) plus value-shape voting; an untyped column whose values are ID-shaped and near-unique is treated as an identifier whatever its header says. |
 | Free-text detection | `raksha/detect.py`, `patterns.py`, `dates.py` | Layered rules: identifier recognisers (Aadhaar with Verhoeff checksum, ABHA, PAN, UHID / MRN / IPD / OPD, insurance, phones in every format and digit script), labels (`Name:`, `मरीज़ का नाम:`, `রোগীর নাম:` ...), kinship anchors (S/o, W/o, D/o, C/o, पति, ਪਤੀ, తండ్రి ...), honorifics (ji, sahab, didi, garu), address parsing, place phrases ("ghar X mein hai"), names in export paths. **Protected clinical spans** (doses, `1-0-1`, vitals, labs with units, eponyms such as Parkinson's, doctor lines, wards, ASHA) are never redacted, which resolves the meaning traps ("C/O fever" vs "C/O Ramesh", "Dr. Ramesh" vs relative Ramesh). |
 | Lexicons | `raksha/lexicon.py`, `scripts.py` | Clinical, complaint, kinship, honorific, title and address-cue word lists in every supported script. No patient names are hard-coded. |
-| Transliteration and phonetic keys | `raksha/translit.py` | Devanagari -> Latin with schwa handling, then a **phonetic key** per name token (aspirates, vowel length, w/v, z/j, q/k, doubled letters, Mohammad / Mohd / Md), compared with a bounded **fuzzy edit distance** that tolerates vowel slips when the consonant skeleton matches. Honorifics and generic parts (Kumar, Devi, Singh) never identify on their own. |
+| Transliteration and phonetic keys | `raksha/translit.py` | Devanagari -> Latin with schwa handling, then a **phonetic key** per name token (aspirates, vowel length, w/v, z/j, q/k, doubled letters, Mohammad / Mohd / Md), compared with a bounded **fuzzy edit distance** (Levenshtein; `rapidfuzz` when installed, identical pure-Python fallback) that tolerates vowel slips when the consonant skeleton matches. Honorifics and generic parts (Kumar, Devi, Singh) never identify on their own. |
 | Multi-script | `raksha/scripts.py` | Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam and Urdu are folded onto Devanagari **one code point for one** (the Brahmic blocks share Devanagari's layout at a fixed offset; Urdu uses a phonetic table). Spans found on folded text index the original, so every detector and the name keys work on 11 scripts and the output keeps its script. See [docs/MULTILINGUAL.md](docs/MULTILINGUAL.md). |
 | Linkage | `raksha/link.py` | Union-find with blocking by identifier and by phonetic name key. Rules in order of strength: shared UHID / encounter / Aadhaar / ABHA / PAN / email; shared phone only when the names are compatible; name + DOB; name + relative; name + village + age ±1; first-name fragments ("Meera, W/o Rajan") only when exactly one candidate exists. **Cannot-link constraints** (different gender, DOB, Aadhaar, ABHA, PAN, birth years more than 2 apart) are checked on whole groups, so transitive chains cannot over-merge; an identifier shared by incompatible names is demoted; ambiguous evidence gives `patient: null`. |
 | Pseudonyms | `raksha/pseudo.py` | `PSN-` + 10 Crockford characters of **HMAC-SHA256** under a subkey derived from `RAKSHA_SECRET`; a pseudonym never contains the patient's own ID digits. A different secret gives different pseudonyms and shifts; the same secret gives byte-identical output. |
@@ -103,7 +104,8 @@ Each setting in `config/policy.yaml` was chosen by measuring both sides on the p
 ## Models declared
 
 None. Rules, word lists, transliteration tables, phonetic keys and edit-distance matching only; no LLMs, no
-generative models and no trained or pretrained ML models.
+generative models and no trained or pretrained ML models. Only optional dependency: `rapidfuzz` (string distances;
+the output is byte-identical without it).
 
 ## Known limitations
 
