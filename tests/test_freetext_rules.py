@@ -287,3 +287,54 @@ class FreshGeneralisation(unittest.TestCase):
             self.assertEqual(self._names(t), [], t)
         self.assertTrue(any(sp.kind == "LAB" for sp in patterns.protected_spans("हीमोग्लोबिन: 4.6 ग्राम/डी.एल.")))
         self.assertEqual([sp for sp in patterns.find_pins("बैग नं.: 340001-B")], [])
+
+
+def mrns(text):
+    return [text[sp.start:sp.end] for sp in patterns.find_patient_ids(text)]
+
+
+def kin_names(text):
+    return [(sp.kind, text[sp.start:sp.end]) for sp in detect.detect(text) if sp.kind in detect.NAME_KINDS]
+
+
+class ReferenceNumbers(unittest.TestCase):
+    def test_reference_numbers_kept(self):
+        for t in ("came in auto KA-05-MN-1234 at night", "Hearse van UP 32 AB 9876 arranged",
+                  "Req. No. BB/26/1100 urgent", "donor card D/26/4400", "Mortuary reg. PM/0101/26.",
+                  "(X-ray no. X/26/10101)", "Dr. Q Rao, MCh (Uro), Reg KMC/FMR/10101", "SMC Reg SMC/R/00101",
+                  "(pre-auth CMCHIS/XYZ/2601/10101)", "Implant LOT 10101010 used"):
+            self.assertEqual(mrns(t) + [x for k, x in ids(t) if k in ("INSURANCE_ID", "AADHAAR", "PHONE")], [], t)
+        self.assertEqual(ids("Lab Ref 260101000101 collected"), [])
+        self.assertEqual([k for k, _ in ids("Booking ID 9830000001.")], [])
+
+    def test_patient_numbers_removed(self):
+        self.assertEqual(mrns("riding motorcycle no. KA-05-MN-1234."), ["KA-05-MN-1234"])
+        self.assertEqual(mrns("RCH ID: 100000000101  date"), ["100000000101"])
+        self.assertEqual(mrns("Nikshay ID 1000000101"), ["1000000101"])
+        self.assertEqual(mrns("UHID: SMC-0000101"), ["SMC-0000101"])
+        self.assertIn(("PHONE", "9830000001"), ids("Mob 9830000001"))
+
+
+class ClinicalShields(unittest.TestCase):
+    def test_history_and_complaint(self):
+        for t in ("C/O: RTA - bike skid, pain Rt thigh", "B: smoker, h/o PTB 2010 (completed ATT).",
+                  "I'm 30, h/o PCOS.", "k/c/o HTN; h/o tobacco (gutka); no DM", "Comorbid: Paroxysmal AF on drugs",
+                  "Alleged RTA - skid from motorcycle at 02:00 hrs."):
+            self.assertEqual(kin_names(t), [], t)
+        self.assertEqual([k for k, _ in kin_names("Smt. Leela Devi H/O Ramprasad Yadav")], ["PATIENT_NAME", "RELATIVE_NAME"])
+
+    def test_institutions_programmes_roles(self):
+        for t in ("Referred from Kavya Nursing Home, Town Road.", "Sir Ratan Lal Memorial Hospital, Capital",
+                  "Hello Noor Pharmacy, refill please", "Tab Albendazole on National Deworming Day",
+                  "JSY Rs 1400 paid", "Tech: Dialysis Technician Gr-I on duty", "Lt Brescia-Cimino AVF working",
+                  "Graham Steell murmur absent", "Police: Town Police Station informed"):
+            self.assertEqual(kin_names(t), [], t)
+        prot = patterns.protected_spans("HR 52/min, prostate 68 cc, found on NH-21 roadside")
+        self.assertEqual(len(prot), 3)
+
+    def test_people_and_places_still_found(self):
+        self.assertIn(("PERSON", "Ramlal Khan Pathan"), kin_names("welder; employer Seth Ramlal Khan Pathan, Town"))
+        self.assertTrue(any(k == "RELATIVE_NAME" for k, _ in kin_names("बेटा रामू यादव सूरत में काम करता है")))
+        self.assertTrue(any(sp.kind in ("VILLAGE", "TEHSIL") for sp in detect.detect("R/o village X, tehsil Kotri, Jaipur.")))
+        self.assertTrue(any(sp.kind == "DISTRICT" and "Imphal West" in "Add: Some Leikai, Imphal West"[sp.start:sp.end]
+                            for sp in detect.detect("Add: Some Leikai, Imphal West")))
