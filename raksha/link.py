@@ -40,6 +40,177 @@ except ImportError:  # pragma: no cover - fallback until translit lands
                 return False
         return True
 
+
+# ---------------------------------------------------------------- name compatibility
+_REL_WORDS = frozenset({"wife", "husband", "son", "daughter", "father", "mother", "brother", "sister",
+                        "w", "h", "of", "patni", "pati", "beta", "beti", "putra", "putri", "pita", "mata",
+                        "bhai", "behen", "maa", "parijan", "attendant", "informant"})
+_NASAL_STOP = (("ng", "nk"), ("nd", "nt"), ("mb", "mp"), ("nj", "nc"))
+try:
+    from .translit import GENERIC_NAME_PARTS as _GEN_WORDS
+except ImportError:  # pragma: no cover
+    _GEN_WORDS = frozenset()
+_GEN_KEYS = frozenset(name_key(w) for w in _GEN_WORDS) - {""}
+
+
+_IDENT_CACHE: Dict[str, Tuple[str, ...]] = {}
+_TOK_CACHE: Dict[Tuple[str, str], int] = {}
+_ST_CACHE: Dict[Tuple[str, str], bool] = {}
+
+
+def _st(a: str, b: str) -> bool:
+    k = (a, b)
+    v = _ST_CACHE.get(k)
+    if v is None:
+        if len(_ST_CACHE) > 400000:
+            _ST_CACHE.clear()
+        v = _ST_CACHE[k] = bool(same_token(a, b))
+    return v
+
+
+def _ident_tokens(name: str) -> List[str]:
+    hit = _IDENT_CACHE.get(name)
+    if hit is None:
+        if len(_IDENT_CACHE) > 200000:
+            _IDENT_CACHE.clear()
+        hit = _IDENT_CACHE[name] = tuple(_ident_tokens_impl(name))
+    return list(hit)
+
+
+def _ident_tokens_impl(name: str, keep_generic: bool = False) -> List[str]:
+    """Identifying name tokens: titles dropped, a relation phrase cut off ("X's wife Y" -> Y,
+    "Y wife of X" -> Y), generic parts dropped unless nothing else is left."""
+    toks = name_tokens(name)
+    for i, t in enumerate(toks):
+        if t in _REL_WORDS and t not in ("of", "w", "h") and 0 < i:
+            if i + 1 < len(toks) and toks[i + 1] == "of":
+                toks = toks[:i]
+            else:
+                toks = [x for x in toks[i + 1:] if x != "of"]
+            break
+    toks = [t for t in toks if t != "s" or len(toks) <= 1]
+    if keep_generic:
+        return toks
+    ident = [t for t in toks if name_key(t) not in _GEN_KEYS]
+    return ident or toks
+
+
+def _tok_eq(a: str, b: str) -> int:
+    """0 no match, 1 initial match, 2 full match."""
+    k = (a, b)
+    v = _TOK_CACHE.get(k)
+    if v is None:
+        if len(_TOK_CACHE) > 400000:
+            _TOK_CACHE.clear()
+        v = _TOK_CACHE[k] = _tok_eq_impl(a, b)
+    return v
+
+
+def _tok_eq_impl(a: str, b: str) -> int:
+    if len(a) == 1 or len(b) == 1:
+        return 1 if a[0] == b[0] else 0
+    if _st(a, b):
+        return 2
+    fa, fb = a, b
+    for x, y in _NASAL_STOP:
+        fa, fb = fa.replace(x, y), fb.replace(x, y)
+    if (fa, fb) != (a, b) and min(len(a), len(b)) >= 5 and same_token(fa, fb):
+        return 2
+    return 0
+
+
+def _cover(short: List[str], long_: List[str]) -> bool:
+    """Every token of `short` is matched by a distinct token (or a joined pair) of `long_`,
+    with at least one full (non-initial) match."""
+    n = len(long_)
+
+    def rec(i: int, used: int, full: bool) -> bool:
+        if i == len(short):
+            return full
+        s = short[i]
+        for j in range(n):
+            if used >> j & 1:
+                continue
+            m = _tok_eq(s, long_[j])
+            if m and rec(i + 1, used | 1 << j, full or m == 2):
+                return True
+        if len(s) >= 5:
+            for j in range(n):
+                if used >> j & 1 or len(long_[j]) < 2:
+                    continue
+                if long_[j][0] != s[0]:
+                    continue
+                for k in range(n):
+                    if k == j or used >> k & 1 or len(long_[k]) < 2:
+                        continue
+                    if abs(len(long_[j]) + len(long_[k]) - len(s)) > 3:
+                        continue
+                    if _st(s, long_[j] + long_[k]) and rec(i + 1, used | 1 << j | 1 << k, True):
+                        return True
+        if i + 1 < len(short) and len(s) >= 2 and len(short[i + 1]) >= 2:
+            joined = s + short[i + 1]
+            for j in range(n):
+                if not used >> j & 1 and len(long_[j]) >= 5 and long_[j][0] == joined[0] \
+                        and abs(len(long_[j]) - len(joined)) <= 3 and _st(joined, long_[j]) \
+                        and rec(i + 2, used | 1 << j, True):
+                    return True
+        return False
+
+    return rec(0, 0, False)
+
+
+def _same_tokens(a: List[str], b: List[str]) -> bool:
+    """Same full tokens both ways (no initials)."""
+    if any(len(t) < 2 for t in a + b):
+        return False
+    return len(a) == len(b) and _cover(a, b) and _cover(b, a)
+
+
+def _strip_patronymic(name: str, rels: List[str]) -> List[str]:
+    """Identifying tokens of `name` without a token that is a relative's given name (the father's /
+    husband's name written as a middle name)."""
+    toks = _ident_tokens(name)
+    firsts = [t[0] for t in (_ident_tokens(r) for r in rels) if t and len(t[0]) > 1]
+    out = [t for t in toks if not any(len(t) > 1 and same_token(t, f) for f in firsts)]
+    return out if len(out) >= 2 else toks
+
+
+def same_person_name(a: List[str], ra: List[str], b: List[str], rb: List[str]) -> bool:
+    """Same identifying tokens both ways, after dropping a relative's given name used as a middle name."""
+    for x in a:
+        for y in b:
+            tx, ty = _ident_tokens(x), _ident_tokens(y)
+            if len(tx) < 2 or len(ty) < 2:
+                continue
+            if _same_tokens(tx, ty) or _same_tokens(_strip_patronymic(x, rb), ty) \
+                    or _same_tokens(tx, _strip_patronymic(y, ra)):
+                return True
+    return False
+
+
+def names_compatible(a: str, b: str) -> bool:
+    """Two names are compatible when the identifying tokens of the shorter are each matched in the
+    longer in any order (an initial matches a token starting with it, a joined token matches its
+    split form, generic parts ignored, scripts compared through the phonetic key)."""
+    ta, tb = _ident_tokens(a), _ident_tokens(b)
+    if not ta or not tb or len(ta) > 7 or len(tb) > 7:
+        return bool(ta and tb) and bool(same_name(a, b))
+    if _cover2(ta, tb):
+        return True
+    # a generic-looking part may be half of a split name ("Rama Rao" ~ "Ramarao"): retry with all tokens
+    fa, fb = _ident_tokens_impl(a, keep_generic=True), _ident_tokens_impl(b, keep_generic=True)
+    return (fa, fb) != (ta, tb) and len(fa) <= 7 and len(fb) <= 7 and _cover2(fa, fb)
+
+
+def _cover2(ta: List[str], tb: List[str]) -> bool:
+    if not ta or not tb:
+        return False
+    if len(ta) > len(tb):
+        ta, tb = tb, ta
+    if _cover(ta, tb):
+        return True
+    return len(ta) == len(tb) and _cover(tb, ta)
+
 Key = Tuple[str, str]
 
 _DEMOTABLE = (ID_PHONE, ID_PAN, ID_INS, ID_EMAIL)
@@ -81,6 +252,29 @@ def _uhid_core(tok: str) -> str:
     return "core:" + m.group(1) if m else ""
 
 
+_CANON_RX = re.compile(r"^([A-Z]{0,6}?)([0-9]{4,14})(R|[A-Z])?$")
+
+
+def _uhid_canon(tok: str) -> Optional[Tuple[str, str, bool]]:
+    """(serial, prefix, relaxed) of a hospital number: separators already gone, a trailing letter or
+    re-registration 'R', a leading 4-digit year segment and leading zeros removed. `relaxed` is True
+    when anything beyond the prefix had to be dropped."""
+    if not tok.startswith(ID_UHID + ":"):
+        return None
+    m = _CANON_RX.match(tok.split(":", 1)[1])
+    if not m:
+        return None
+    pre, dig, suf = m.group(1), m.group(2), m.group(3)
+    relaxed = bool(suf)
+    if len(dig) >= 8 and dig[:2] == "20" and dig[2:4] <= "39":
+        dig = dig[4:]
+        relaxed = True
+    dig = dig.lstrip("0")
+    if len(dig) < 3:
+        return None
+    return dig, pre, relaxed
+
+
 def _place_key(s: str) -> str:
     """Script-independent village key: phonetic key per word with inner vowels dropped
     (Devanagari vowel signs are kept inside words so the transliteration sees them)."""
@@ -94,13 +288,15 @@ def _place_key(s: str) -> str:
 
 class _Rec:
     __slots__ = ("i", "key", "facts", "names", "fullkeys", "firstkeys", "ids", "cores", "rels",
-                 "relfirst", "dob", "age", "byear", "village", "gender", "fragment")
+                 "relfirst", "dob", "age", "byear", "village", "gender", "fragment", "sat", "canon")
 
     def __init__(self, i: int, key: Key, f: Facts) -> None:
         self.i = i
         self.key = key
         self.facts = f
-        self.names = sorted({n.strip() for n in f.names if n and n.strip() and name_tokens(n)})
+        skip = set(getattr(f, "link_skip", None) or ())
+        self.names = sorted({n.strip() for n in f.names
+                             if n and n not in skip and n.strip() and name_tokens(n)})
         self.fullkeys = sorted({full_name_key(n) for n in self.names} - {""})
         fk = set()
         for n in self.names:
@@ -110,6 +306,8 @@ class _Rec:
         self.firstkeys = sorted(fk - {""})
         self.ids = sorted({t for t in (_norm_token(x) for x in f.ids) if t})
         self.cores = sorted({c for c in (_uhid_core(t) for t in self.ids) if c})
+        self.canon = sorted({c for c in (_uhid_canon(t) for t in self.ids) if c})
+        self.sat = not f.is_patient
         self.rels = sorted({r[1].strip() for r in f.relatives
                             if r and len(r) > 1 and r[1] and name_tokens(r[1])})
         rf = set()
@@ -139,7 +337,7 @@ def _same(x: str, y: str) -> bool:
     if v is None:
         if len(_SAME_CACHE) > 500000:
             _SAME_CACHE.clear()
-        v = bool(same_name(x, y))
+        v = names_compatible(x, y)
         _SAME_CACHE[k] = v
     return v
 
@@ -274,6 +472,21 @@ def _match7(r: _Rec, s: _Rec) -> bool:
     return ok and _names_compat(r.names, s.names)
 
 
+def _match9(r: _Rec, s: _Rec) -> bool:
+    return r.facts.ref_date is not None and r.facts.ref_date == s.facts.ref_date \
+        and same_person_name(r.names, [], s.names, [])
+
+
+def _match10(r: _Rec, s: _Rec) -> bool:
+    if r.key[1] != "doc" or s.key[1] != "doc" or r.age is None or r.age != s.age:
+        return False
+    if r.names and s.names:
+        return False
+    if r.gender and s.gender and r.gender != s.gender:
+        return False
+    return _names_compat(r.rels, s.rels)
+
+
 def _match8(r: _Rec, s: _Rec) -> bool:
     if s.fragment:
         return False
@@ -305,7 +518,7 @@ def _soft_rule(lk: _Linker, recs: List[_Rec], blocks: Dict[tuple, List[int]],
         return hit
 
     for r in recs:
-        if fragment_rule and not r.fragment:
+        if r.sat or (fragment_rule and not r.fragment):
             continue
         own = lk.find(r.i)
         cand: Dict[int, int] = {}
@@ -317,7 +530,7 @@ def _soft_rule(lk: _Linker, recs: List[_Rec], blocks: Dict[tuple, List[int]],
                 if rj == own or rj in cand:
                     continue
                 for j in members:
-                    if j == r.i or j in seen:
+                    if j == r.i or j in seen or recs[j].sat:
                         continue
                     seen.add(j)
                     if match(r, recs[j]):
@@ -354,8 +567,13 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     for rec in ordered:
         k = (rec.rel, rec.loc)
         mapping[k] = None
-        if rec.facts is None or not rec.facts.is_patient:
+        if rec.facts is None:
             continue
+        if not rec.facts.is_patient:
+            # a caller / visitor / sales line: joins a patient only on a hard key with a compatible name
+            f = rec.facts
+            if not (f.ids and any(n and name_tokens(n) for n in f.names)):
+                continue
         recs.append(_Rec(len(recs), k, rec.facts))
     if not recs:
         return mapping, {}
@@ -387,7 +605,36 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     id_rule((ID_UHID,))
     id_rule((ID_ENC,))
     id_rule(_RULE3)
+
+    # A shared phone is demoted (a family / attendant number) only when the groups holding it, after
+    # the identifier rules, carry incompatible names.
+    for t in sorted(by_tok):
+        if not t.startswith(ID_PHONE + ":"):
+            continue
+        roots = sorted({lk.find(i) for i in by_tok[t]})
+        named = [lk.groups[x].names for x in roots if lk.groups[x].names]
+        bad = any(not _names_compat(named[i], named[j])
+                  for i in range(len(named)) for j in range(i + 1, len(named)))
+        if bad:
+            demoted.add(t)
+        else:
+            demoted.discard(t)
     id_rule((ID_PHONE,), need_names=True)
+
+    # A family phone still joins two holders whose names are the same person's (both ways, a
+    # patronymic middle name allowed), e.g. a surname-first insurer form and the registration row.
+    for t in sorted(by_tok):
+        if not t.startswith(ID_PHONE + ":") or t not in demoted:
+            continue
+        mem = by_tok[t]
+        for x in range(len(mem)):
+            for y in range(x + 1, len(mem)):
+                a, b = lk.find(mem[x]), lk.find(mem[y])
+                if a == b:
+                    continue
+                ga, gb = lk.groups[a], lk.groups[b]
+                if ga.names and gb.names and same_person_name(ga.names, ga.rels, gb.names, gb.rels):
+                    lk.union(mem[x], mem[y])
 
     # Same hospital number written with and without its prefix: only with a compatible name.
     by_core: Dict[str, List[int]] = {}
@@ -396,12 +643,42 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
             by_core.setdefault(c, []).append(r.i)
     for c in sorted(by_core):
         members = by_core[c]
+        roots = sorted({lk.find(i) for i in members})
+        named = [lk.groups[x].names for x in roots if lk.groups[x].names]
+        one = all(_names_compat(named[i], named[j])
+                  for i in range(len(named)) for j in range(i + 1, len(named)))
         for idx in range(1, len(members)):
             j = members[idx]
             for b in members[:idx]:
                 ga, gb = lk.groups[lk.find(b)], lk.groups[lk.find(j)]
-                if ga.names and gb.names and _names_compat(ga.names, gb.names) and lk.union(b, j):
+                if ga.names and gb.names:
+                    ok = _names_compat(ga.names, gb.names)
+                else:   # one side unnamed: only when every named holder of this number is one person
+                    ok = one and (bool(ga.names) or bool(gb.names))
+                if ok and lk.union(b, j):
                     break
+
+    # Canonical hospital numbers (year segment, trailing letter / -R, leading zeros dropped): whole
+    # serial and prefix equal; a relaxed match needs compatible names on both sides.
+    by_canon: Dict[str, List[Tuple[int, str, bool]]] = {}
+    for r in recs:
+        for dig, pre, rel in r.canon:
+            by_canon.setdefault(dig, []).append((r.i, pre, rel))
+    for dig in sorted(by_canon):
+        ms = by_canon[dig]
+        for x in range(len(ms)):
+            for y in range(x + 1, len(ms)):
+                (i, pa, ra), (j, pb, rb) = ms[x], ms[y]
+                if pa and pb and pa != pb:
+                    continue
+                if not (ra or rb) and not (pa and pb):
+                    continue   # prefix-only difference: handled by the core rule above
+                if lk.find(i) == lk.find(j):
+                    continue
+                ga, gb = lk.groups[lk.find(i)], lk.groups[lk.find(j)]
+                if not (ga.names and gb.names and _names_compat(ga.names, gb.names)):
+                    continue
+                lk.union(i, j)
 
     # Blocking indexes for rules 5-8 (first-name key and full-name key based).
     def name_keys(r: _Rec) -> List[str]:
@@ -437,11 +714,26 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     _soft_rule(lk, recs, build(k7), k7, _match7)
     _soft_rule(lk, recs, build(k8), k8, _match8, fragment_rule=True)
 
+    # Same full name (two or more identifying tokens, any order) on the same event date.
+    def k9(r: _Rec) -> list:
+        if r.facts.ref_date is None:
+            return []
+        return [("d", fk, r.facts.ref_date) for n, fk in zip(r.names, [full_name_key(x) for x in r.names])
+                if fk and len(_ident_tokens(n)) >= 2]
+    _soft_rule(lk, recs, build(k9), k9, _match9)
+
+    # A text document that never names the patient: the same relative (given name) and the same age
+    # as exactly one other document's patient.
+    k10 = lambda r: [("r", rf, r.age) for rf in r.relfirst] if r.key[1] == "doc" and r.age is not None else []
+    _soft_rule(lk, recs, build(k10), k10, _match10)
+
     # Patient book.
     candidates: List[Tuple[str, Key, _Group]] = []
     for root in sorted(lk.groups):
         g = lk.groups[root]
         members = [recs[i] for i in sorted(g.members)]
+        if all(m.sat for m in members):
+            continue
         toks = sorted({t for m in members for t in m.ids})
         if len(members) == 1:
             if not any(t.split(":", 1)[0] in _STRONG_OWN for t in toks):
