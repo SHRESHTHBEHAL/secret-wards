@@ -43,7 +43,7 @@ class DateVariants(unittest.TestCase):
         self.assertEqual(D.shift_text(shifted, -41), text)
 
     def test_formats(self):
-        self.rt("Mon, 24 Jan 2026", "2026-01-24")
+        self.rt("Sat, 24 Jan 2026", "2026-01-24")  # weekday is recomputed on shift
         self.rt("seen 2026-01-24 14:30:00 IST", "2026-01-24")
         self.rt("24.01.26", "2026-01-24")
         self.rt("DOB 12-Apr-45", "1945-04-12")

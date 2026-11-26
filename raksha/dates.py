@@ -328,6 +328,41 @@ def shift_date(d: dt.date, days: int) -> dt.date:
     return d + dt.timedelta(days=days)
 
 
+_WD_FULL = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WD_ABBR = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WD_BEFORE = re.compile(r"(?<![A-Za-z])(monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+                        r"tues|thurs|mon|tue|wed|thu|fri|sat|sun)(\.?,?[ \t]*)$", re.IGNORECASE)
+
+
+def _fix_weekday(before: str, new_date: dt.date) -> str:
+    """`before` with a weekday name right before a shifted date recomputed in the same style
+    ("Mon, " -> "Wed, ", "MONDAY " -> "FRIDAY ")."""
+    m = _WD_BEFORE.search(before[-16:])
+    if not m:
+        return before
+    word = m.group(1)
+    i = new_date.weekday()
+    lw = word.lower()
+    w = _WD_FULL[i] if lw in _WD_FULL else _WD_ABBR[i]
+    if lw in ("tues", "thurs"):
+        w = _WD_ABBR[i]
+    if word.isupper():
+        w = w.upper()
+    elif word[0].isupper():
+        w = w.capitalize()
+    start = len(before) - len(before[-16:]) + m.start(1)
+    return before[:start] + w + before[start + len(word):]
+
+
+def compact_ymd(s: object) -> Optional[dt.date]:
+    """The date of a compact 8-digit yyyymmdd value ('20260124'), else None. Only for fields
+    already typed as dates."""
+    t = str(s).strip()
+    if len(t) != 8 or not t.isdigit() or not t.isascii() or t[:2] not in ("19", "20"):
+        return None
+    return _mk(int(t[:4]), int(t[4:6]), int(t[6:]))
+
+
 def shift_text(text: str, days: int, order: str = "dmy", default_year: Optional[int] = None) -> str:
     """Shift every date in `text` by `days`, keeping each date's exact original format."""
     hits = find_dates(text, order, default_year)
@@ -336,7 +371,7 @@ def shift_text(text: str, days: int, order: str = "dmy", default_year: Optional[
     parts = []
     pos = 0
     for h in hits:
-        parts.append(text[pos:h.start])
+        parts.append(_fix_weekday(text[pos:h.start], shift_date(h.date, days)))
         new = _render(h.fmt, shift_date(h.date, days))
         if h.has_time:
             # keep time/offset byte-identical: replace only the date characters
@@ -358,7 +393,7 @@ def format_like(original: str, new_date: dt.date, order: str = "dmy") -> str:
     if h.has_time:
         orig = original[h.start:h.end]
         new = new[:len(new) - len(orig) + _date_len(orig)] + orig[_date_len(orig):]
-    return original[:h.start] + new + original[h.end:]
+    return _fix_weekday(original[:h.start], new_date) + new + original[h.end:]
 
 
 def parse_one(s: str, order: str = "dmy") -> Optional[dt.date]:
