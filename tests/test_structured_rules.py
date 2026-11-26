@@ -122,3 +122,127 @@ class LinkRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import datetime as _dt
+
+from raksha.link import names_compatible
+from raksha.types import Facts
+
+
+def _R(rel, loc, **kw):
+    return Record(rel=rel, loc=loc, facts=Facts(**kw))
+
+
+class NameCompatibility(unittest.TestCase):
+    def test_initials_joined_tokens_any_order(self):
+        self.assertTrue(names_compatible("Velamuri Kanaka Ramarao", "V. K. Rama Rao"))
+        self.assertTrue(names_compatible("TORVALE K RAMARAO", "Torvale Kanaka Ramarao"))
+        self.assertTrue(names_compatible("Dolma C. Tsherpa", "Dolma Chimi Tsherpa"))
+        self.assertTrue(names_compatible("Velmuri's wife Ponnamma", "Ponnamma"))
+        self.assertTrue(names_compatible("Velankamma", "Velangamma"))   # nasal + voiced / voiceless stop
+
+    def test_incompatible(self):
+        self.assertFalse(names_compatible("Ravesh Kumar", "Suvesh Kumar"))
+        self.assertFalse(names_compatible("A Kumar", "Anvit Tarle"))   # an initial alone is not enough
+        self.assertFalse(names_compatible("Anvit", "Sunil Q"))
+
+
+class LinkRulesNew(unittest.TestCase):
+    def test_phone_with_initials_name_links(self):
+        m, _ = link([
+            _R("a.csv", "row:0", names=["Torvale Kanaka Ramarao"], ids=["uhid:3301958", "phone:9000011111"]),
+            _R("b.csv", "row:0", names=["T. K. Rama Rao"], ids=["phone:9000011111"], age=61),
+        ])
+        self.assertIsNotNone(m[("a.csv", "row:0")])
+        self.assertEqual(m[("a.csv", "row:0")], m[("b.csv", "row:0")])
+
+    def test_family_phone_different_given_name_refused(self):
+        m, _ = link([
+            _R("a.csv", "row:0", names=["Ravesh Tarle"], ids=["uhid:Q1001", "phone:9000022222"]),
+            _R("a.csv", "row:1", names=["Suvesh Tarle"], ids=["uhid:Q1002", "phone:9000022222"]),
+        ])
+        self.assertNotEqual(m[("a.csv", "row:0")], m[("a.csv", "row:1")])
+
+    def test_hospital_id_with_and_without_prefix_unnamed_side(self):
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Velu Parkar"], ids=["uhid:4472999"]),
+            _R("opd.json", "/e/0", relatives=[("brother", "Kanu Parkar")], ids=["uhid:QMH4472999"]),
+        ])
+        self.assertEqual(m[("reg.csv", "row:0")], m[("opd.json", "/e/0")])
+
+    def test_year_segment_and_suffix_need_compatible_names(self):
+        m, _ = link([
+            _R("a.json", "/p/0", names=["Lanu Ozuk"], ids=["uhid:QN202600417K"]),
+            _R("b.csv", "row:0", names=["Lanu Ozuk"], ids=["uhid:QN0417"]),
+            _R("c.csv", "row:0", names=["Temsu Imcha"], ids=["uhid:QN00417"]),
+        ])
+        self.assertEqual(m[("a.json", "/p/0")], m[("b.csv", "row:0")])
+        self.assertNotEqual(m[("a.json", "/p/0")], m[("c.csv", "row:0")])
+
+    def test_satellite_joins_only_with_compatible_name(self):
+        recs = [
+            _R("reg.csv", "row:0", names=["Hirav Kolvate"], ids=["uhid:Z7001", "phone:9000033333"], age=40),
+            _R("sales.csv", "row:0", names=["Hirav Kolvate"], ids=["phone:9000033333"], is_patient=False),
+            _R("sales.csv", "row:1", names=["Minal Kolvate"], ids=["phone:9000033333"], is_patient=False),
+            _R("sales.csv", "row:2", names=["Prabin Sau"], ids=["phone:9000044444"], is_patient=False),
+        ]
+        m, _ = link(recs)
+        self.assertEqual(m[("reg.csv", "row:0")], m[("sales.csv", "row:0")])
+        self.assertIsNone(m[("sales.csv", "row:2")])
+        self.assertNotEqual(m[("reg.csv", "row:0")], m[("sales.csv", "row:1")])
+
+    def test_family_phone_patronymic_middle_name(self):
+        d = _dt.date
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Vasant Ghorpale"], relatives=[("Pita", "Bhimrao Ghorpale")],
+               ids=["aadhaar:111122223333", "phone:9000055555"], dob=d(1960, 1, 2)),
+            _R("reg.csv", "row:1", names=["Malati Vasant Ghorpale"], ids=["aadhaar:444455556666", "phone:9000055555"],
+               dob=d(1966, 3, 4)),
+            _R("tpa.json", "/r/0", names=["GHORPALE VASANT BHIMRAO"], ids=["abha:12345678901234", "phone:9000055555"]),
+        ])
+        self.assertEqual(m[("reg.csv", "row:0")], m[("tpa.json", "/r/0")])
+        self.assertNotEqual(m[("reg.csv", "row:1")], m[("tpa.json", "/r/0")])
+
+    def test_same_full_name_same_date(self):
+        d = _dt.date(2026, 2, 19)
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Kotresh Halmani"], ids=["uhid:5550001"], ref_date=d),
+            _R("claims.csv", "row:0", names=["Halmani Kotresh"], ids=["ins:QQ00077"], ref_date=d),
+            _R("claims.csv", "row:1", names=["Halmani Kotresh"], ids=["ins:QQ00078"], ref_date=_dt.date(2026, 3, 1)),
+        ])
+        self.assertEqual(m[("reg.csv", "row:0")], m[("claims.csv", "row:0")])
+        self.assertNotEqual(m[("reg.csv", "row:0")], m[("claims.csv", "row:1")])
+
+    def test_nameless_doc_relative_and_age(self):
+        m, _ = link([
+            _R("death.txt", "doc", names=["Rasool Bhat"], relatives=[("", "Imtiyaz")], ids=["uhid:SQ1177"], age=66),
+            _R("ref.txt", "doc", relatives=[("son", "Imtiyaz Ahmad")], ids=["phone:9000066666"], age=66),
+            _R("other.txt", "doc", relatives=[("son", "Imtiyaz Ahmad")], ids=["phone:9000077777"], age=40),
+        ])
+        self.assertEqual(m[("death.txt", "doc")], m[("ref.txt", "doc")])
+        self.assertNotEqual(m[("death.txt", "doc")], m[("other.txt", "doc")])
+
+
+class MetadataAndHeaders(unittest.TestCase):
+    def test_export_metadata_person(self):
+        self.assertEqual(F.json_key_type(["_exportInfo", "printedFor"], "Abc Defgh (9000 111 222)"), F.NAME)
+        self.assertNotEqual(F.json_key_type(["_exportInfo", "exportedBy"], "clerk07"), F.NAME)
+
+    def test_measurement_is_not_an_id(self):
+        self.assertEqual(F.json_key_type(["cbc", "tlc"], "TLC 13400 /cumm"), F.CLINICAL)
+        self.assertEqual(F.json_key_type(["pt", "n"], "Dolma C. Tsherpa"), F.NAME)
+
+    def test_header_sentence_makes_rows_one_patient(self):
+        recs = harvest.harvest_file(_csv(["Chart: Mr Velu Parkar (IP 26/7781-QX) Ph 9000 888 777", "BP"],
+                                         [["01-Jan-2026", "120/80"], ["02-Jan-2026", "118/76"]]))
+        m, _ = link(recs)
+        self.assertIsNotNone(m[("x/a.csv", "row:0")])
+        self.assertEqual(m[("x/a.csv", "row:0")], m[("x/a.csv", "row:1")])
+
+    def test_file_name_person_is_not_content_evidence(self):
+        data = {"pt": {"n": "Dolma C. Tsherpa", "m": "90000-12345", "age": 40}, "cbc": {"hb": "Hb 10.9 g/dL"}}
+        f = harvest.harvest_file(_json(data, rel="lab/Anvit_Rao_Tarle_9000099999_cbc.json"))[0].facts
+        self.assertTrue(f.is_patient)
+        self.assertIn("phone:9000012345", f.ids)
+        self.assertNotIn("phone:9000099999", f.ids)
