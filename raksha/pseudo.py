@@ -117,6 +117,13 @@ class ShiftBook:
         self._of[key] = d
         return d
 
+    def bump(self, key: str) -> int:
+        """Move one key a day further from zero (a shifted date landed on a DOB). Deterministic."""
+        d = self.get(key)
+        d = d + 1 if d > 0 else d - 1
+        self._of[key] = d
+        return d
+
 
 def _gcd(a: int, b: int) -> int:
     while b:
