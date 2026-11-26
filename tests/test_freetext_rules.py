@@ -403,3 +403,92 @@ class NameFrames(unittest.TestCase):
     def test_kinship_longest_match(self):
         self.assertIn(("RELATIVE_NAME", "कमला"), kinds("पुत्री कमला"))
         self.assertIn(("RELATIVE_NAME", "कमला"), kinds("पुत्रीकमला"))
+
+
+class PersonalDocuments(unittest.TestCase):
+    # every number, handle and name below is invented
+
+    def covered(self, text, part, known=None):
+        i = text.index(part)
+        return any(sp.start <= i and sp.end >= i + len(part) for sp in detect.detect(text, known))
+
+    def test_labelled_documents(self):
+        for t, v in (("Passport No: K4419820", "K4419820"), ("पासपोर्ट: K4419820", "K4419820"),
+                     ("Driving licence MH12 20110049871", "MH12 20110049871"),
+                     ("seen with MH-12-2011-0049871", "MH-12-2011-0049871"),
+                     ("A/c No: 50100234478812", "50100234478812"), ("khata sankhya 3344556677", "3344556677"),
+                     ("खाता संख्या 3344556677", "3344556677"), ("राशन कार्ड संख्या 1022334455", "1022334455"),
+                     ("Vehicle No: MH 12 AB 4471", "MH 12 AB 4471"), ("वाहन संख्या UP 32 KL 1188", "UP 32 KL 1188"),
+                     ("RTA: hit by motorcycle MH 12 AB 4471", "MH 12 AB 4471"),
+                     ("Jan Aadhaar: 1098765432", "1098765432"), ("Family ID 102938475610", "102938475610")):
+            self.assertTrue(self.covered(t, v), t)
+
+    def test_family_id_is_not_aadhaar(self):
+        t = "Jan Aadhaar 2345 6789 0123"
+        self.assertEqual([sp.kind for sp in detect.detect(t)], ["REF_ID"])
+
+    def test_upi_and_obfuscated_email(self):
+        for t, v in (("UPI: qorvik.tal@okaxis", "qorvik.tal@okaxis"), ("paid via 9812300045@ybl", "9812300045@ybl"),
+                     ("mail qorvik.tal @ gmail.com", "qorvik.tal @ gmail.com"),
+                     ("mail qorvik.tal(at)gmail(dot)com", "qorvik.tal(at)gmail(dot)com"),
+                     ("mail qorvik.tal [at] gmail [dot] com", "qorvik.tal [at] gmail [dot] com")):
+            self.assertTrue(self.covered(t, v), t)
+
+    def test_broken_numbers(self):
+        for t, v in (("Aadhaar 4 4 1 2 3 3 4 4 5 5 6 6", "4 4 1 2 3 3 4 4 5 5 6 6"), ("mob 98765 4\n3210", "98765 4\n3210"),
+                     ("Aadhaar 2345  6789 01\n23", "2345  6789 01\n23"), ("call 81XXXXXX19", "81XXXXXX19")):
+            self.assertTrue(self.covered(t, v), t)
+        self.assertEqual([sp.kind for sp in detect.detect("Contact: 919656922594")], ["PHONE"])
+
+    def test_compact_dob(self):
+        for t in ("DOB 14031987", "Date of birth: 14031987", '"birth_date": "19870314"'):
+            self.assertIn("DOB", [sp.kind for sp in detect.detect(t)], t)
+
+    def test_keep_side(self):
+        for t in ("Call 108 for ambulance; 104 helpline; toll free 1800-180-1104; 14555.",
+                  "Platelets 150000-410000 /cumm", "TLC 4,000-11,000", "Platelets 150000", "Bed No 14", "Cot 22",
+                  "Batch No B23104", "Lot 4471A", "Claim No CLM20240011", "Package code SG039A", "ICD-10 J18.9",
+                  "SNOMED 233604007", "SpO2 98", "BP 130/85", "at 10:45 am", "for 3 weeks", "Bill Rs. 12,450",
+                  "Amount ₹ 45000", "3 mo old", "18 months old", "UTR 234567890123 paid",
+                  "drug licence no MH12 20110049871 of the chemist", "delivery bike KL 10 AX 7745 brought the strips",
+                  "on account of fever since 3 days", "RTA: ambulance MH 12 AB 4471 brought him"):
+            self.assertEqual([sp.kind for sp in detect.detect(t) if sp.kind != "AGE"], [], t)
+
+
+class KnownNameForms(unittest.TestCase):
+    def setUp(self):
+        k = detect._word_key
+        self.k = detect.Known(own_keys=frozenset({k("Qarunesh"), k("Bhadolia"), k("क़रुणेश")}),
+                              full_names=((k("Qarunesh"), k("Bhadolia")),))
+
+    def covered(self, text, part, known):
+        i = text.index(part)
+        return any(sp.start <= i and sp.end >= i + len(part) for sp in detect.detect(text, known))
+
+    def test_forms(self):
+        for t, v in (("Qarunesh ko bukhar tha", "Qarunesh"), ("qarunesh ne dawa li", "qarunesh"),
+                     ("क़रुणेश को बुखार", "क़रुणेश"), ("QARUNESH came", "QARUNESH"),
+                     ("seen Q A R U N E S H today", "Q A R U N E S H"), ("file qarunesh_bhadolia.pdf", "qarunesh"),
+                     ("C:\\docs\\QaruneshBhadolia\\x.txt", "Qarunesh"), ("patient Qa ru nesh  Bhad-\nolia", "Qa ru nesh"),
+                     ("patient Qa ru nesh  Bhad-\nolia", "Bhad-\nolia")):
+            self.assertTrue(self.covered(t, v, self.k), t)
+
+    def test_generic_given_name_before_postposition(self):
+        k = detect.Known(own_keys=frozenset({detect._word_key("Ram"), detect._word_key("राम")}))
+        self.assertTrue(self.covered("Ram ko bukhar", "Ram", k))
+        self.assertTrue(self.covered("राम ने दवा ली", "राम", k))
+        self.assertEqual(detect.detect("Dr. Ram ne dekha", k), [])
+        self.assertEqual(detect.detect("Ram Manohar Lohia Hospital", k), [])
+
+
+class WrappedNumberGuard(unittest.TestCase):
+    """A complete phone at a line end must not swallow digits from the next line."""
+
+    def test_time_on_next_line_survives(self):
+        from raksha import patterns
+        text = "18:40 - visitor at bed 12, mob 9876501234\n19:10 - evening round done."
+        spans = patterns.find_identifiers(text)
+        covered = "".join(text[s.start:s.end] if hasattr(s, "start") else text[s[0]:s[1]] for s in spans)
+        self.assertIn("9876501234", covered)
+        self.assertNotIn("\n", covered)
+        self.assertNotIn("19", covered.replace("9876501234", ""))
