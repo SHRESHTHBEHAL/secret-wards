@@ -237,3 +237,43 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexJsonTests(unittest.TestCase):
+    """An index keyed by several patients is scrubbed but never linked to one pseudonym."""
+
+    DATA = {"by_uhid": {"QRH2077123": {"name": "Ilavar Pendse", "age": 40},
+                        "QRH2077456": {"name": "Sumedha Karve", "age": 51}},
+            "by_name": {"Ilavar Pendse": "QRH2077123", "Sumedha Karve": "QRH2077456"}}
+
+    def _pf(self):
+        return ParsedFile(rel="idx/patient_index.json", sha256="c" * 64, kind=KIND_JSON, data=self.DATA)
+
+    def test_index_not_linked(self):
+        recs = harvest.harvest_file(self._pf())
+        self.assertEqual(len(recs), 1)
+        f = recs[0].facts
+        self.assertFalse(f.is_patient)
+        self.assertEqual(f.ids, [])
+        self.assertIn("QRH2077123", f.raw_ids)
+        self.assertIn("QRH2077456", f.raw_ids)
+        self.assertIn("Sumedha Karve", f.names)
+
+    def test_index_scrubbed(self):
+        from raksha.policy import DEFAULTS
+        from raksha.pseudo import Keys
+        from raksha.sanitize import Env, sanitize_file
+        pf = self._pf()
+        recs = harvest.harvest_file(pf)
+        env = Env(keys=Keys(b"unit-secret"), assign={(pf.rel, r.loc): None for r in recs}, book={},
+                  policy=dict(DEFAULTS), pseudonyms={}, records={pf.rel: recs})
+        out = sanitize_file(pf, env).content
+        for v in ("QRH2077123", "QRH2077456", "Ilavar", "Pendse", "Sumedha", "Karve"):
+            self.assertNotIn(v, out)
+
+    def test_one_patient_doc_still_linked(self):
+        pf = ParsedFile(rel="p.json", sha256="d" * 64, kind=KIND_JSON,
+                        data={"uhid": "QRH2077123", "name": "Ilavar Pendse", "dob": "14/03/1979"})
+        f = harvest.harvest_file(pf)[0].facts
+        self.assertTrue(f.is_patient)
+        self.assertIn("uhid:QRH2077123", f.ids)

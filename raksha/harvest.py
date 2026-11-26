@@ -562,7 +562,28 @@ def _json_records(pf: ParsedFile) -> List[Record]:
     _file_name_facts(fb, pf.rel)
     f = fb.finish()
     f.is_patient = fb.signal or _has_patient_facts(f)
+    if _mixed_patients(f):
+        # an index / roster keyed by several patients: scrub every id and name, link to nobody
+        for t in f.ids:
+            raw = t.split(":", 1)[-1]
+            if raw and raw not in f.raw_ids:
+                f.raw_ids.append(raw)
+        f.ids = []
+        f.is_patient = False
     return [Record(rel=pf.rel, loc="doc", facts=f)]
+
+
+def _mixed_patients(f: Facts) -> bool:
+    """Facts that name two or more different patients (two UHIDs, or unrelated full names)."""
+    uh = sorted({t for t in f.ids if t.split(":", 1)[0] == ID_UHID})
+    if len(uh) >= 2:
+        return True
+    full = [n for n in f.names if len(n.split()) >= 2]
+    for i in range(len(full)):
+        for j in range(i + 1, len(full)):
+            if not _same_name(full[i], full[j]):
+                return True
+    return False
 
 
 def _has_patient_facts(f: Facts) -> bool:
