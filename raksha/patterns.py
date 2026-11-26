@@ -223,7 +223,8 @@ _RE_ABHA_LABEL = re.compile(r"(?:abha|health\s*id|आभा)[^0-9\n]{0,15}$")
 # a reference number shaped like a mobile: "Trip ID 98...", "package 98...", "LRN-98...", "SPL/26/98..."
 _RE_REF_BEFORE = re.compile(
     r"(?<![a-z])(?:trip\s*(?:id|no)|token|package|pkg|lab\s*(?:ref|no|id)|ref(?:erence)?\.?\s*(?:no|id|#)?|bill(?:\s*no)?|"
-    r"sample(?:\s*(?:id|no))?|claim(?:\s*no)?|cyto\s*no|barcode|accession|batch|lot|invoice|receipt|order|rs\.?|inr|₹|"
+    r"sample(?:\s*(?:id|no))?|claim(?:\s*no)?|utr(?:\s*no)?|txn(?:\s*(?:id|no))?|transaction(?:\s*(?:id|no|ref))?|rrn|"
+    r"upi\s*ref(?:\s*no)?|cyto\s*no|barcode|accession|batch|lot|invoice|receipt|order|rs\.?|inr|₹|"
     r"booking(?:\s*(?:id|no|ref))?|appointment\s*(?:id|no)|ticket(?:\s*(?:id|no))?|serial(?:\s*no)?|cat(?:alogue)?\s*no|"
     r"helpline|help\s*line|toll[\s\-]*free|reception|enquiry|enquiries|front\s*desk|control\s*room|call\s+us\s+(?:at|on))"
     r"[\s:#.\-]*$")
@@ -353,9 +354,13 @@ def find_identifiers(text: str) -> List[Span]:
         if d.startswith("91") and d[2] in "6789" and t[max(0, m.start() - 1):m.start()] == "+":
             c.append((5, m.start() - 1, m.end(), "PHONE", d[2:]))   # "+9198-7654-3210": +91 glued to a mobile
             continue
+        if RE_FAMILY_LABEL.search(tl, max(0, m.start() - 40), m.start()):
+            continue                      # "Jan Aadhaar 1234 5678 9012": a family card, not the person's Aadhaar
         c.append((5, m.start(), m.end(), "AADHAAR", d))
     for m in _RE_AADHAAR_SOLID.finditer(t):
         g = m.group()
+        if RE_FAMILY_LABEL.search(tl, max(0, m.start() - 40), m.start()):
+            continue
         # a 91-prefixed mobile is far likelier than an Aadhaar failing its checksum
         if g.startswith("91") and g[2] in "6789" and not verhoeff_ok(g):
             c.append((7, m.start(), m.end(), "PHONE", g[2:]))    # "919876543210": country code + mobile
@@ -1067,4 +1072,147 @@ def _protected_spans(text: str) -> List[Span]:
         w = m.group(1).lower()
         if w in lexicon.CLINICAL_WORDS and w not in _NOT_DRUG:
             c.append((8, m.start(), m.end(), "DOSE", ""))
+    return _resolve(c)
+
+
+# ---------------------------------------------------------------- personal documents (never used to link)
+
+# label -> the personal document whose number follows (within the same field)
+_DOC_LABELS = (
+    ("passport", re.compile(r"(?<![a-z])(?:passport|पासपोर्ट)(?![a-z])")),
+    ("dl", re.compile(r"(?<![a-z])(?:driving\s*licen[cs]e|driver'?s?\s*licen[cs]e|licen[cs]e|d\.?\s*l\.?(?=\s*(?:no|number|#|:))|"
+                      r"ड्राइविंग\s*लाइसेंस|लाइसेंस)(?![a-z])")),
+    ("ration", re.compile(r"(?<![a-z])(?:ration\s*card|ration|राशन\s*कार्ड|राशन)(?![a-z])")),
+    ("bank", re.compile(r"(?<![a-z])(?:a/c|a\\c|acct|account|bank\s*a/?c|khata|खाता)(?![a-z])")),
+    ("family", re.compile(r"(?<![a-z])(?:jan[\s\-]*aadhaa?r|jan[\s\-]*aadhar|जन[\s\-]*आधार|family\s*(?:id|card)|"
+                          r"parivar\s*(?:pehchan|pahchan|id)|परिवार\s*(?:पहचान|आईडी)|bhamashah|भामाशाह|ppp\s*id)(?![a-z])")),
+    ("vehicle", re.compile(r"(?<![a-z])(?:vehicle|gaadi|gadi|gaari|gari|vahan|vaahan|वाहन|गाड़ी|गाडी|bike|scooty|scooter|"
+                           r"motor\s*cycle|motorcycle|car|two[\s\-]*wheeler|मोटरसाइकिल)(?![a-z])")),
+)
+# a document label must not be part of an institutional / reference phrase ("drug licence", "account of bill")
+_DOC_VETO = re.compile(r"(?<![a-z])(?:drug|pharmacy|shop|chemist|firm|clinic|hospital|nursing|blood\s*bank|lab|"
+                       r"bill|invoice|claim|receipt|ambulance|108|102|hearse|police|pcr)(?![a-z])")
+_DOC_VALUE = {
+    "passport": re.compile(r"[A-Za-z][ \-]?[0-9]{7}(?![0-9A-Za-z])"),
+    "dl": re.compile(r"([A-Za-z]{2})[ \-]?[0-9]{2}[ \-]?(?:19|20)[0-9]{2}[ \-]?[0-9]{7}(?![0-9A-Za-z])"
+                     r"|([A-Za-z]{2})[ \-]?[0-9]{2}[ \-]?[0-9]{11}(?![0-9A-Za-z])"),
+    "ration": re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|[\-/ ](?=[A-Za-z0-9])){5,24}(?![0-9A-Za-z])"),
+    "bank": re.compile(r"[0-9](?:[ \-]?[0-9]){8,17}(?![0-9A-Za-z])"),
+    "family": re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|[\-/ ](?=[A-Za-z0-9])){7,20}(?![0-9A-Za-z])"),
+    "vehicle": re.compile(r"([A-Za-z]{2})[ \-]?[0-9]{1,2}[ \-]?[A-Za-z]{1,3}[ \-]?[0-9]{4}(?![0-9A-Za-z])"),
+}
+_HIRED_VEHICLE = re.compile(r"(?<![a-z])(?:delivery|courier|rider|agent|auto|autorickshaw|rickshaw|e-?rickshaw|toto|"
+                            r"taxi|cab|bus|truck|lorry|tractor|tipper|dumper|jeep|van|ola|uber|rapido|swiggy|zomato|"
+                            r"pharmacy|chemist|medical\s*store|shop|vendor|ambulance|108|102|police|pcr)(?![a-z])")
+# a road-traffic / medico-legal context: a plate anywhere in it is a vehicle of the people involved
+_RTA_CONTEXT = re.compile(r"(?<![a-z])(?:rta|mlc|accident|collision|hit\s+by|knocked|run\s+over|road\s+traffic|"
+                          r"दुर्घटना|टक्कर|एक्सीडेंट)(?![a-z])")
+_RE_PLATE_SPACED = re.compile(r"(?<![0-9A-Za-z])([A-Z]{2})[ \-]?[0-9]{1,2}[ \-]?[A-Z]{1,3}[ \-]?[0-9]{4}(?![0-9A-Za-z])")
+# UPI virtual payment address: handle@<psp>, not an e-mail (no dot-tld after the handle)
+_RE_UPI = re.compile(
+    r"(?<![\w.@+\-])[A-Za-z0-9][A-Za-z0-9._\-]{1,63}@(?:ok(?:axis|hdfcbank|icici|sbi)|ybl|ibl|axl|paytm|upi|apl|yapl|"
+    r"pty(?:es)?|ptaxis|pthdfc|ptsbi|axisbank|axisb|icici|sbi|hdfcbank|kotak|kmbl|airtel|freecharge|jio|fbl|idfcbank|"
+    r"barodampay|unionbank|pnb|abfspay|wa(?:icici|hdfcbank|sbi|axis)|ikwik|mbk|postbank|indus|rbl|yesbank|yesbankltd|"
+    r"federal|kbl|cnrb|boi|aubank|dbs|hsbc|citi|sliceaxis|naviaxis|superyes|timecosmos)(?![\w.@])", re.I)
+# an e-mail written to dodge scrapers: "name @ gmail.com", "name(at)gmail(dot)com", "name [at] mail [dot] in"
+_OB_AT = r"(?:[ \t]*@[ \t]*|[ \t]*[(\[{][ \t]*at[ \t]*[)\]}][ \t]*)"
+_OB_DOT = r"(?:[ \t]*\.[ \t]*|[ \t]*[(\[{][ \t]*dot[ \t]*[)\]}][ \t]*)"
+_RE_EMAIL_OBF = re.compile(
+    r"(?<![\w.@+\-])[A-Za-z0-9][A-Za-z0-9._%+\-]{0,63}" + _OB_AT + r"[A-Za-z0-9][A-Za-z0-9\-]{0,40}"
+    r"(?:" + _OB_DOT + r"[A-Za-z0-9\-]{2,20}){0,2}" + _OB_DOT +
+    r"(?:com|in|org|net|co|edu|gov|nic|info|me|io|biz|ac|res)(?![\w])", re.I)
+# an Aadhaar / phone dictated digit by digit: "4 4 1 2 3 3 4 4 5 5 6 6"
+_RE_DIGITS_SPACED = re.compile(r"(?<![0-9A-Za-z])[0-9](?:[ .\-][0-9]){9,13}(?![0-9A-Za-z]|[ .\-][0-9])")
+_RE_PHONE_MASKED = re.compile(r"(?<![0-9A-Za-z*])[6-9][0-9]{1,4}(?:[Xx]{3,7}|\*{3,7})[0-9]{1,4}(?![0-9A-Za-z*])")
+_RE_DL_SHAPE = re.compile(r"(?<![0-9A-Za-z])([A-Z]{2})[ \-]?[0-9]{2}[ \-]?((?:19|20)[0-9]{2})[ \-]?[0-9]{7}(?![0-9A-Za-z])")
+_RE_WRAPPED_NUM = re.compile(r"(?i)(?<![a-z])(?:mob(?:ile)?|ph(?:one)?|contact|tel|cell|aadhaa?r|aadhar|adhar|uid|"
+                             r"मोबाइल|फोन|आधार)[^0-9\n]{0,15}?([0-9](?:[ \t]{0,2}(?:\n[ \t]*)?[0-9]){9,11})(?![0-9])")
+_RE_AADHAAR_CUE = re.compile(r"(?:aadhaa?r|aadhar|adhar|uid|आधार)[^0-9\n]{0,20}$")
+# a family / household scheme number is not the person's Aadhaar even when twelve digits long
+RE_FAMILY_LABEL = re.compile(r"(?:jan[\s\-]*aadhaa?r|jan[\s\-]*aadhar|जन[\s\-]*आधार|family\s*(?:id|card)|parivar|परिवार|"
+                             r"bhamashah|भामाशाह)[^0-9\n]{0,20}$")
+
+
+def find_personal_docs(text: str) -> List[Span]:
+    """Personal document numbers (passport, driving licence, ration card, bank account, family id,
+    vehicle plate, UPI handle) as REF_ID; obfuscated e-mails as EMAIL; digit-by-digit Aadhaar / phone."""
+    t = _to_ascii_digits(text)
+    tl = t.lower()
+    c: List[Tuple[int, int, int, str, str]] = []
+    if "@" in t or "(at" in tl or "[at" in tl or "{at" in tl:
+        for m in _RE_UPI.finditer(t):
+            c.append((0, m.start(), m.end(), "REF_ID", ""))
+        for m in _RE_EMAIL_OBF.finditer(t):
+            g = m.group()
+            if "@" in g and " " not in g and "(" not in g and "[" not in g:
+                continue                       # a plain e-mail: the e-mail rule has it
+            v = re.sub(r"[ \t]*[(\[{][ \t]*at[ \t]*[)\]}][ \t]*", "@", g, flags=re.I)
+            v = re.sub(r"[ \t]*[(\[{][ \t]*dot[ \t]*[)\]}][ \t]*", ".", v, flags=re.I)
+            c.append((1, m.start(), m.end(), "EMAIL", re.sub(r"[ \t]", "", v).lower()))
+    for kind, rx in _DOC_LABELS:
+        for lm in rx.finditer(tl):
+            vm = None
+            p = lm.end()
+            words = 0
+            lim = min(len(t), lm.end() + 26)
+            while p < lim and t[p] not in "\n,;|":
+                if t[p].isalnum() and not t[p - 1].isalnum():
+                    vm = _DOC_VALUE[kind].match(t, p)
+                    if vm:
+                        break
+                    words += 1
+                    if words > 3:
+                        break
+                p += 1
+            if not vm:
+                continue
+            val = vm.group()
+            if kind in ("ration", "family") and len(_digits(val)) < (6 if kind == "ration" else 8):
+                continue
+            if kind == "ration" and re.search(r"[ ][A-Za-z]{2,}", val):
+                continue                       # ran into the next words
+            if kind in ("dl", "vehicle"):
+                st = next(x for x in vm.groups() if x)
+                if st.upper() not in _STATE_CODES:
+                    continue
+            lb = _line_before(tl, lm.start(), 30)
+            if kind != "vehicle" and _DOC_VETO.search(lb + tl[lm.start():lm.end()]):
+                continue
+            if kind == "vehicle" and _HIRED_VEHICLE.search(_line_before(tl, vm.start(), 60)):
+                continue                       # the delivery rider's / taxi's plate is not the patient's
+            c.append((0, vm.start(), vm.end(), "REF_ID", ""))
+    if _RTA_CONTEXT.search(tl):
+        for m in _RE_PLATE_SPACED.finditer(t):
+            if m.group(1) in _STATE_CODES and not _HIRED_VEHICLE.search(_line_before(tl, m.start(), 60)):
+                c.append((1, m.start(), m.end(), "REF_ID", ""))
+    # a mobile masked by a gateway: "81XXXXXX19", "98****3210"
+    for m in _RE_PHONE_MASKED.finditer(t):
+        if len(m.group()) == 10 and not _phone_vetoed(t, tl, m.start()):
+            c.append((2, m.start(), m.end(), "REF_ID", ""))
+    # a driving licence in its own shape, label or not: state + RTO + year of issue + 7 digits
+    for m in _RE_DL_SHAPE.finditer(t):
+        if (m.group(1) in _STATE_CODES and 1950 <= int(m.group(2)) <= 2035
+                and not _DOC_VETO.search(_line_before(tl, m.start(), 40))):
+            c.append((1, m.start(), m.end(), "REF_ID", ""))
+    # a phone / Aadhaar broken by an OCR line wrap right after its label: "mob 98765 4\n3210"
+    for m in _RE_WRAPPED_NUM.finditer(t):
+        d = _digits(m.group(1))
+        if "\n" not in m.group(1) or (len(d) == 12 and d.startswith("91") and d[2] in "6789"):
+            continue                       # unbroken numbers belong to the ordinary rules
+        head = _digits(m.group(1).split("\n", 1)[0])
+        if len(head) in (10, 12) and (len(head) == 12 or head[0] in "6789"):
+            continue                       # complete before the line end: the next line is something else (a time, a count)
+        if len(d) == 10 and d[0] in "6789" and not m.group().lower().startswith(("aadh", "adh", "uid", "आधार")):
+            c.append((2, m.start(1), m.end(1), "PHONE", d))
+        elif (len(d) == 12 and d[0] in "23456789" and m.group().lower().startswith(("aadh", "adh", "uid", "आधार"))
+              and not RE_FAMILY_LABEL.search(tl, max(0, m.start(1) - 40), m.start(1))):
+            c.append((2, m.start(1), m.end(1), "AADHAAR", d))
+    for m in _RE_DIGITS_SPACED.finditer(t):
+        d = _digits(m.group())
+        if len(d) == 12 and (_RE_AADHAAR_CUE.search(tl, max(0, m.start() - 40), m.start())
+                             or (d[0] in "23456789" and not _phone_vetoed(t, tl, m.start())
+                                 and not RE_FAMILY_LABEL.search(tl, max(0, m.start() - 40), m.start()))):
+            c.append((2, m.start(), m.end(), "AADHAAR", d))
+        elif len(d) == 10 and d[0] in "6789" and not _phone_vetoed(t, tl, m.start()):
+            c.append((2, m.start(), m.end(), "PHONE", d))
     return _resolve(c)
