@@ -304,7 +304,12 @@ class _Rec:
             if toks:
                 fk.add(name_key(toks[0]))
         self.firstkeys = sorted(fk - {""})
-        self.ids = sorted({t for t in (_norm_token(x) for x in f.ids) if t})
+        ids = {t for t in (_norm_token(x) for x in f.ids) if t}
+        phones = {t.split(":", 1)[1] for t in ids if t.startswith(ID_PHONE + ":")}
+        # "+91 98xxxxxxxx" written without separators reads as twelve digits: not an Aadhaar
+        ids = {t for t in ids if not (t.startswith(ID_AADHAAR + ":") and t[len(ID_AADHAAR) + 1:].startswith("91")
+                                      and t[len(ID_AADHAAR) + 3:] in phones)}
+        self.ids = sorted(ids)
         self.cores = sorted({c for c in (_uhid_core(t) for t in self.ids) if c})
         self.canon = sorted({c for c in (_uhid_canon(t) for t in self.ids) if c})
         self.sat = not f.is_patient
@@ -318,7 +323,9 @@ class _Rec:
         self.age = f.age
         if f.dob is not None:
             self.byear = f.dob.year
-        elif f.age is not None and f.ref_date is not None:
+        elif f.age is not None and f.ref_date is not None and f.ref_date.year >= _MIN_EVENT_YEAR:
+            # an "event" date decades old is most likely an unlabelled birth date ("Born: ..."):
+            # age minus that date would invent a birth year a lifetime too early
             self.byear = f.ref_date.year - f.age
         else:
             self.byear = None
@@ -326,6 +333,10 @@ class _Rec:
         self.gender = (f.gender or "").upper()
         self.fragment = bool(self.names) and all(len(name_tokens(n)) == 1 for n in self.names) \
             and bool(self.rels)
+
+
+_MIN_EVENT_YEAR = 1995
+_PAN_SHAPE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
 
 _SAME_CACHE: Dict[Tuple[str, str], bool] = {}
@@ -375,6 +386,8 @@ class _Group:
         self.cids: Dict[str, Set[str]] = {}
         for t in r.ids:
             typ = t.split(":", 1)[0]
+            if typ == ID_PAN and not _PAN_SHAPE.match(t[4:]):
+                continue   # a voter / ration / visit code filed as a government id: not a PAN to conflict on
             if typ in _CONFLICT_TYPES and t not in demoted:
                 self.cids.setdefault(typ, set()).add(t)
         self.rels = list(r.rels)
