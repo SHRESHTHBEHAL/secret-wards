@@ -364,8 +364,9 @@ def put(fb: _FB, typ: str, value: Any, order: str = "dmy", group: str = "") -> N
         if not f.tehsil:
             f.tehsil = s
     elif typ == F.DISTRICT:
-        if not f.district:
-            f.district = s
+        if not f.district or getattr(fb, "addr_district", False):
+            f.district = s        # a district column beats a district guessed from an address line
+            fb.addr_district = False
     elif typ == F.PIN:
         d = re.sub(r"[^0-9]", "", to_ascii_digits(s))
         if len(d) == 6 and not f.pin:
@@ -378,7 +379,10 @@ def put(fb: _FB, typ: str, value: Any, order: str = "dmy", group: str = "") -> N
         if g is not None:
             g.names = []          # an address never names the patient; keep C/O relatives, places
             g.ref_date = None
+            had = bool(f.district)
             fb.merge(g)
+            if not had and f.district:
+                fb.addr_district = True
         if s not in f.address_parts:
             f.address_parts.append(s)
     elif typ == F.DATE:
