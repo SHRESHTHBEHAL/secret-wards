@@ -178,7 +178,9 @@ _RE_PHONE = re.compile(
 )
 _RE_PHONE_PLUS = re.compile(r"\+91[0-9]{10}(?![0-9])")
 # "+971 50 318 2264", "+44 7700 900123": any other country code, 7-12 digits in groups
-_RE_PHONE_INTL = re.compile(r"(?<![0-9A-Za-z+])\+(?!91)[1-9][0-9]{0,2}(?:[ \t.\-]?[0-9]){7,12}(?![0-9A-Za-z])")
+_RE_PHONE_INTL = re.compile(r"(?<![0-9A-Za-z+])(?:\+(?!91)[1-9][0-9]{0,2}|(?<![0-9])00(?!91)[1-9][0-9]{0,2}(?=[ \t.\-(]))"
+                            r"(?:[ \t.\-]?\(?[0-9]{1,4}\)?)??(?:[ \t.\-]?[0-9]){7,12}(?![0-9A-Za-z])"
+                            r"|(?<![0-9A-Za-z+])\+(?!91)[1-9][0-9]{0,2}[ \t]?\([0-9]{2,4}\)(?:[ \t.\-]?[0-9]){6,10}(?![0-9A-Za-z])")
 # "(04576) 262418", "(011) 2345 6789": STD code in brackets
 _RE_PHONE_STD = re.compile(r"(?<![0-9A-Za-z])\(0[1-9][0-9]{1,4}\)[ \t\-]?[2-9][0-9]{1,3}[ \t\-]?[0-9]{2,4}(?![0-9A-Za-z])")
 # "+91 (98765) 43210", "(98765) 43210", "0091 (98765)-43210"
@@ -693,7 +695,46 @@ _RE_HIST_END = re.compile(r"(?:\.(?![0-9])|[;\n\r\t|,\"।]|\s+(?:mob|mobile|ph|
 _INST_TAIL = (r"(?:Memorial(?:[ \t]+(?:Hospital|Trust|Clinic|Institute|Medical[ \t]+College))?|Nursing[ \t]+Home|Pharmacy|"
               r"Medical[ \t]+Store|Medical[ \t]+Hall|Medicals|Chemists?|Druggists?|Diagnostics|Diagnostic[ \t]+Cent(?:re|er)|"
               r"Path(?:ology)?[ \t]+Lab(?:s)?|Polyclinic|Medical[ \t]+College(?:[ \t]+(?:&|and)[ \t]+Hospital)?|"
-              r"Hospital|Clinic|Police[ \t]+Station|Thana|Eye[ \t]+Hospital|Heart[ \t]+Institute|Cancer[ \t]+Institute)")
+              r"Hospital|Clinic|Police[ \t]+Station|Thana|Eye[ \t]+Hospital|Heart[ \t]+Institute|Cancer[ \t]+Institute|"
+              # regional institution head-words: the whole capitalised phrase before them is the facility
+              r"Rugnalaya|Rugnalay|Chikitsalaya|Chikitsalay|Aspatal|Aspataal|Haspatal|Davakhana|Dawakhana|Dawakhaana|"
+              r"Davakhaana|Arogya[ \t]+Kendra|Aarogya[ \t]+Kendra|Swasthya[ \t]+Kendra|Seva[ \t]+Sadan|Sewa[ \t]+Sadan|"
+              r"Maruthuvamanai|Maruthuvamanai|Vaidyashala|Aushadhalaya|Hospitals)")
+_INST_UP_TAIL = (r"(?:RUGNALAYA|RUGNALAY|CHIKITSALAYA|CHIKITSALAY|ASPATAL|ASPATAAL|DAVAKHANA|DAWAKHANA|AROGYA[ \t]+KENDRA|"
+                 r"SWASTHYA[ \t]+KENDRA|SEVA[ \t]+SADAN|SEWA[ \t]+SADAN|MARUTHUVAMANAI|HOSPITAL|HOSPITALS|CLINIC|NURSING[ \t]+HOME|"
+                 r"MEDICAL[ \t]+COLLEGE(?:[ \t]+(?:&|AND)[ \t]+HOSPITAL)?|POLYCLINIC|INSTITUTE)")
+# letterhead form: "<WORD> <WORD> RUGNALAYA"
+_RE_INST_UP = re.compile(r"(?<![A-Za-z])(?:[A-Z][A-Z'’\-]+[ \t]){1,4}" + _INST_UP_TAIL + r"(?![A-Za-z])")
+# named wards and units: "<Words> Vibhag", "<Words> Kaksh 2", "<Words> Ikai", "<Word> Ward", "Isolation Bay",
+# "<Word> Step-down", "HDU-2"; a hospital place, never a person or a village
+_RE_WARD_NAME = re.compile(
+    r"(?<![A-Za-z])(?:[A-Z][a-z]+[ \t]+){1,3}(?:Vibhag|Vibhaag|Kaksh|Kaksha|Ikai|Ward|Bay|Step-?[Dd]own|Unit|Wing)"
+    r"(?:[ \t\-]*(?:No\.?[ \t]*)?[0-9]{1,2}[A-Z]?)?(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z])(?:HDU|ICU|ICCU|CCU|NICU|PICU|SICU|MICU|RICU|SNCU|NRC|HDU)[ \t]*[\-]?[ \t]*[0-9]{1,2}(?![0-9A-Za-z])"
+    r"|(?<![A-Za-z])(?:Main|Central|Medical|Drug|Sub)[ \t]+Store(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:DOTS|ORS|ARV|ART|ICTC|Immunisation|Immunization|Vaccination|Dressing)[ \t]+(?:Corner|Room|Centre|Center)(?![A-Za-z])")
+# "<Capitalised words> disease / virus / encephalitis / typhus ...": a disease name, never a place or a person
+_RE_DISEASE_NAME = re.compile(
+    r"(?<![A-Za-z])((?:[A-Z][a-z]+(?:-[A-Z]?[a-z]+)?[ \t]+){1,3})(disease|fever|virus|encephalitis|typhus|thyroiditis|"
+    r"arteritis|syndrome|haemorrhagic[ \t]+fever|hemorrhagic[ \t]+fever)(?![A-Za-z])(?![ \t]*-?[ \t]*free)")
+_DISEASE_ONE_OK = frozenset("encephalitis typhus thyroiditis arteritis virus syndrome".split())
+_DISEASE_NOT_FIRST = frozenset("pt patient mr mrs ms smt shri sri km kumari baby master dr miss".split())
+_FEVER_CUE = re.compile(r"[ \t]*(?:x|since|for|from|se|ke|[0-9])(?![A-Za-z])", re.I)
+
+
+def _disease_names(t: str) -> List[Tuple[int, int]]:
+    out = []
+    for m in _RE_DISEASE_NAME.finditer(t):
+        words = m.group(1).split()
+        if words[0].lower().rstrip(".") in _DISEASE_NOT_FIRST:
+            continue
+        tail = m.group(2).lower()
+        if len(words) < 2 and tail not in _DISEASE_ONE_OK:
+            continue
+        if tail == "fever" and _FEVER_CUE.match(t, m.end()):
+            continue                      # "<Name> <Surname> fever x 3 days": a person with a fever
+        out.append((m.start(), m.end()))
+    return out
 _RE_INST = re.compile(
     r"(?<![A-Za-z])(?:(?:Sir|Saint|St\.?|Shri|Sri|Smt\.?|Late|Dr\.?|Al|El)[ \t]+)?"
     r"(?:[A-Z][A-Za-z'’\-]+[ \t]){1,3}" + _INST_TAIL + r"(?![A-Za-z])(?![ \t]*(?:[:#]|No\b|no\b|Reg|ID\b|Id\b))")
@@ -719,7 +760,12 @@ _RE_ROAD_NO = re.compile(r"(?<![A-Za-z])(?:NH|SH|MDR|ODR)[ \t\-]?[0-9]{1,3}[A-Z]
 
 _KEEP_SHIELDS = (
     (_RE_INST, re.compile(r"Memorial|Nursing|Pharmacy|Medical|Chemist|Druggist|Diagnostic|Path|Polyclinic|Hospital|Clinic|"
-                          r"Police|Thana|Institute")),
+                          r"Police|Thana|Institute|Rugnala|Chikitsala|spat|khana|khaana|Kendra|Sadan|Maruthuva|"
+                          r"Vaidyashala|Aushadhalaya")),
+    (_RE_INST_UP, re.compile(r"RUGNALA|CHIKITSALA|ASPAT|KHANA|KENDRA|SADAN|MARUTHUVA|HOSPITAL|CLINIC|NURSING|MEDICAL|"
+                             r"INSTITUTE")),
+    (_RE_WARD_NAME, re.compile(r"Vibha|Kaksh|Ikai|Ward|Bay|Step|Unit|Wing|HDU|ICU|CCU|SNCU|NRC|Store|Corner|Room|"
+                               r"Centre|Center")),
     (_RE_HI_INST2, re.compile(r"मेडिकल|मेमोरियल|स्मारक|चिकित्सालय|नर्सिंग")),
     (_RE_PROGRAMME, re.compile(r"[A-Z]{2,}|National|Mantri|Rashtriya|Intensified|Mission|Pulse|Nikshay|Ayushman|"
                                r"rogyasri|Swasthya|Janani|Kayakalp|LaQshya|Poshan|cheme|ojana")),
@@ -978,6 +1024,8 @@ def _protected_spans(text: str) -> List[Span]:
             for m in rx.finditer(t):
                 c.append((2, m.start(), m.end(), "EPONYM", ""))
     for a, b in _eponym_spans(t):
+        c.append((2, a, b, "EPONYM", ""))
+    for a, b in _disease_names(t):
         c.append((2, a, b, "EPONYM", ""))
     for m in _RE_BRAND.finditer(t):
         w = re.match(r"(?:[A-Za-z]+\.[ \t]*)?([A-Za-z]+)", m.group()).group(1).lower()
