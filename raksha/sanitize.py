@@ -946,6 +946,8 @@ class _Fhir:
                 out[k] = [self.entry(e) for e in v]
             elif k == "meta":
                 out[k] = self._meta(v)
+            elif k == "timestamp" and isinstance(v, str):
+                out[k] = self._shift_instant(v)     # bundle assembly time tracks the real visit
             elif k in ("timestamp", "type") or k in _FHIR_KEEP:
                 out[k] = v
             else:
@@ -1199,10 +1201,24 @@ class _Fhir:
             return 0
         return node
 
+    def _shift_instant(self, v: str) -> str:
+        """A FHIR date / dateTime / instant moved by the record's shift (same syntax, so R4 stays valid)."""
+        if not v.strip() or not _FHIR_DATE.match(v.strip()) or not self.ctx.do_shift:
+            return v
+        try:
+            nv = dates.shift_text(v, self.ctx.shift, "dmy")
+        except Exception:  # noqa: BLE001
+            return v
+        if nv != v:
+            self.ctx.generalized = True
+        return nv
+
     def _meta(self, v: Any) -> Any:
         if not isinstance(v, dict):
             return v
         out = dict(v)
+        if isinstance(v.get("lastUpdated"), str):
+            out["lastUpdated"] = self._shift_instant(v["lastUpdated"])
         src = v.get("source")
         if isinstance(src, str) and src.strip():
             out["source"] = scrub_text(src, self.ctx, "ids", dates_on=False, ages_on=False)
