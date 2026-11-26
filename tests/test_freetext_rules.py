@@ -228,3 +228,62 @@ class ProseNames(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreshGeneralisation(unittest.TestCase):
+    """Rule families from the fresh-suite round (invented names and places only)."""
+
+    def _names(self, t):
+        return [v for k, v in kinds(t) if k in ("PERSON", "PATIENT_NAME", "RELATIVE_NAME")]
+
+    def test_eponym_shield(self):
+        for t in ("Qorvex Fall Scale 40.", "Zandor Plimm score 6.", "Modified Ashworth grade 1+.", "Barthel Index 60/100.",
+                  "Berg Balance 41.", "hemiarthroplasty (Austin Moore prosthesis)", "Hoehn and Yahr stage 3"):
+            self.assertEqual(self._names(t), [], t)
+        # a weak tail after an unknown run stays a person
+        self.assertTrue(self._names("Pt Qamesh Vortu type 2 DM since 2019."))
+
+    def test_brand_suffix(self):
+        for t in ("taking Zylopa Plus 125 mg", "Son: Qarnokind-AT subah ek.", "Tab. Vortexa daily"):
+            self.assertEqual(self._names(t), [], t)
+
+    def test_reference_labels_not_mrn(self):
+        for t in ("Preauth ID: PA-918273-2611", "Ref: REJ/QQ/26/001122", "Call ref TN/1111/2222",
+                  "consultation id QSJ-HP-2611-11111", "Ambulance 108 vehicle QQ10-1234 arranged"):
+            self.assertEqual([k for k, _ in kinds(t) if k == "MRN"], [], t)
+        self.assertIn(("MRN", "QQK/OP/2026/11111"), kinds("OP ticket QQK/OP/2026/11111"))
+        self.assertIn(("MRN", "11 222 3333 4444 5"), kinds("Form F. MCTS 11 222 3333 4444 5"))
+
+    def test_phone_shapes(self):
+        self.assertIn(("PHONE", "+971 50 111 2222"), ids("WhatsApp +971 50 111 2222 (son)"))
+        self.assertIn(("PHONE", "(01234) 262418"), ids("office (01234) 262418."))
+        self.assertTrue([k for k, _ in ids("Number hai nau-aath-ek-chhe-shunya, 43725.") if k == "PHONE"])
+        self.assertEqual(ids("do din se bukhar, ek do baar ulti"), [])
+
+    def test_localities(self):
+        t = "Lives with wife at #87, 3rd Cross, Qorvanagar. Shifted from 7, Zinnia Society to Plot 2."
+        got = kinds(t)
+        self.assertIn(("LOCALITY", "Qorvanagar"), got)
+        self.assertIn(("LOCALITY", "3rd Cross"), got)
+        self.assertIn(("LOCALITY", "Zinnia Society"), got)
+        self.assertEqual(kinds("Body handed over for Qorvawadi."), [])
+        self.assertEqual(kinds("Qorvanagar Diagnostic & Polyclinic, Nadia"), [])
+
+    def test_institutions_and_roles(self):
+        for t in ("102 gaadi se Sadar Aspatal Qorvaganj le gayi.", "Sawan ko sulana hai, sahiya didi ko bata diya.",
+                  "क्यूराम चन्द्र भंज चिकित्सा महाविद्यालय, कटक"):
+            self.assertEqual([v for v in self._names(t) if v != "Sawan"], [], t)
+
+    def test_footer_caps_and_dev_roles(self):
+        self.assertIn(("PERSON", "Qolan Zedeng-Kowlni"),
+                      kinds("-- printed by Qolan Zedeng-Kowlni ext 214 / 98373 60142 --"))
+        self.assertIn(("PATIENT_NAME", "QORVATHAMBI M"), kinds("Dear QORVATHAMBI M, your appt is on 07-Nov."))
+        self.assertEqual(kinds("Dear SIR, please find attached."), [])
+        self.assertIn(("PERSON", "क्यूकेश ज़ैगर"), kinds("रक्तदाता: साला क्यूकेश ज़ैगर, वोटर कार्ड"))
+
+    def test_clinical_hinglish_hindi(self):
+        for t in ("Patient: ghutnon mein dard dono taraf.", "Background: Left MCA infarct (Aug 2026)",
+                  "2. मैं बच्चेदानी निकालने का ऑपरेशन करवाने की सहमति देती हूँ।"):
+            self.assertEqual(self._names(t), [], t)
+        self.assertTrue(any(sp.kind == "LAB" for sp in patterns.protected_spans("हीमोग्लोबिन: 4.6 ग्राम/डी.एल.")))
+        self.assertEqual([sp for sp in patterns.find_pins("बैग नं.: 340001-B")], [])
