@@ -102,7 +102,9 @@ spouse son daughter relative relation attendant
 तारीख भर्ती छुट्टी निदान डिस्चार्ज सारांश ओपीडी पर्चा मकान नंबर मोहल्ला वार्ड पास पीछे सामने
 """) | scripts.LABEL_WORDS
 
-_HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन") \
+_HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन "
+                   "bhau bhaurao baideo bhaideo paaji paji praji chechi chechy ajoba aaji "
+                   "भाऊ पाजी") \
     | scripts.HONORIFICS
 _HON_KIN = _ws("""
 bhaiya bhaiyya bhaiyaa amma ammi ammaji chacha chachi chachaji tai tau bua mausi mama mami bhabhi bhabhiji
@@ -570,8 +572,10 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
 
 _KIN_RE = re.compile(r"(?<![A-Za-z/])([SDWHCFMBsdwhcfmb])[ \t]*/[ \t]*([Oo])(?![A-Za-z/])\.?[ \t]*:?[ \t]*")
 _KIN_EN = re.compile(r"(?<![A-Za-z])(son|daughter|wife|husband|father|mother)\s+of\s+", re.I)
-_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(" + "|".join(scripts.KIN_WORDS) + r"|पिता|पति|पत्नी|पुत्र|पुत्री|माता|बेटा|बेटी|बहन|ससुर|सास|"
-                     r"देवर|ननद|चाचा|चाची|मामा|मामी|बहू|दामाद|भाभी|जेठ|भतीजा|भतीजी|पोता|पोती|नाती|नातिन)(?:[ \t]*(?:" + "|".join(scripts.POSSESSIVES) + r")[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
+_KIN_HI_WORDS = sorted(set(scripts.KIN_WORDS) | set("""पिता पति पत्नी पुत्र पुत्री माता बेटा बेटी बहन ससुर सास देवर ननद
+चाचा चाची मामा मामी बहू दामाद भाभी जेठ भतीजा भतीजी पोता पोती नाती नातिन""".split()), key=len, reverse=True)
+# longest first, and a kinship word never ends before a vowel sign or virama ("पुत्र" inside "पुत्री")
+_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(" + "|".join(_KIN_HI_WORDS) + r")(?![ऀ-ःऺ-ॏॕ-ॗॢॣ])(?:[ \t]*(?:" + "|".join(scripts.POSSESSIVES) + r")[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
 _HON_RE = re.compile(r"(?<![A-Za-zऀ-ॿ])(" + "|".join(sorted(
     (re.escape(w) for w in _HON_AFTER), key=len, reverse=True)) + r")(?![A-Za-zऀ-ॿ])", re.I)
 _TITLE_RE = re.compile(
@@ -743,6 +747,17 @@ def _layer_pid_labels(cx: _Ctx) -> None:
         if len(re.sub(r"[^0-9०-९]", "", g)) < 3 or not re.search(r"[0-9०-९]", g):
             continue
         cx.add(v.start(), v.end(), "MRN", patterns.norm_id(g), 1)
+    for m in _ADM_BARE.finditer(t):
+        cx.add(m.start(1), m.end(1), "MRN", patterns.norm_id(m.group(1)), 1)
+
+
+# "Bharti W26-00016", "भर्ती: IP#26-01234", "Indoor ADM-TNJ-60793": an admission label (also a given name, so
+# only with an id-shaped value: letters glued to a year, then a serial)
+_ADM_BARE = re.compile(
+    r"(?<![A-Za-zऀ-ॿ])(?:Bharti|Bharati|Bharthi|Bhartee|भर्ती|Indoor|Inpatient|In-patient|IPD|IP|Adm(?:ission)?|ADM)(?![A-Za-zऀ-ॿ])"
+    r"(?:[ \t]*(?:No\.?|Number|Kr\.?|Kramank|सं\.?|क्र\.?|क्रमांक|नं\.?))?[ \t]*[:#.\-–]?[ \t]*"
+    r"((?:[A-Z]{1,5}[#/\-]?)?[0-9]{2}[#/\-](?:[A-Z]{1,5}[/\-])?[0-9]{3,7}|[A-Z]{2,5}[#/\-][A-Z]{2,5}[/\-][0-9]{4,7})"
+    r"(?![A-Za-z0-9/\-])")
 
 
 _REF_SHAPED = re.compile(r"(?<![A-Za-z0-9/#\-])[A-Z]{2,6}(?:[/#\-][0-9]{2,4})?[/#\-][0-9]{5,10}(?![A-Za-z0-9/\-])")
@@ -1163,10 +1178,14 @@ def _layer_places(cx: _Ctx) -> None:
 
 _LM_NOUN = (r"(?:bridge|temple|mandir|masjid|mosque|church|gurudwara|dargah|school|ground|maidan|gate|chowk|chowraha|tank|"
             r"market|bazaar|bazar|park|tower|petrol[ \t]+pump|pump|dhaba|well|pond|talab|statue|circle|junction|bus[ \t]+stand|"
-            r"stand|godown|mill|factory|garden|lake|teppakulam|kulam|kund|ghat|tree|peepal|post[ \t]+office)")
+            r"stand|godown|mill|factory|garden|lake|teppakulam|kulam|kund|ghat|tree|peepal|post[ \t]+office|depot|gumti|"
+            r"crossing|level[ \t]+crossing|railway[ \t]+(?:station|line|gate|crossing|track)|signal|bus[ \t]+stop|"
+            r"flyover|over-?bridge|culvert|water[ \t]+tank|panchayat(?:[ \t]+(?:office|bhavan|bhawan))?|chakki|"
+            r"bhatti|kiln|godam|haat|mandi|tiniali|chowmatha|bypass|toll[ \t]+plaza|naka|kovil|koil|devalaya)")
 _LM_PREP = re.compile(r"(?<![A-Za-z])(?:near|nr\.?|behind|opp\.?|opposite|beside|next[ \t]+to|in[ \t]+front[ \t]+of|close[ \t]+to)"
                       r"[ \t]+((?:the[ \t]+)?(?:[A-Za-z][A-Za-z'\-]*[ \t]+){0,4}" + _LM_NOUN + r")(?![A-Za-z])", re.I)
-_LM_POST_LAT = re.compile(r"(?<![A-Za-z])((?:[a-z][a-z'\-]+[ \t]+){0,3}[a-z][a-z'\-]+)[ \t]+ke[ \t]+(?:paas|pass|samne|saamne|peeche|piche|bagal)"
+_LM_POST_LAT = re.compile(r"(?<![A-Za-z])((?:[a-z][a-z'\-]+[ \t]+){0,3}[a-z][a-z'\-]+)[ \t]+(?:ke[ \t]+(?:paas|pass|samne|saamne|peeche|piche|bagal)"
+                          r"|(?:javal|jawal|javal|maage|mage|samor|shejari|chya[ \t]+(?:javal|maage|samor|shejari)))"
                           r"(?![A-Za-z])", re.I)
 _LM_POST_DEV = re.compile(r"(?<![ऀ-ॿ])((?:[ऀ-ॿ]+[ \t]+){0,2}[ऀ-ॿ]+)[ \t]+के[ \t]+(?:सामने|पास|पीछे|बगल|निकट)(?![ऀ-ॿ])")
 
@@ -1255,7 +1274,10 @@ def _sentence_end(t: str, pos: int, limit: int) -> int:
 
 _HOUSE_ANY = re.compile(
     r"(?<![A-Za-z0-9])(?:(?:H|D)\.?[ \t]*No\.?|House[ \t]*No\.?|House|Flat[ \t]*No\.?|Flat|Plot[ \t]*No\.?|Plot|Door[ \t]*No\.?|"
-    r"Qtr\.?[ \t]*No\.?|Quarter[ \t]*No\.?|Barrack|#|Old[ \t]+No\.?|New[ \t]+No\.?|मकान[ \t]*(?:सं\.?|नं\.?|नंबर)?|फ्लैट|प्लॉट)"
+    r"Qtr\.?[ \t]*No\.?|Quarter[ \t]*No\.?|Barrack|#|Old[ \t]+No\.?|New[ \t]+No\.?|मकान[ \t]*(?:सं\.?|संख्या|नं\.?|नंबर)?|फ्लैट|प्लॉट|"
+    r"Holding[ \t]*No\.?|Ghar[ \t]*No\.?|Kholi[ \t]*No\.?|Row[ \t]+House[ \t]*(?:No\.?)?|Khasra[ \t]*No\.?|"
+    r"Survey[ \t]*No\.?|Sy\.?[ \t]*No\.?|Gat[ \t]*No\.?|Bungalow[ \t]*No\.?|Chawl[ \t]*No\.?|Room[ \t]*No\.?(?=[^\n]{0,40},)|"
+    r"घर[ \t]*(?:नं\.?|नंबर|सं\.?)|कोठी[ \t]*(?:नं\.?|नंबर|सं\.?)?|भूखंड[ \t]*(?:नं\.?|संख्या|सं\.?)?)"
     r"[ \t]*[:\-]?[ \t]*[0-9०-९][0-9०-९A-Za-z/\-]*(?:[ \t]+room[ \t]+[0-9]+)?(?![0-9A-Za-z])", re.I)
 _LANE_ANY = re.compile(
     r"(?<![A-Za-z])(?:Sector|Bye-?lane|Lane|Gali|Street|Cross|Main|Block|Phase)[ \t]*(?:No\.?)?[ \t]*[0-9][0-9A-Za-z\-]*(?![0-9A-Za-z])"
@@ -1270,6 +1292,10 @@ def _layer_house_markers(cx: _Ctx) -> None:
             if kind == "HOUSE" and g.startswith("#") and not re.match(r"#[ \t]*[0-9]{2,}", g):
                 continue
             if re.match(r"(?:Block|Phase|Main|Cross)", g) and not _ADDR_CONTEXT.search(t, max(0, m.start() - 60), m.start()):
+                continue
+            if kind == "HOUSE" and not g.startswith("#") and cx.protected(m.start(), m.end()):
+                # "Door No. 3-117" reads as a range; a house label before the number decides it
+                cx.cands.append((4, m.start(), m.end(), kind, ""))
                 continue
             cx.add(m.start(), m.end(), kind, "", 4)
 
@@ -1399,8 +1425,31 @@ def _take_place_fwd(t: str, pos: int, lower: bool, max_tok: int = 3) -> Optional
     return pos, end
 
 
+# "<Village> wala / wale / wali": where a person is from, in Hinglish prose
+_PLACE_WALA = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{3,}(?:[ \t]+[A-Z][a-z]{3,})?)[ \t]+(?:wala|wale|wali|waala|waale|waali|vala|vale|vali)"
+                         r"(?![A-Za-z])")
+# "<name>, उम्र 40 वर्ष, <village> से": the place after the age in a register sentence
+_PLACE_AFTER_AGE = re.compile(r"(?:वर्ष|वर्षीय|साल|yrs?|years?|saal|Y)\+?[ \t]*,[ \t]*((?:" + _DEV + r"[ \t]+)?" + _DEV +
+                              r"|(?:[A-Z][a-z]{2,}[ \t]+)?[A-Z][a-z]{2,})[ \t]+(?:से|se|ki|ka|ke|के|की|का|nivasi|निवासी)"
+                              r"(?![A-Za-zऀ-ॣॱ-ॿ])")
+
+
+def _place_words_extra(cx: _Ctx) -> None:
+    t = cx.text
+    for rx in (_PLACE_WALA, _PLACE_AFTER_AGE):
+        for m in rx.finditer(t):
+            ws = m.group(1).split()
+            if any(_low(w) in _STOP or _low(w) in _DISTRICTS or _low(w) in _HI_FUNC or _low(w) in _GENERIC
+                   or _low(w) in _EN_COMMON or _low(w) in _LOW_VERBISH for w in ws):
+                continue
+            if any(not _is_dev(w) and not _is_name_tok(w, "cap") for w in ws):
+                continue
+            cx.add(m.start(1), m.end(1), "VILLAGE", "", 5)
+
+
 def _layer_place_words(cx: _Ctx) -> None:
     t = cx.text
+    _place_words_extra(cx)
     lower_text = not re.search(r"[A-Z][a-z]+[ \t]+[A-Z][a-z]+", t) or sum(c.isupper() for c in t) < len(t) / 80
     # 1. place-type word before the name: "village Kanwas", "PO Ramnagar", "tola Bhitri"
     for m in _PT_PRE.finditer(t):
@@ -1543,7 +1592,7 @@ def _layer_place_runs(cx: _Ctx) -> None:
 
 # Devanagari: "X Y, उम्र ४७", "X Y (वय ६१", "X Y नामक ५८ वर्षीय", "रोगी X Y को"
 _DEV_NAME_BEFORE = re.compile(r"((?:" + _DEV + r"[ \t]+){0,2}" + _DEV + r")(?:[ \t]*,[ \t]*(?:उम्र|आयु|उमर)|[ \t]*\([ \t]*(?:वय|उम्र|आयु)"
-                              r"|[ \t]+नामक)(?![ऀ-ॿ])")
+                              r"|[ \t]+नामक|[ \t]*,[ \t]*(?:पत्नी|पति|पुत्री|पुत्र|पिता|माता|बेटी|बेटा)(?=[ \t]+[ऀ-ॿ]))(?![ऀ-ॿ])")
 _DEV_PT_WORD = re.compile(r"(?<![ऀ-ॿ])(?:रोगी|मरीज़|मरीज|रोगिणी|बच्चा|बच्ची)[ \t]+((?:" + _DEV + r"[ \t]+){0,2}" + _DEV + r")"
                           r"[ \t]+(?:को|ने|की|का|के|से)(?![ऀ-ॿ])")
 # "<Surname> V. N. S. <Given>" after a title / name label / kinship marker
@@ -1574,8 +1623,27 @@ def _dev_name_ok(ws: List[str]) -> bool:
                                 _low(w) in lexicon.KINSHIP_MARKERS for w in ws)
 
 
+# "<Given> naam bataya": the name a walk-in patient gave
+_NAAM_BATAYA = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,}(?:[ \t]+[A-Z][a-z]{2,})?)[ \t]+(?:naam|nam|name)[ \t]+"
+                          r"(?:bataya|batayi|batai|bataaya|batata|batati|likhaya|likhwaya|bola|boli)(?![A-Za-z])")
+
+
+# "<Given> Khatoon (22 saal)": a name-part word plus an age in brackets marks a name even when the given name is
+# also an ordinary word
+_TRUE_TITLES = _ws("mr mrs ms smt shri shree sri sh km kum kumari sushri late swargiya janab mister srimati shrimati dr")
+_NAME_PART_AGE = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,})[ \t]+([A-Z][a-z]{2,})[ \t]*\([ \t]*[0-9]{1,3}[ \t]*"
+                            r"(?:saal|sal|yrs?|years?|y|varsh|baras)?[ \t]*(?:/[ \t]*[MF])?[ \t]*\)")
+
+
 def _layer_prose_names(cx: _Ctx) -> None:
     t = cx.text
+    for m in _NAME_PART_AGE.finditer(t):
+        if _low(m.group(2)) in _GENERIC and _low(m.group(1)) not in _GENERIC and _low(m.group(1)) not in _TRUE_TITLES:
+            cx.add(m.start(1), m.end(2), "PATIENT_NAME", "", 3)
+    for m in _NAAM_BATAYA.finditer(t):
+        ws = m.group(1).split()
+        if all(_is_name_tok(w, "cap") for w in ws):
+            cx.add(m.start(1), m.end(1), "PATIENT_NAME", "", 4)
     for m in _DEV_NAME_BEFORE.finditer(t):
         ws = m.group(1).split()
         k = len(ws)
@@ -1925,7 +1993,7 @@ amma didi bhai bhaiya bhaiyya sahab saheb ji jee behenji chacha chachi tai dadi 
 अम्मा दीदी भाई भैया साहब जी बहनजी चाचा चाची ताई दादी नानी बाबा काका मौसी बुआ
 """)
 # honorifics that follow a (possibly lower-case) given name: "asha ji", "ramesh sahab", "meera didi"
-_HON_NAME_CUE = _ws("ji jee sahab saheb sahib didi behenji bhaiya bhaiyya")
+_HON_NAME_CUE = _ws("ji jee sahab saheb sahib didi behenji bhaiya bhaiyya bhau baideo paaji chechi")
 _NOT_LOWER_NAME = _ws("""
 aap aapki aapke aapka unki unka unke inki inka inke uski uska uske meri mera mere tumhari hamari mata pita
 maa maaji papa bhai behen bahan beta beti bahu doctor dr sister nurse patient mareez mariz madam sir sahab
