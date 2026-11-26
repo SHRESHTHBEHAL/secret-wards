@@ -179,7 +179,7 @@ def name_tokens(name: str) -> List[str]:
 _KEY_RULES = (
     ("chh", "c"), ("ch", "c"), ("sh", "s"), ("ph", "f"), ("x", "ks"),
     ("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("uu", "u"),
-    ("ai", "e"), ("au", "o"), ("ow", "o"), ("w", "v"), ("z", "j"), ("q", "k"), ("y", "i"),
+    ("aya", "ai"), ("ai", "e"), ("au", "o"), ("ow", "o"), ("w", "v"), ("z", "j"), ("q", "k"), ("y", "i"),
 )
 _H_AFTER_CONS = re.compile(r"([bcdfgjklmnpqrstvxz])h")
 _DOUBLE = re.compile(r"(.)\1+")
