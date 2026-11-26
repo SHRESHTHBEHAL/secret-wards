@@ -751,6 +751,16 @@ def _clinical_ancestor(parents: Sequence[str]) -> bool:
     return False
 
 
+_RE_MEASURE = re.compile(r"\d\s*(?:/\s*(?:cumm|cmm|mm3|ul|µl|hpf|lpf|min)|(?:g|mg|ng|pg|µg|mcg|meq|mmol|iu|miu|u)\s*/\s*(?:dl|l|ml|ul)"
+                         r"|mm\s*hg|%)(?![a-z])", re.I)
+
+
+_META_VERB = frozenset({"printed", "exported", "requested", "prepared", "generated", "issued", "sent",
+                        "downloaded", "released", "handed", "collected"})
+_RE_META_PERSON = re.compile(r"(?:^|\s)[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}")
+_RE_NAMEISH = re.compile(r"^[A-Z][a-z]+(?:\s+(?:[A-Z]\.?|[A-Z][a-z]+)){1,3}$")
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
     keys = [str(k) for k in path_keys if not isinstance(k, int)]
@@ -762,6 +772,12 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     lt = _label_type(toks)
     vh = _value_hint(value)
     owner = _owner(parents)
+
+    # Export metadata naming a person ("printedFor": "Name (phone)"); a login like "clerk07" is not one.
+    if isinstance(value, str) and (len(toks) == 2 and toks[0] in _META_VERB and toks[1] in ("for", "by", "to")
+                                   or toks in (("operator",), ("printedfor",), ("requestedby",))):
+        if _RE_META_PERSON.search(value):
+            return NAME
 
     # Name parts: patients/name/first, guardian/name/given, ...
     if parents and _is_bare_name(_tokens(parents[-1])) and lt in (OTHER, FIRST_NAME, LAST_NAME, LOCAL_NAME,
@@ -835,6 +851,13 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     # Values under a relative container: guardian/mobile stays PHONE (lt), guardian/relation RELATION.
     if owner == RELATIVE and lt == OTHER and vh == NAME:
         return RELATIVE
+    # Key ancestry: a name-shaped scalar under a patient object ("pt": {"n": ...}) is the patient's name.
+    if owner == "PRIVATE" and lt == OTHER and len(last) <= 3 and (vh == NAME or isinstance(value, str)
+                                                                 and _RE_NAMEISH.match(value.strip())):
+        return NAME
+    # A number with a measurement unit is a result, never an identifier ("TLC 13400 /cumm").
+    if lt == OTHER and isinstance(value, str) and _RE_MEASURE.search(value):
+        return CLINICAL
 
     if lt in (OTHER, OTHER_ID, PATIENT_ID) and vh in (AADHAAR, PHONE) and isinstance(value, (int, str)):
         if lt == OTHER or vh == AADHAAR and len(_digits(str(value))) == 12:
