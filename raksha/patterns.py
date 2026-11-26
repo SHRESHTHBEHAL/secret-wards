@@ -599,9 +599,10 @@ _UNITS = (r"(?:mg/dl|mg/dL|g/dl|g/dL|mmol/l|mmol/L|meq/l|mEq/L|iu/l|IU/L|u/l|U/L
           r"ग्राम[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्रा\.?[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्राम[ \t]*प्रतिशत|ग्राम%|"
           r"मि\.?[ \t]*ग्रा\.?(?:[ \t]*/[ \t]*डी\.?[ \t]*एल\.?)?|मिग्रा|मि\.?[ \t]*ली\.?|मिली|मिमी[ \t]*पारा|प्रति[ \t]*मिनट)")
 _DOSE_UNITS = r"(?:mg|mcg|µg|ug|gm|g|ml|mL|iu|IU|units?|U|meq|mEq|mmol|%|puffs?|drops?|tabs?|caps?)"
-_FORMS = r"(?:tab|tabs|tablet|cap|caps|capsule|inj|injection|syp|syr|syrup|susp|oint|cream|gel|drops?|neb|inh|sachet|lotion|iv|im)"
+_FORMS = r"(?:tab|tabs|tablet|cap|caps|capsule|inj|injection|syp|syr|syrup|susp|oint|cream|gel|drops?|neb|inh|sachet|lotion)"
+# a route word ends a sentence as often as it starts a drug ("... 200 mg IV. <Name> ne bataya"): no dot after it
 _RE_DOSE = re.compile(
-    r"(?<![A-Za-z])" + _FORMS + r"\.?\s+[A-Za-z][A-Za-z\-]*(?:[ \t+/]+[A-Za-z][A-Za-z\-]*){0,2}"
+    r"(?<![A-Za-z])(?:" + _FORMS + r"\.?|iv|im)\s+[A-Za-z][A-Za-z\-]*(?:[ \t+/]+[A-Za-z][A-Za-z\-]*){0,2}"
     r"(?:[ \t]*[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*" + _DOSE_UNITS + r"?)?(?![A-Za-z])"
     r"|(?<![0-9A-Za-z.])[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*" + _DOSE_UNITS + r"(?![A-Za-z/])",
     re.I,
