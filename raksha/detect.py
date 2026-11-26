@@ -1229,7 +1229,7 @@ _PT_PART = re.compile(r"[ \t]*(?:Pt|Part|Ward[ \t]*No)\.?[ \t]*[\-:]?[ \t]*(?:[0
 _PT_POST_TYPES = (r"(?:House(?=[ \t]*,)|Tola|Nagar|Colony|Basti|Pada|Wadi|Para|Patti|Khurd|Kalan|Buzurg|Gali|Chawl|Leikai|Veng|"
                   r"Mohalla|Gaon|Village)")
 _PT_POST = re.compile(r"(?<![A-Za-z])((?:[A-Za-z][a-z]+[ \t]+){1,2})(" + _PT_POST_TYPES + r")(?![A-Za-z])", re.I)
-_DEV_PRE = re.compile(r"(?<![ऀ-ॿ])(?:ग्राम|गाँव|गांव|गाव|टोला|मौजा|डाकघर|मोहल्ला|रा\.)[ \t]*[:\-]?[ \t]*")
+_DEV_PRE = re.compile(r"(?<![ऀ-ॿ])(?:ग्राम|गाँव|गांव|गाव|टोला|मौजा|डाकघर|मोहल्ला|रा\.|पो\.|पोस्ट)[ \t]*[:\-]?[ \t]*")
 _DEV_STOP = _ws("""
 के का की में से को ने पर तक और व एवं तहसील ता. ता जिला ज़िला जनपद थाना प्रखंड ब्लॉक पोस्ट पिन मकान गली
 नामक निवासी रहने रहते रहती वाले वाली है हैं था थी
@@ -1918,9 +1918,123 @@ def _layer_phone_proximity(cx: _Ctx) -> None:
                 n += 1
                 j -= 1
             if n >= 2:
+                hm = re.match(r"(?:-[A-Z][a-z]+)+", t[e:ps])
+                if hm:
+                    e += hm.end()               # "Zadeng-Kawlni": a hyphenated surname is one token
                 cx.add(s, e, "PERSON", "", 7)
                 break
             k = j
+
+
+# ---- extra free-text frames (localities, street lines, footers, role words, SMS salutations)
+_LOC_SFX = (r"nagar|nagara|pet|peta|pettai|pura|puram|wadi|wada|bagh|ganj|vihar|toli|tola|khali|sahi|palli|palya|"
+            r"halli|padu|gudem|kuppam|pada|para|abad|bad|gunj|kheda|khera|garh")
+_RE_LOC_WORD = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,}(?:" + _LOC_SFX + r"))(?![A-Za-z])")
+_INST_NEXT = re.compile(r"[ \t]*(?:Diagnostic|Polyclinic|Clinic|Dental|Medical|Nursing|Hospital|College|Path|Lab|Scan|"
+                        r"Imaging|Eye|Heart)")
+_RE_PREV_CAP = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,})[ \t]+\Z")
+_RE_STREET = re.compile(r"(?<![A-Za-z])((?:[A-Z][a-z]+[ \t]+){0,2}[0-9]{1,3}(?:st|nd|rd|th)[ \t]+(?:Cross|Main|Line|Lane|Street|"
+                        r"Road|Avenue|Marg|Path|Block|Phase|Sector|Stage)(?:[ \t]+Road)?)(?![A-Za-z])")
+_RE_SOCIETY = re.compile(r"(?<![A-Za-z0-9/])(?:([A-Z]?[/\-]?[0-9]{1,4}[A-Z]?(?:/[0-9]{1,4})?)[ \t]*,?[ \t]+)?"
+                         r"((?:[A-Z][a-z]+[ \t]+){1,2}(?:Society|Residency|Apartments?|Heights|Towers?|Enclave|Layout|"
+                         r"Extension|Extn\.?|Colony|Complex|Park|Gardens?|Villas?|Nagar|Vihar|Bagh|Ganj|Puram|Pura)"
+                         r"(?:[ \t]+(?:Phase|Sector|Stage|Block)[ \t]*[0-9IVX]+[A-Z]?)?)(?![A-Za-z])")
+_RE_DIR_PLACE = re.compile(r"(?<![A-Za-z])(?:from|of|at|in|ghar|village|vill\.?|gaon)[ \t]*[:,]?[ \t]+"
+                           r"([A-Z][a-z]{2,}(?:[ \t]+(?:West|East|North|South|Khurd|Kalan|Buzurg)))(?![A-Za-z])")
+_RE_DOOR = re.compile(r"(?:(?<=,[ \t])|(?<=,))[0-9]{1,4}/[0-9]{1,4}[A-Z]?(?=[ \t]*,[ \t]*[A-Z])")
+_RE_ADDR_LINE_CUE = re.compile(r"(?i)(?<![a-z])(?:c/o|r/o|address|addr|ghar|house|lives|living|resid|shifted|plot|"
+                               r"d\.?\s*no|door|flat|h\.?\s*no|#[0-9]|near|opp|behind|pin|from)(?![a-z])")
+_RE_LOC_LINE_CUE = re.compile(r"(?i)(?<![a-z])(?:c/o|r/o|address|addr|ghar|house|home|lives|living|resid\w*|shifted|"
+                              r"plot|d\.?\s*no|door|flat|h\.?\s*no|#[0-9]|near|opp|behind|pin|block|zila|jila|district|dist|"
+                              r"distt|tehsil|taluk|village|vill|gram|gaon|mohalla|sector|cross|main|post|p\.?\s*o|thana|"
+                              r"ward\s*no|stays?|from|kendra|centre|center)(?![a-z])|[0-9]{1,4}(?:st|nd|rd|th)\s|[1-9][0-9]{5}")
+_RE_ADDR_LABEL_PLACE = re.compile(r"(?<![A-Za-z])(?:Ghar|Ghar[ \t]+ka[ \t]+pata|Pata|Address|Up-?kendra|Upkendra|"
+                                  r"Sub-?cent(?:re|er)|Gaon|Mohalla|Tola)[ \t]*[:\-]?[ \t]+([A-Z][a-z]{3,})(?=[ \t]*[,.]|[ \t]+[a-z])")
+_RE_LOW_SAHI = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,}[ \t]+(?:sahi|toli|tola|basti|mohalla|para|pada|wadi|nagar|colony))(?![A-Za-z])")
+_RE_FOOTER = re.compile(r"(?i)(?<![a-z])(?:printed|prepared|generated|typed|verified|checked|issued)[ \t]+by|"
+                        r"(?<![a-z])(?:dealing[ \t]+(?:assistant|clerk|hand)|desk[ \t]+officer|contact[ \t]+person|"
+                        r"for[ \t]+(?:queries|query|any[ \t]+query)[ \t]+(?:contact|call)|helpdesk|help[ \t]+desk)[ \t]*[:\-]?")
+_RE_FOOT_NAME = re.compile(r"[ \t]*[:\-]?[ \t]*((?:[A-Z][a-z]+|[A-Z]\.?)(?:-[A-Z][a-z]+)*(?:[ \t]+(?:[A-Z][a-z]+|[A-Z]\.)(?:-[A-Z][a-z]+)*){1,2})"
+                           r"(?![A-Za-z])")
+_RE_DEAR_CAPS = re.compile(r"(?<![A-Za-z])(?:Dear|Hi|Hello|Namaste|Namaskar|Mr|Mrs|Ms|Shri|Smt)\.?[ \t]+"
+                           r"([A-Z]{3,}(?:[ \t]+[A-Z]{3,}){0,2}(?:[ \t]+[A-Z]\.?)?)(?=[ \t]*[,:.!]|[ \t]+[a-z])")
+_CAPS_NOT = _ws("sir madam maam customer patient user member team all parent guardian beneficiary applicant doctor")
+_DEV_ROLE = (r"गवाह|साक्षी|परिजन|अभिभावक|हस्ताक्षरकर्ता|रिश्तेदार|संबंधी|सम्बन्धी|पड़ोसी|पडोसी|मित्र|दोस्त|साला|साली|जीजा|"
+             r"देवर|ननद|भाभी|भतीजा|भतीजी|भांजा|भांजी|ससुर|सास|बहू|दामाद|चाचा|चाची|मामा|मामी|ताऊ|ताई|फूफा|बुआ|मौसा|मौसी|"
+             r"नाना|नानी|दादा|दादी|सहमति[ \t]+देने[ \t]+वाला|सहमति[ \t]+देने[ \t]+वाली|रक्तदाता")
+_RE_DEV_ROLE = re.compile(r"(?<![ऀ-ॿ])(?:" + _DEV_ROLE + r")(?![ऀ-ॿ])[ \t]*(?:\([^()\n]{0,20}\))?[ \t]*[:\-]?[ \t]*"
+                          r"((?:" + _DEV + r")(?:[ \t]+" + _DEV + r"){0,2})")
+
+_RE_DEV_ROLE_ONLY = re.compile(r"(?:" + _DEV_ROLE + r")")
+
+def _layer_extra_frames(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _RE_LOC_WORD.finditer(t):
+        ls = t.rfind("\n", 0, m.start()) + 1
+        le = t.find("\n", m.end())
+        if not _RE_LOC_LINE_CUE.search(t[ls:le if le >= 0 else len(t)]):
+            continue                        # "<X>wadi" in prose without an address cue: a public place
+        w = _low(m.group(1))
+        if w in _DISTRICTS or w in _STOP or w in lexicon.CLINICAL_WORDS or len(w) < 6:
+            continue
+        s0 = m.start(1)
+        pm = _RE_PREV_CAP.search(t[max(ls, s0 - 30):s0])
+        p = pm.group(1) if pm else ""
+        if p and _low(p) not in _STOP and _low(p) not in _DISTRICTS and _low(p) not in _HEADER_WORDS \
+                and _low(p) not in _LABEL_WORDS:
+            s0 -= len(pm.group())           # "Vallabh Vidyanagar": the qualifier is part of the name
+        if _ORG_NEXT.match(t, m.end(1)) or _INST_NEXT.match(t, m.end(1)):
+            continue                        # "<X>nagar Diagnostic & Polyclinic": an institution
+        cx.add(s0, m.end(1), "LOCALITY", "", 6)
+    for m in _RE_STREET.finditer(t):
+        cx.add(m.start(1), m.end(1), "LOCALITY", "", 5)
+    for m in _RE_SOCIETY.finditer(t):
+        if m.group(1):
+            cx.add(m.start(1), m.end(1), "HOUSE", "", 4)
+        cx.add(m.start(2), m.end(2), "LOCALITY", "", 4)
+    for m in _RE_DIR_PLACE.finditer(t):
+        if _low(m.group(1).split()[0]) not in _DISTRICTS:
+            cx.add(m.start(1), m.end(1), "VILLAGE", "", 5)
+    for m in _RE_DOOR.finditer(t):
+        ls = t.rfind("\n", 0, m.start()) + 1
+        le = t.find("\n", m.end())
+        line = t[ls:le if le >= 0 else len(t)]
+        if _RE_ADDR_LINE_CUE.search(line):
+            cx.add(m.start(), m.end(), "HOUSE", "", 4)
+    for m in _RE_ADDR_LABEL_PLACE.finditer(t):
+        w = _low(m.group(1))
+        if w not in _DISTRICTS and w not in _STOP and w not in lexicon.CLINICAL_WORDS:
+            cx.add(m.start(1), m.end(1), "VILLAGE", "", 6)
+    for m in _RE_LOW_SAHI.finditer(t):
+        w = _low(m.group(1).split()[0])
+        if w not in _DISTRICTS and w not in _STOP and w not in lexicon.CLINICAL_WORDS:
+            cx.add(m.start(1), m.end(1), "LOCALITY", "", 6)
+    for m in _RE_FOOTER.finditer(t):
+        n = _RE_FOOT_NAME.match(t, m.end())
+        if not n or re.match(r"(?:Dr|DR|Doctor)\b", n.group(1)):
+            continue
+        ws = [_low(w) for w in re.findall(r"[A-Za-z]+", n.group(1))]
+        if any(w in _STOP or w in _HEADER_WORDS for w in ws if len(w) > 1):
+            continue
+        cx.add(n.start(1), n.end(1), "PERSON", "", 4)
+    for m in _RE_DEAR_CAPS.finditer(t):
+        ws = [_low(w) for w in m.group(1).split()]
+        if any(w in _CAPS_NOT or w in _STOP or w in _HEADER_WORDS for w in ws if len(w) > 1):
+            continue
+        cx.add(m.start(1), m.end(1), "PATIENT_NAME", "", 4)
+    for m in (_RE_DEV_ROLE.finditer(t) if _IS_DEVA.search(t) else ()):
+        toks = list(re.finditer(_DEV, m.group(1)))
+        keep = []
+        for k in toks:
+            w = _nfc(k.group())
+            if not keep and _RE_DEV_ROLE_ONLY.fullmatch(w):
+                continue                    # "रक्तदाता: साला <name>": a second role word before the name
+            if w in _STOP or w in _HI_FUNC or w in _DEV_STOP:
+                break
+            keep.append(k)
+        if keep and _dev_name_ok([k.group() for k in keep]):
+            base = m.start(1)
+            cx.add(base + keep[0].start(), base + keep[-1].end(), "PERSON", "", 5)
 
 
 def _layer_dev_case(cx: _Ctx) -> None:
@@ -2422,6 +2536,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_mail_intro(cx)
     _layer_verbs(cx)
     _layer_dev_case(cx)
+    _layer_extra_frames(cx)
     if known is not None:
         _layer_known(cx, known)
     _layer_phone_proximity(cx)
