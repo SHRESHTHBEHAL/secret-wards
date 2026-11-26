@@ -295,3 +295,25 @@ class PrivacyPolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameReplacementGateTest(unittest.TestCase):
+    """The shared gate every sanitize name-replacement path applies (invented values)."""
+
+    def test_single_letters_and_units_never_replaced(self):
+        from raksha.sanitize import name_replaceable
+        self.assertFalse(name_replaceable("D"))
+        self.assertFalse(name_replaceable("min"))
+        self.assertFalse(name_replaceable("mg"))
+        self.assertTrue(name_replaceable("Velunor"))
+
+    def test_short_common_word_needs_four_letters(self):
+        from raksha.sanitize import name_key_ok
+        self.assertFalse(name_key_ok("min"))
+        self.assertTrue(name_key_ok("Zorvi"))
+
+    def test_name_keys_drop_units_keep_devanagari(self):
+        from raksha.sanitize import _name_keys
+        self.assertEqual(_name_keys("min"), [])
+        self.assertTrue(_name_keys("Velunor Tashkiri"))
+        self.assertTrue(_name_keys("वेलुनोर"))

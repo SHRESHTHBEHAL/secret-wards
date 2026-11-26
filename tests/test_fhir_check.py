@@ -189,7 +189,6 @@ class EndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(_firewall(b, Path(td)), [])
 
-    @unittest.expectedFailure  # Attachment.size is not updated when sanitize._Fhir._b64 rewrites data
     def test_firewall_output_valid(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(_firewall(clean_bundle(), Path(td)), [])
