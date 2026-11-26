@@ -204,3 +204,16 @@ class JsonTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GenericKeyTests(unittest.TestCase):
+    def test_generic_keys_not_clinical_at_top(self):
+        for k, v in (("category", "billing query"), ("status", "closed"), ("form", "surgical consent"),
+                     ("type", "complaint")):
+            self.assertEqual(F.json_key_type([k], v), F.OTHER, k)
+        self.assertEqual(F.json_key_type(["ticket", "status"], "closed"), F.OTHER)
+
+    def test_generic_keys_clinical_under_clinical_ancestor(self):
+        for p in (["visits", 0, "form"], ["rx", 0, "form"], ["diagnosis", "status"], ["tests", "category"],
+                  ["results", 0, "status"], ["vitals", "status"], ["panels", 0, "category"]):
+            self.assertEqual(F.json_key_type(p, "x"), F.CLINICAL, p)

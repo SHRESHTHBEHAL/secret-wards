@@ -584,6 +584,26 @@ def _value_hint(value: Any) -> str:
     return _value_shape(str(value))
 
 
+_GENERIC_CLIN_KEYS = frozenset({"category", "categories", "status", "form", "type", "kind", "state", "mode",
+                                "flag", "class", "group", "stage"})
+_CLIN_ANCESTOR = frozenset({"visit", "visits", "encounter", "encounters", "opd", "ipd", "admission",
+                            "admissions", "test", "tests", "lab", "labs", "investigation", "investigations",
+                            "observation", "observations", "order", "orders", "prescription", "prescriptions"})
+
+
+def _clinical_ancestor(parents: Sequence[str]) -> bool:
+    for k in parents:
+        toks = _tokens(str(k))
+        if not toks:
+            continue
+        if _owner([k]) == CLINICAL or any(t in _CLIN_ANCESTOR for t in toks):
+            return True
+        lt = _label_type(toks)
+        if lt == CLINICAL and not all(t in _GENERIC_CLIN_KEYS for t in toks):
+            return True
+    return False
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
     keys = [str(k) for k in path_keys if not isinstance(k, int)]
@@ -651,6 +671,13 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     # Address parts: address/line, address/text, address/street1.
     if owner == ADDRESS and lt in (OTHER, CLINICAL, FREE_TEXT) and not isinstance(value, (int, float)):
         return ADDRESS
+
+    # Generic keys ("category", "status", "form", "type") are clinical only under a clinical ancestor:
+    # "category": "billing query" or "form": "surgical consent" at the top level are not.
+    if lt == CLINICAL and toks and all(t in _GENERIC_CLIN_KEYS for t in toks) and not _clinical_ancestor(parents):
+        if vh in _STRONG:
+            return vh
+        return OTHER
 
     # Under a clinical container everything that is not strongly shaped stays clinical.
     if owner == CLINICAL and lt in (OTHER, FREE_TEXT, CLINICAL):
