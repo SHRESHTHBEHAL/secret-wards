@@ -274,7 +274,8 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
         err("gate", exc)
         fb = None
 
-    env = Env(keys=keys, assign=assign, book=book, policy=policy, pseudonyms=pseudonyms)
+    env = Env(keys=keys, assign=assign, book=book, policy=policy, pseudonyms=pseudonyms,
+              records={it.rel: it.records for it in items if not it.reason})
 
     # 5-6. sanitize + leak gate
     gate_hits = 0
