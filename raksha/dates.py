@@ -54,19 +54,21 @@ _MON = "(?:%s)" % _MON_ALT
 # ---------------------------------------------------------------- patterns
 _PRE = r"(?<![A-Za-z0-9०-९/\-+_])(?<![0-9०-९]\.)"
 _ISO_RE = re.compile(
-    _PRE + r"(?P<y>%s{4})(?P<s>[-/])(?P<m>%s{2})(?P=s)(?P<d>%s{2})" % (_D, _D, _D)
+    _PRE + r"(?P<y>%s{4})(?P<s>[-/.])(?P<m>%s{1,2})(?P=s)(?P<d>%s{1,2})" % (_D, _D, _D)
     + r"(?P<t>T%s{2}:%s{2}(?::%s{2}(?:\.%s+)?)?(?:Z|[+-]%s{2}:?%s{2})?)?" % ((_D,) * 6)
     + r"(?![%s0-9०-९/]|[.\-:]%s)" % (_LET, _D))
 _NUM_RE = re.compile(
     _PRE + r"(?P<a>%s{1,2})(?P<s>[./-])(?P<b>%s{1,2})(?P=s)(?P<y>%s{4}|%s{2})" % (_D, _D, _D, _D)
     + r"(?![%s0-9०-९/]|[.\-:]%s)" % (_LET, _D))
+_NUM_SP_RE = re.compile(
+    _PRE + r"(?P<a>%s{2}) (?P<b>%s{2}) (?P<y>(?:19|20)%s{2})(?![%s0-9०-९/]|[.\-:]%s| %s)" % (_D, _D, _D, _LET, _D, _D))
 _DMY_NAME_RE = re.compile(
     r"(?<![%s0-9०-९/.\-+:_])(?P<d>%s{1,2})(?P<ord>st|nd|rd|th|ST|ND|RD|TH)?(?P<s1>[ \-]|\s*-\s*)"
     % (_LET, _D)
-    + r"(?P<mon>%s)(?P<dot>\.)?(?:(?P<s2>,\s?|\s|-|\.\s?)(?P<y>%s{4}))?(?![%s0-9०-९])"
-    % (_MON, _D, _LET), re.IGNORECASE)
+    + r"(?P<mon>%s)(?P<dot>\.)?(?:(?P<s2>,\s?|\s|-|/|\.\s?)(?P<y>%s{4}|(?<=[\-/. ])%s{2}))?(?![%s0-9०-९])"
+    % (_MON, _D, _D, _LET), re.IGNORECASE)
 _MDY_NAME_RE = re.compile(
-    r"(?<![%s])(?P<mon>%s)(?P<dot>\.)?(?P<s1>\s)(?P<d>%s{1,2})(?P<ord>st|nd|rd|th)?(?P<s2>,\s?|\s)"
+    r"(?<![%s])(?P<mon>%s)(?P<dot>\.)?(?P<s1>\s|-|/)(?P<d>%s{1,2})(?P<ord>st|nd|rd|th)?(?P<s2>,\s?|\s|-|/)"
     % (_LET, _MON, _D)
     + r"(?P<y>%s{4})(?![%s0-9०-९])" % (_D, _LET), re.IGNORECASE)
 
@@ -81,8 +83,11 @@ class DateHit:
     has_time: bool
 
 
+PIVOT_YY = 30   # two-digit years up to 30 are 20yy, later ones 19yy: a date never lands after 2030
+
+
 def _year2(yy: int) -> int:
-    return 2000 + yy if yy < 50 else 1900 + yy
+    return 2000 + yy if yy <= PIVOT_YY else 1900 + yy
 
 
 def _mk(y: int, m: int, d: int) -> Optional[dt.date]:
@@ -108,6 +113,8 @@ def _num_tok(raw: str, other: str, name: str) -> str:
 def _mon_style(word: str) -> str:
     low = word.lower()
     _m, kind, var = _MONTHS[low]
+    if kind == "en_full" and len(low) == 3:
+        kind = "en_abbr"            # "May" written as an abbreviation shifts to "Jun", not "June"
     if kind == "hi":
         return "hi%d" % var
     if word.isupper() and len(word) > 1:
@@ -181,7 +188,13 @@ def _hits_iso(text: str) -> List[DateHit]:
         if date is None:
             continue
         s = m.group("s")
-        fmt = "{yyyy}%s{mm}%s{dd}%s" % (s, s, _esc(m.group("t") or ""))
+        mraw, draw = m.group("m"), m.group("d")
+        mt = _num_tok(mraw, draw, "m")
+        dtk = _num_tok(draw, mraw, "d")
+        if s == "." and (len(mraw) == 1 or len(draw) == 1) and not m.group("t"):
+            # "2026.1.5" could be a version / lab value; only padded dotted dates count
+            continue
+        fmt = "{yyyy}%s%s%s%s%s" % (s, mt, s, dtk, _esc(m.group("t") or ""))
         if _has_deva_digit(m.group(0)):
             fmt = "deva|" + fmt
         out.append(DateHit(m.start(), m.end(), date, fmt, True, bool(m.group("t"))))
@@ -216,6 +229,21 @@ def _hits_num(text: str, order: str) -> List[DateHit]:
     return out
 
 
+def _hits_num_sp(text: str, order: str) -> List[DateHit]:
+    out = []
+    for m in _NUM_SP_RE.finditer(text):
+        a, b, y = m.group("a"), m.group("b"), int(_ascii(m.group("y")))
+        mo_raw, d_raw = (a, b) if order == "mdy" else (b, a)
+        date = _mk(y, int(_ascii(mo_raw)), int(_ascii(d_raw)))
+        if date is None:
+            continue
+        fmt = "{mm} {dd} {yyyy}" if order == "mdy" else "{dd} {mm} {yyyy}"
+        if _has_deva_digit(m.group(0)):
+            fmt = "deva|" + fmt
+        out.append(DateHit(m.start(), m.end(), date, fmt, True, False))
+    return out
+
+
 def _partial_ok(word: str) -> bool:
     low = word.lower()
     kind = _MONTHS[low][1]
@@ -233,6 +261,11 @@ def _hits_name(text: str, default_year: Optional[int]) -> List[DateHit]:
         has_year = m.group("y") is not None
         if has_year:
             y = int(_ascii(m.group("y")))
+            if len(m.group("y")) == 2:
+                if m.group("s1").strip() != m.group("s2").strip() or (
+                        m.group("s2") == " " and re.match(r"\s*[A-Za-z%ऀ-ॿ]", text[m.end():])):
+                    continue          # "12 May 26 mg" / "12-May 26": not a two-digit-year date
+                y = _year2(y)
         else:
             if default_year is None or not _partial_ok(word):
                 continue
@@ -245,7 +278,7 @@ def _hits_name(text: str, default_year: Optional[int]) -> List[DateHit]:
         fmt = ("{dd}" if len(d_raw) == 2 and d_raw[0] in "0०" else "{d}") + ordtok
         fmt += m.group("s1") + "{mon:%s}" % _mon_style(word) + (m.group("dot") or "")
         if has_year:
-            fmt += m.group("s2") + "{yyyy}"
+            fmt += m.group("s2") + ("{yyyy}" if len(m.group("y")) == 4 else "{yy}")
         if _has_deva_digit(m.group(0)):
             fmt = "deva|" + fmt
         out.append(DateHit(m.start(), m.end(), date, fmt, has_year, False))
@@ -272,7 +305,7 @@ def find_dates(text: str, order: str = "dmy", default_year: Optional[int] = None
 
     Partial dates without a year ("5 September") are only returned when `default_year` is given.
     """
-    cands = _hits_iso(text) + _hits_num(text, order) + _hits_name(text, default_year)
+    cands = _hits_iso(text) + _hits_num(text, order) + _hits_name(text, default_year) + _hits_num_sp(text, order)
     cands.sort(key=lambda h: (h.start, -(h.end - h.start)))
     out: List[DateHit] = []
     last = -1
@@ -281,6 +314,12 @@ def find_dates(text: str, order: str = "dmy", default_year: Optional[int] = None
             out.append(h)
             last = h.end
     return out
+
+
+def _date_len(iso_like: str) -> int:
+    """Length of the date part of 'yyyy-mm-ddThh:mm...' (the time part starts at 'T')."""
+    i = iso_like.find("T")
+    return i if i > 0 else len(iso_like)
 
 
 def shift_date(d: dt.date, days: int) -> dt.date:
@@ -300,7 +339,7 @@ def shift_text(text: str, days: int, order: str = "dmy", default_year: Optional[
         if h.has_time:
             # keep time/offset byte-identical: replace only the date characters
             orig = text[h.start:h.end]
-            new = new[:10] + orig[10:]
+            new = new[:len(new) - len(orig) + _date_len(orig)] + orig[_date_len(orig):]
         parts.append(new)
         pos = h.end
     parts.append(text[pos:])
@@ -315,7 +354,8 @@ def format_like(original: str, new_date: dt.date, order: str = "dmy") -> str:
     h = hits[0]
     new = _render(h.fmt, new_date)
     if h.has_time:
-        new = new[:10] + original[h.start + 10:h.end]
+        orig = original[h.start:h.end]
+        new = new[:len(new) - len(orig) + _date_len(orig)] + orig[_date_len(orig):]
     return original[:h.start] + new + original[h.end:]
 
 
