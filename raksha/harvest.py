@@ -53,7 +53,8 @@ _FEMALE = frozenset({"f", "female", "woman", "girl", "महिला", "स्�
 _DOC_WORDS = frozenset("""
 discharge summary report reports note notes nursing lab labs final copy scan scanned rx opd ipd
 prescription record records file export draft new old patient patients case sheet form letter
-referral consent bill invoice receipt claim ds dr doc document visit admission
+referral consent bill invoice receipt claim ds dr doc document visit admission card slip summary
+छुट्टी कार्ड पर्ची रिपोर्ट पत्र सारांश नोट रसीद बिल जांच जाँच पंजीकरण रेफर पत्रक डिस्चार्ज पर्चा
 """.split())
 _IDPREF = {"PHONE": ID_PHONE, "AADHAAR": ID_AADHAAR, "ABHA_NUMBER": ID_ABHA, "ABHA_ADDRESS": ID_ABHA_ADDR,
            "EMAIL": ID_EMAIL, "PAN": ID_PAN, "INSURANCE_ID": ID_INS}
@@ -1011,7 +1012,10 @@ def _multi_patient_text(text: str, f: Facts) -> bool:
             runs |= got
         if hits >= 2:
             return True
-    full = [n for n in f.names if len(n.split()) >= 2]   # a document may carry several own ids
+    # a document may carry several own ids; a name taken from the file name only (hidden from the
+    # linker: often the sender of a chat export) is no second patient of the text
+    skip = set(getattr(f, "link_skip", None) or ())
+    full = [n for n in f.names if len(n.split()) >= 2 and n not in skip]
     for i in range(len(full)):
         for j in range(i + 1, len(full)):
             if not _same_name(full[i], full[j]):
