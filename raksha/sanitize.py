@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from . import dates, fields, privacy
 from .detect import _STOP as _COMMON_WORDS, ID_KINDS, NAME_KINDS, Known, detect
 from .lexicon import DISTRICTS
-from .harvest import csv_view, harvest_file, keyed_record_id
+from .harvest import _text_table_types, columnar_rows, csv_view, harvest_file, keyed_record_id, text_table
 from .ingest import dump_csv, dump_json
 from .normalize import to_ascii_digits, try_b64_text
 from .patterns import find_identifiers, norm_id, protected_spans
@@ -1162,8 +1162,9 @@ def _unique(name: str, used: Set[str]) -> str:
 def _csv(pf: ParsedFile, fs: _File) -> str:
     labels, rows, hl = csv_view(pf)
     rows = [list(r) for r in rows]
-    raw_header = list(pf.header)
-    head_rows = [raw_header, list(pf.rows[0]) if pf.rows else []][:hl]
+    all_lines = [list(pf.header)] + [list(r or []) for r in (pf.rows or [])]
+    head_rows = all_lines[:hl]
+    tail_rows = all_lines[hl + len(rows):]
     ncol = max([len(labels)] + [len(r) for r in rows]) if (labels or rows) else 0
     types = []  # type: List[str]
     orders = []  # type: List[str]
@@ -1185,7 +1186,11 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
         except Exception:  # noqa: BLE001
             pass
     new_heads = []  # type: List[List[str]]
-    for hr in head_rows:
+    for hi, hr in enumerate(head_rows):
+        if hl > 2 and hi < hl - 1:   # preamble line above the header: free text
+            new_heads.append([scrub_text(c, fs.label_ctx, "label", dates_on=False, ages_on=False)
+                              if isinstance(c, str) and c.strip() else c for c in hr])
+            continue
         new_header = []  # type: List[str]
         used = set()  # type: Set[str]
         for h in hr:
@@ -1206,6 +1211,9 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
             x = typed_value(v, t, ctx, orders[i] if i < len(orders) else None)
             new.append(x if isinstance(x, str) else str(x))
         out_rows.append(new)
+    for tr in tail_rows:   # footer lines (never records): free text, scrubbed as such
+        out_rows.append([scrub_text(c, fs.label_ctx, "label", dates_on=False, ages_on=False)
+                         if isinstance(c, str) and c.strip() else c for c in tr])
     lines = new_heads + out_rows
     copy = ParsedFile(rel=pf.rel, sha256=pf.sha256, kind=pf.kind, delimiter=pf.delimiter,
                       header=lines[0] if lines else [], rows=lines[1:])
@@ -1250,9 +1258,23 @@ def _json(data: Any, fs: _File) -> Any:
         if isinstance(node, dict):
             out = {}  # type: Dict[str, Any]
             orig = set(str(k) for k in node)
+            col = columnar_rows(node)
             for k, v in node.items():
                 ks = str(k)
                 cptr = ptr + "/" + _esc(ks)
+                if col is not None and ks == col[0]:
+                    # column-oriented table: each cell typed by its column label
+                    labels = col[1]
+                    rows_out = []
+                    for i, row in enumerate(v):
+                        rptr = "%s/%d" % (cptr, i)
+                        if rptr in fs.ctx:
+                            fs.ctx[rptr].has_pid = _has_pid(
+                                {labels[j] if j < len(labels) else "": c for j, c in enumerate(row)}, keys + [ks])
+                        rows_out.append([walk(c, keys + [ks, labels[j] if j < len(labels) else ""],
+                                              "%s/%d" % (rptr, j), depth + 2) for j, c in enumerate(row)])
+                    out[ks] = rows_out
+                    continue
                 if cptr in fs.ctx and isinstance(v, dict) and keyed_record_id(cptr):
                     # record collection keyed by patient id: the key is the record's hospital id
                     nk = _unique(fs.psns.get(cptr) or "[ID]", set(out) | orig)
@@ -1703,7 +1725,51 @@ def _fhir(data: Any, fs: _File) -> Any:
 
 # ----------------------------------------------------------------------------- text documents
 
+def _text_table(pf: ParsedFile, fs: _File) -> Optional[str]:
+    """A text table split one record per row (harvest.text_table): every cell is replaced by its
+    column's typed value in its row's context; lines outside the rows (titles, comments, footers)
+    are scrubbed as free text with the file's context."""
+    text = pf.text or ""
+    locs = [r.loc for r in fs.recs]
+    if not locs or any(not re.match(r"^row:\d+$", x) for x in locs):
+        return None
+    table = text_table(text)
+    if table is None or len(table[1]) != len(locs):
+        return None
+    types = _text_table_types(text, table)
+    lines = text.split("\n")
+    in_row = set()  # type: Set[int]
+    repl = []  # type: List[Tuple[int, int, str]]
+    for n, (a, b, cells) in enumerate(table[1]):
+        ctx = fs.ctx.get("row:%d" % n) or fs.file_ctx
+        ctx.has_pid = any(types.get(lb) == fields.PATIENT_ID for lb, _x, _y in cells)
+        for i in range(a, b + 1):
+            in_row.add(i)
+        for lb, x, y in cells:
+            t = types.get(lb, fields.OTHER)
+            v = typed_value(text[x:y], t, ctx, None)
+            repl.append((x, y, v if isinstance(v, str) else str(v)))
+    starts = []  # type: List[int]
+    pos = 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln) + 1
+    for i, ln in enumerate(lines):
+        if i not in in_row and ln.strip():
+            repl.append((starts[i], starts[i] + len(ln), scrub_text(ln, fs.file_ctx, "full")))
+    out = text
+    for x, y, v in sorted(repl, reverse=True):
+        out = out[:x] + v + out[y:]
+    return out
+
+
 def _text(pf: ParsedFile, fs: _File) -> str:
+    try:
+        tab = _text_table(pf, fs)
+    except Exception:  # noqa: BLE001 - fall back to the whole-document scrub
+        tab = None
+    if tab is not None:
+        return tab
     ctx = fs.main_ctx()
     text = pf.text or ""
     out = scrub_text(text, ctx, "full", psn_fallback=True)
