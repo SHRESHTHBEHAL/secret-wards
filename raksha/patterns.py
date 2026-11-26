@@ -711,6 +711,8 @@ _RE_SCHEME = re.compile(
     r"Ayushman[ \t]+Bharat(?:[ \t]+[A-Z][A-Za-z\-]+)?|Janani[ \t]+Suraksha|Nikshay(?:[ \t]+Poshan)?)(?![A-Za-z])"
     r"|(?:[ऀ-ॿ]+[ \t]+){0,3}(?:योजना|अभियान)(?![ऀ-ॿ])|(?:आयुष्मान[ \t]+भारत|निक्षय|महात्मा[ \t]+फुले)(?:[ \t]+[ऀ-ॿ]+){0,3}")
 _RE_ASHA = re.compile(
+    # the upper-case acronym before a role / paper word: "ASHA Sahiya", "ASHA referral slip"
+    r"(?<![A-Za-z])(?-i:ASHA)[ \t]+(?:sahiya|sahia|mitanin|referral)(?![A-Za-z])|"
     r"(?<![A-Za-z])ASHA(?:\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji|kendra))?(?![A-Za-z])"
     r"(?!\s+[A-Z][a-z])|(?<![A-Za-z])asha\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji)(?![A-Za-z])"
     r"|आशा\s+(?:कार्यकर्ता|दीदी|बहू|सहयोगिनी)",
