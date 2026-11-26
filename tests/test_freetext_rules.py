@@ -168,5 +168,63 @@ class ChatMailIntro(unittest.TestCase):
         self.assertEqual(names("Caller: Foracort 200 two puffs twice a day."), [])
 
 
+def surfaces(text):
+    return [text[sp.start:sp.end] for sp in detect.detect(text)]
+
+
+class PlacePhrases(unittest.TestCase):
+    def test_type_word_before_and_after(self):
+        self.assertIn("Qelpa Tola", surfaces("ASHA visited the house in Qelpa Tola with the AWW."))
+        self.assertIn("Zorbak Nagar", surfaces("main Qira bol rahi hoon, Zorbak Nagar se, flat 3."))
+        self.assertIn("qorvan patti", surfaces("komal, gaon qorvan patti, ko bukhar hai."))
+        self.assertTrue(any("zelvi" in g for g in surfaces("06:00 so rahi hai. zelvi gaon se aayi thi.")))
+        self.assertIn("Uttar Qorlapur Pt-III", surfaces("Ram of Uttar Qorlapur Pt-III came with cough."))
+
+    def test_devanagari(self):
+        self.assertIn("क्षोरम डीह", surfaces("जो ग्राम क्षोरम डीह के पास रहते हैं"))
+        self.assertIn("ज़ोरगाव खुर्द", surfaces("श्री राम, रा. ज़ोरगाव खुर्द, ता. जुन्नर, यांना"))
+        self.assertTrue(any("क्वेलति गांव" in g for g in surfaces("निवासी मकान सं. 2, डाकघर क्वेलति गांव, थाना सदर")))
+
+    def test_frames_and_runs(self):
+        self.assertIn("Qorvadi", surfaces("Hum log Qorvadi shift ho rahe hain."))
+        self.assertIn("Zelpur Qosalli", surfaces("Attendant in waiting area: wife, from Zelpur Qosalli."))
+        self.assertIn("Qurtovim", surfaces("We live in H. No. 7/3 Vazdem, Qurtovim, so the hospital is far."))
+        self.assertIn("Qassavo", surfaces("House No. 21, Zairo Alto, Qassavo, Bardez 403000"))
+
+    def test_keeps(self):
+        t = "Post Op day 2. Sent via Email. Referred from PHC Qelpur. Patient from Ranchi, Jharkhand."
+        got = surfaces(t)
+        for w in ("Op", "Email", "Qelpur", "Ranchi", "Jharkhand"):
+            self.assertFalse(any(w in g for g in got), (w, got))
+        self.assertEqual([k for k, _ in kinds("जिला बांकुड़ा, थाना सदर") if k != "DISTRICT"], [])
+        self.assertFalse(any("Light" in g for g in surfaces("Fever since 3 days, came from OPD.")))
+
+
+class ProseNames(unittest.TestCase):
+    def test_devanagari_unlabelled(self):
+        self.assertIn("क्षेमधर मोहेर", surfaces("आज सुबह ६ बजे क्षेमधर मोहेर, उम्र लगभग ४७ वर्ष, को"))
+        self.assertIn("ज़ामकृष्ण महतो", surfaces("महोदय, ज़ामकृष्ण महतो नामक ५८ वर्षीय पुरुष को"))
+        self.assertIn("आशा किरण वैद्य", surfaces("रोगी: आशा किरण वैद्य        उम्र: ४४ वर्ष"))
+        self.assertEqual([k for k in surfaces("आज सुबह ६ बजे मरीज़ को बुखार था।") if "बजे" in k], [])
+
+    def test_latin_shapes(self):
+        self.assertIn("Qilukuri V. N. S. Zrasad", surfaces("Mr Qilukuri V. N. S. Zrasad, 58/M, IP No 26"))
+        self.assertIn("Qukhchain", surfaces("Alleged assault with lathi by a neighbour, one Qukhchain, at 19:00."))
+        self.assertIn("qyoti zorgohain", surfaces("14:00 qyoti zorgohain ot se shift hui. lap chole done."))
+        self.assertIn("qani", surfaces("21:00 bed 9 qani ko tremors zyada"))
+        self.assertIn("Qarmistha", surfaces("15 mg ekhon. Qarmistha r phone off, amake koro"))
+        self.assertIn("Qissy", surfaces("Counselled Qissy on home exercises."))
+
+    def test_roles_and_negatives(self):
+        self.assertEqual(surfaces("anm didi ko phone kiya, unhone bola"), [])
+        self.assertEqual(surfaces("16:00 drain 30 ml serous. 18:00 pain score 6/10"), [])
+        self.assertEqual(surfaces("Seen today in OPD. Reviewed Labs."), [])
+
+    def test_own_key_affix(self):
+        k = detect.Known(own_keys=frozenset({detect._word_key("Qalremzuati")}))
+        t = "ward 3 bed 14. Remzuati is sleeping now"
+        self.assertIn("Remzuati", [t[sp.start:sp.end] for sp in detect.detect(t, k)])
+
+
 if __name__ == "__main__":
     unittest.main()
