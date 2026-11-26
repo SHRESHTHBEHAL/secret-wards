@@ -738,6 +738,14 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
             continue              # "<person> Memorial Hospital": the institution stays
         if sp.start < 0 or sp.end > len(text) or sp.end <= sp.start:
             continue
+        if mode == "known":
+            # an institutional table: only an exact known patient identifier or name goes
+            if sp.kind in NAME_KINDS:
+                if _is_known_name(text[sp.start:sp.end], ctx):
+                    keep.append(sp)
+            elif (sp.kind in ID_KINDS or sp.kind == "REF_ID") and _known_id(text[sp.start:sp.end], ctx):
+                keep.append(sp)
+            continue
         if mode in ("ids", "label"):
             if sp.kind in ID_KINDS or sp.kind == "REF_ID":
                 keep.append(sp)
@@ -844,6 +852,12 @@ _KIN_HINT = re.compile(r"parijan|परिजन|rishtedar|रिश्तेद
 _KIN_WORD = r"(?:[A-Z][a-z]+\.?|[\u0900-\u097F]+|\[NAME\]|\[RELATIVE\]|\[PERSON\])"
 _KIN_TAIL = re.compile(r"((?:\bke|\bki|के|की)\s+(?:parijan|rishtedar|परिजन|रिश्तेदार)\s*[:\-]?\s*)"
                        r"(?!(?:ko|ne|se|का|को|ने|से)\b)" + _KIN_WORD + r"(?:\s+" + _KIN_WORD + r"){0,3}(?=\s*(?:[:,.;|]|$))")
+
+
+def _known_id(surface: str, ctx: _Ctx) -> bool:
+    t = to_ascii_digits(surface.strip())
+    dg = "".join(_DIGITS.findall(t))
+    return norm_id(t) in ctx.all_ids or (len(dg) >= 5 and dg in ctx.all_ids)
 
 
 def _scrub_any(text: str, ctx: _Ctx, mode: str = "full", **kw: Any) -> str:
@@ -1134,6 +1148,8 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
         return v                  # an institution named after a person is still an institution
     if ftype in (fields.DISTRICT, fields.STATE, fields.GENDER, fields.RELATION, fields.DOCTOR, fields.HOSPITAL):
         return scrub_text(v, ctx, "ids", dates_on=False, ages_on=False)
+    if ftype == _KNOWN_ONLY:
+        return scrub_text(v, ctx, "known", dates_on=False, ages_on=False)
     if ftype in (fields.CLINICAL, fields.OTHER_ID) and _is_reference(v, ctx):
         return v                  # batch / sample / call / bill number or an amount: not a person's id
     if ftype in (fields.CLINICAL, fields.OTHER_ID):
@@ -1167,6 +1183,18 @@ def _unique(name: str, used: Set[str]) -> str:
 
 # ----------------------------------------------------------------------------- CSV
 
+_KNOWN_ONLY = "_known_only"   # a column of an institutional table: only exact known patient values go
+def _institutional_columns(labels: List[str], fs: "_File") -> Optional[List[bool]]:
+    """fields.institutional_table, when no patient facts were harvested from the file either."""
+    if any(r.facts is not None and (r.facts.names or r.facts.relatives or r.facts.dob or r.facts.address_parts
+                                    or r.facts.village or r.facts.age is not None) for r in fs.recs):
+        return None
+    try:
+        return fields.institutional_table(labels)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _csv(pf: ParsedFile, fs: _File) -> str:
     labels, rows, hl = csv_view(pf)
     rows = [list(r) for r in rows]
@@ -1193,6 +1221,9 @@ def _csv(pf: ParsedFile, fs: _File) -> str:
             types = fields.refine_unlabelled(labels, types, [[r[i] for r in rows if i < len(r)] for i in range(ncol)])
         except Exception:  # noqa: BLE001
             pass
+    inst = _institutional_columns(labels, fs) if len(labels) == ncol else None
+    if inst is not None:
+        types = [_KNOWN_ONLY if inst[i] else types[i] for i in range(ncol)]
     new_heads = []  # type: List[List[str]]
     for hi, hr in enumerate(head_rows):
         if hl > 2 and hi < hl - 1:   # preamble line above the header: free text
