@@ -213,8 +213,47 @@ _RE_ABHA_LABEL = re.compile(r"(?:abha|health\s*id|आभा)[^0-9\n]{0,15}$")
 # a reference number shaped like a mobile: "Trip ID 98...", "package 98...", "LRN-98...", "SPL/26/98..."
 _RE_REF_BEFORE = re.compile(
     r"(?<![a-z])(?:trip\s*(?:id|no)|token|package|pkg|lab\s*(?:ref|no|id)|ref(?:erence)?\.?\s*(?:no|id|#)?|bill(?:\s*no)?|"
-    r"sample(?:\s*(?:id|no))?|claim(?:\s*no)?|cyto\s*no|barcode|accession|batch|lot|invoice|receipt|order|rs\.?|inr|₹)"
+    r"sample(?:\s*(?:id|no))?|claim(?:\s*no)?|cyto\s*no|barcode|accession|batch|lot|invoice|receipt|order|rs\.?|inr|₹|"
+    r"booking(?:\s*(?:id|no|ref))?|appointment\s*(?:id|no)|ticket(?:\s*(?:id|no))?|serial(?:\s*no)?|cat(?:alogue)?\s*no|"
+    r"helpline|help\s*line|toll[\s\-]*free|reception|enquiry|enquiries|front\s*desk|control\s*room|call\s+us\s+(?:at|on))"
     r"[\s:#.\-]*$")
+
+
+# Indian vehicle registration plate: state code + RTO number + series + 4 digits ("MH-20-EF-4471", "DL 1V 5522")
+_STATE_CODES = frozenset("""
+AN AP AR AS BR CG CH DD DL DN GA GJ HP HR JH JK KA KL LA LD MH ML MN MP MZ NL OD OR PB PY RJ SK TG TN TR TS UK UP WB
+""".split())
+_RE_PLATE = re.compile(r"([A-Z]{2})[ \-]?[0-9]{1,2}[ \-]?[A-Z]{0,3}[ \-]?[0-9]{4}")
+# a doctor's / facility's council registration: "MCh (Uro), Reg APMC/...", "DMC Reg DMC/R/..."
+_RE_COUNCIL_REG = re.compile(
+    r"(?:(?<![a-z])(?:mbbs|md|ms|dm|mch|m\.ch|dnb|frcs|mrcp|dgo|dch|doms|bds|mds|bams|bhms)(?![a-z])(?:(?! {2})[^\n\t]){0,40}|"
+    r"(?<![a-z])(?:mci|nmc|smc|[a-z]{1,4}mc|medical\s+council|council)\s*)"
+    r"(?:reg(?:istration|n|d)?\.?\s*(?:no\.?|number|#)?)[\s:#.\-]*$")
+
+
+_RE_SERVICE_VEHICLE = re.compile(r"(?<![a-z])(?:ambulance|108|102|auto|autorickshaw|e-?rickshaw|toto|hearse|van|taxi|cab|bus|"
+                                 r"tipper|truck|lorry|tractor|dumper|police|pcr|jeep|delivery|courier|vehicle)(?![a-z])")
+_RE_OWN_VEHICLE = re.compile(r"(?<![a-z])(?:his|her|own|their|my|patient'?s|riding|driving|motorcycle|motor\s*cycle|bike|scooty|"
+                             r"scooter|car)(?![a-z])")
+
+
+def _plate(tok: str) -> bool:
+    m = _RE_PLATE.fullmatch(tok)
+    return bool(m) and m.group(1) in _STATE_CODES and bool(re.search(r"[0-9][ \-]?[A-Z]", tok[2:]))
+
+
+def is_reference(t: str, tl: str, start: int, tok: str) -> bool:
+    """One decision for every id / phone recogniser: is the number at `start` a reference number of an
+    object, a document or the institution (vehicle plate, council registration, requisition / bag / film /
+    post-mortem / pre-auth number) rather than the patient's own identifier?"""
+    if _plate(tok):
+        # a hired / service vehicle (ambulance, auto, hearse) is not the patient's; "his motorcycle no. ..." is
+        lb = _line_before(tl, start, 40)
+        return bool(_RE_SERVICE_VEHICLE.search(lb)) and not _RE_OWN_VEHICLE.search(lb)
+    seg = _segment_before(tl, start, 40)
+    if _RE_NON_PATIENT_LABEL.search(seg) and not _RE_PID_SEGMENT.search(tok):
+        return True
+    return bool(_RE_COUNCIL_REG.search(_line_before(tl, start, 80)))
 
 
 def _phone_vetoed(t: str, tl: str, start: int) -> bool:
@@ -271,7 +310,7 @@ def find_identifiers(text: str) -> List[Span]:
     for m in _RE_CODE.finditer(t):
         tok = m.group()
         first = re.match(r"[A-Za-z]+", tok).group().upper()
-        if first in _INS_PREFIXES and len(_digits(tok)) >= 5:
+        if first in _INS_PREFIXES and len(_digits(tok)) >= 5 and not is_reference(t, tl, m.start(), tok):
             c.append((2, m.start(), m.end(), "INSURANCE_ID", norm_id(tok)))
     for m in _RE_ANY_TOKEN.finditer(t):
         tok = m.group()
@@ -294,6 +333,8 @@ def find_identifiers(text: str) -> List[Span]:
         # a 91-prefixed mobile is far likelier than an Aadhaar failing its checksum
         if g.startswith("91") and g[2] in "6789" and not verhoeff_ok(g):
             continue
+        if _phone_vetoed(t, tl, m.start()) and not re.search(r"aadhaa?r|aadhar|uid|आधार", _segment_before(tl, m.start(), 30)):
+            continue                      # "Lab Ref 2508...": a 12-digit accession number
         c.append((5, m.start(), m.end(), "AADHAAR", g))
     for m in _RE_PAN.finditer(t):
         c.append((6, m.start(), m.end(), "PAN", m.group().upper()))
@@ -333,7 +374,7 @@ def _looks_like_date(tok: str) -> bool:
 _NON_PATIENT_PREFIXES = frozenset("""
 BL BILL BLL INV INVC INVOICE RCPT RCP RCT REC RECEIPT SMP SAM SAMP SAMPLE SPL SPEC SPECIMEN VIS VST
 VISIT PKG PKGE PACK PACKAGE TXN TRN TRX ORD ORDER TKN TOKEN CLM CLAIM VCH VOUCHER ACC ACCN AMB HD TKT
-TICKET LAB LB BAR BC REF PAY PMT CHQ UTR GST GSTIN BATCH LOT ICD LOINC SNOMED
+TICKET LAB LB BAR BC REF PAY PMT CHQ UTR GST GSTIN BATCH LOT ICD LOINC SNOMED BB DDSSY PMNDP
 """.split())
 _RE_NON_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:bill|invoice|inv|receipt|rcpt|sample|specimen|visit|package|pkg|txn|transaction|"
@@ -341,12 +382,19 @@ _RE_NON_PATIENT_LABEL = re.compile(
     r"lab\s*(?:no|ref|id|number|#|accession)|(?<!patient )(?<!pt )ref(?:erence)?\.?\s*(?:no|number|#)|cyto(?:logy)?\s*no|"
     r"trip\s*(?:id|no)|mlc|mlr|ml\s*no|certificate|cert|film|slide|room|ext|extn|"
     r"pre-?\s*auth(?:ori[sz]ation)?|approval|rejection|letter|fir|gd|session|consultation|"
-    r"(?<!patient )(?<!pt )ref(?:erence)?\.?\s*[:#]|call\s*ref|complaint|vehicle|ambulance|utr|bag)(?![a-z])"
+    r"(?<!patient )(?<!pt )ref(?:erence)?\.?\s*[:#]|call\s*ref|complaint|vehicle|ambulance|utr|bag|"
+    r"req(?:uisition)?\.?\s*(?:no|id|#)|donor(?:\s*card)?|unit\s*no|crossmatch|cross-match|issue\s*no|"
+    r"x-?ray(?:\s*no)?|scan\s*no|ct\s*no|mri\s*no|usg\s*no|mortuary|post-?\s*mortem|pm\s*no|inquest|panchnama|"
+    r"marg|dd\s*(?:entry|no)|serial|catalog(?:ue)?|cat\s*no|booking|appointment\s*(?:id|no)|hearse|"
+    r"एक्स-रे(?:\s*सं\.?)?|फिल्म)(?![a-z])"
 )
 _RE_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:uhid|mrn|mr\s*no|cr\s*no|hosp(?:ital)?[\s_]*(?:no|id|uhid)|patient[\s_]*(?:id|no|ref)|"
     r"pt[\s_]*id|reg(?:istration|n|d)?\.?[\s_]*(?:no|number|id|#)?|ipd?[\s_]*(?:no|number|id)?|opd[\s_]*(?:no|number|id|reg)?|"
     r"adm(?:ission)?[\s_]*(?:no|number|id)?|inpatient[\s_]*(?:no|id)?|case[\s_]*(?:no|id)|"
+    r"rch[\s_]*(?:id|no|number)?|mcts[\s_]*(?:id|no|number)?|ni-?kshay[\s_]*(?:id|no|number)?|"
+    r"(?:mother|child|beneficiary|member)[\s_]*(?:id|no)|tb[\s_]*(?:no|number|id)|pid|samagra[\s_]*(?:id|no)?|"
+    r"mcp[\s_]*card[\s_]*(?:no|id)?|"
     r"पंजीकरण\s*सं\.?|पंजीयन\s*सं\.?|आईपीडी\s*सं\.?|यूएचआईडी|भर्ती\s*सं\.?|रजि\.?\s*नं\.?)"
     r"[\s\"':#.\-=]*$"
 )
@@ -433,7 +481,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
         if _RE_HEXISH.search(tok) or (len(tok) > 24 and not re.search(r"[\-/._]", tok)):
             continue                                                 # uuid / hash / base64 run
         seg = _segment_before(tl, ms, 40)
-        if _RE_NON_PATIENT_LABEL.search(seg) and not _RE_PID_SEGMENT.search(tok):
+        if is_reference(t, tl, ms, tok):
             continue
         if re.match(r"(?:mob|mobile|ph|phone|tel|cell|call|contact)$", lead, re.I):
             continue
@@ -512,7 +560,7 @@ _RE_DOCTOR = re.compile(
 
 _UNITS = (r"(?:mg/dl|mg/dL|g/dl|g/dL|mmol/l|mmol/L|meq/l|mEq/L|iu/l|IU/L|u/l|U/L|ng/ml|ng/mL|pg/ml|pg/mL|"
           r"µiu/ml|uIU/mL|µIU/mL|/uL|/ul|/µL|/cumm|/mm3|cells/cumm|/hpf|lakh(?:s)?(?:/cumm)?|x\s*10\^?\d+/[uµ]?L|"
-          r"mmHg|mm\s*Hg|fl|fL|pg|sec|%|mm/hr|mm/1st\s*hr|gm/dl|gm%|g%|"
+          r"mmHg|mm\s*Hg|fl|fL|pg|sec|%|mm/hr|mm/1st\s*hr|gm/dl|gm%|g%|ml/min|/min|bpm|cc|"
           r"ग्राम[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्रा\.?[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्राम[ \t]*प्रतिशत|ग्राम%|"
           r"मि\.?[ \t]*ग्रा\.?(?:[ \t]*/[ \t]*डी\.?[ \t]*एल\.?)?|मिग्रा|मि\.?[ \t]*ली\.?|मिली|मिमी[ \t]*पारा|प्रति[ \t]*मिनट)")
 _DOSE_UNITS = r"(?:mg|mcg|µg|ug|gm|g|ml|mL|iu|IU|units?|U|meq|mEq|mmol|%|puffs?|drops?|tabs?|caps?)"
@@ -617,6 +665,45 @@ _RE_HIST_MARK = re.compile(
 _RE_HIST_END = re.compile(r"(?:\.(?![0-9])|[;\n\r\t|,\"।]|\s+(?:mob|mobile|ph|phone|contact|tel)\b|$)", re.I)
 
 
+# ---- institutions, programmes, designations, roads: never a person or a residence
+_INST_TAIL = (r"(?:Memorial(?:[ \t]+(?:Hospital|Trust|Clinic|Institute|Medical[ \t]+College))?|Nursing[ \t]+Home|Pharmacy|"
+              r"Medical[ \t]+Store|Medical[ \t]+Hall|Medicals|Chemists?|Druggists?|Diagnostics|Diagnostic[ \t]+Cent(?:re|er)|"
+              r"Path(?:ology)?[ \t]+Lab(?:s)?|Polyclinic|Medical[ \t]+College(?:[ \t]+(?:&|and)[ \t]+Hospital)?|"
+              r"Hospital|Clinic|Police[ \t]+Station|Thana|Eye[ \t]+Hospital|Heart[ \t]+Institute|Cancer[ \t]+Institute)")
+_RE_INST = re.compile(
+    r"(?<![A-Za-z])(?:(?:Sir|Saint|St\.?|Shri|Sri|Smt\.?|Late|Dr\.?|Al|El)[ \t]+)?"
+    r"(?:[A-Z][A-Za-z'’\-]+[ \t]){1,3}" + _INST_TAIL + r"(?![A-Za-z])(?![ \t]*(?:[:#]|No\b|no\b|Reg|ID\b|Id\b))")
+_RE_HI_INST2 = re.compile(r"(?<![ऀ-ॿ])(?:[ऀ-ॿ]+[ \t]+){1,3}(?:मेडिकल[ \t]+कॉलेज|मेमोरियल|स्मारक|चिकित्सालय|नर्सिंग[ \t]+होम)(?![ऀ-ॿ])")
+_RE_PROGRAMME = re.compile(
+    r"(?<![A-Za-z\-])(?:JSY|JSSK|PMSMA|RBSK|RKSK|NTEP|RNTCP|NHM|NRHM|NUHM|PMMVY|PM-?JAY|AB-?PMJAY|CMCHIS|MJPJAY|RSBY|"
+    r"NPCDCS|NVBDCP|NLEP|NPCB|NACO|ICDS|IMNCI|HBNC|HBYC|SNCU|DEIC|PMNDP|NIDDCP|IDSP|NPHCE|NMHP|UIP|PCPNDT|"
+    r"MMJAY|BSKY|DDSSY|SAST|KASP|YSR)(?![A-Za-z\-])"
+    r"|(?<![A-Za-z])(?:National|Pradhan[ \t]+Mantri|Mukhya[ \t]+?Mantri|Mukhyamantri|Rashtriya|Intensified)"
+    r"(?:[ \t]+[A-Z][a-z]+){0,4}?[ \t]+(?:Day|Programme|Program|Mission|Week|Fortnight|Campaign|Scheme|Abhiyan|Yojana|Karyakram)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:Mission[ \t]+Indradhanush|Pulse[ \t]+Polio|Nikshay[ \t]+Poshan(?:[ \t]+Yojana)?|Ayushman[ \t]+Bharat|"
+    r"Aarogyasri|Arogyasri|Swasthya[ \t]+Sathi|Biju[ \t]+Swasthya[ \t]+Kalyan|Janani[ \t]+Shishu[ \t]+Suraksha|Kayakalp|LaQshya|"
+    r"Poshan[ \t]+Abhiyaan|(?:Mamata|Rajshri|Kanyashree|Ladli|Mamta)[ \t]+(?:scheme|Scheme|Yojana|yojana))(?![A-Za-z])")
+_RE_DESIG = re.compile(
+    r"(?<![A-Za-z])(?:(?:Senior|Junior|Chief|Sr\.?|Jr\.?|Staff|Dialysis|Lab(?:oratory)?|OT|X-?[Rr]ay|Radiology|ECG|Pharmacy|"
+    r"Blood[ \t]+Bank|Anaesthesia|Anesthesia|Perfusion|Physiotherapy|Ward|Nursing)[ \t]+)?"
+    r"(?:Technician|Technologist|Nursing[ \t]+Officer|Staff[ \t]+Nurse|Matron|Ward[ \t]+[Bb]oy|Attendant|Pharmacist|Dresser|"
+    r"Physiotherapist|Counsellor|Dietician|Dietitian|Orderly)"
+    r"(?:[ \t]+Gr(?:ade)?\.?[ \t\-]*(?:I{1,3}|IV|[1-4]|A|B))?(?![A-Za-z])")
+_KEEP_SHIELDS = ()  # filled below: (shield, cheap hint that must occur first)
+_RE_ROAD_NO = re.compile(r"(?<![A-Za-z])(?:NH|SH|MDR|ODR)[ \t\-]?[0-9]{1,3}[A-Z]?(?![0-9A-Za-z])")
+
+
+_KEEP_SHIELDS = (
+    (_RE_INST, re.compile(r"Memorial|Nursing|Pharmacy|Medical|Chemist|Druggist|Diagnostic|Path|Polyclinic|Hospital|Clinic|"
+                          r"Police|Thana|Institute")),
+    (_RE_HI_INST2, re.compile(r"मेडिकल|मेमोरियल|स्मारक|चिकित्सालय|नर्सिंग")),
+    (_RE_PROGRAMME, re.compile(r"[A-Z]{2,}|National|Mantri|Rashtriya|Intensified|Mission|Pulse|Nikshay|Ayushman|"
+                               r"rogyasri|Swasthya|Janani|Kayakalp|LaQshya|Poshan|cheme|ojana")),
+    (_RE_DESIG, re.compile(r"Technic|Technol|Nursing|Nurse|Matron|Ward|Attendant|Pharmacist|Dresser|Physio|Counsel|Diet|Orderly")),
+    (_RE_ROAD_NO, re.compile(r"NH|SH|MDR|ODR")),
+)
+
+
 # ---- generalised eponym shield: "<Name> [<Name>] <scale / score / prosthesis / ...>"
 EPONYMS = frozenset(w.lower() for w in """
 Apgar Glasgow Barthel Berg Ashworth Braden Morse Norton Waterlow Ramsay Richmond Mallampati Child-Pugh Child Pugh
@@ -677,7 +764,8 @@ Austin-Moore Denis-Browne Wong-Baker Cockcroft-Gault Kayser-Fleischer Cheyne-Sto
 # tails after which a capitalised run is a named instrument whatever the run is
 _EP_STRONG = (r"scales?|scores?|scoring|index|indices|classification|criteria|staging|prosthesis|prostheses|implant|"
               r"manoeuvre|maneuver|technique|incision|flap|graft|splint|brace|forceps|retractor|clamp|stent|catheter|"
-              r"syndrome|reflex|balance|questionnaire|inventory|scoring[ \t]+system|grading[ \t]+system|nomogram")
+              r"syndrome|reflex|balance|questionnaire|inventory|scoring[ \t]+system|grading[ \t]+system|nomogram|"
+              r"murmur|fistula|AVF|shunt|rhythm|pentad|agar|ganglion|plexus|apparatus|units")
 # tails that need the run to hold a known eponym ("Ramesh type 2 DM" stays a person)
 _EP_WEAK = (r"grade|grading|type|test|sign|method|procedure|operation|repair|approach|nail|plate|screw|cast|traction|"
             r"tube|drain|needle|valve|pouch|gait|position|view|projection|fracture|dislocation|deformity|contracture|"
@@ -776,6 +864,9 @@ def _is_clinical_word(w: str) -> bool:
     return False
 
 
+_RE_ACRO = re.compile(r"[A-Z][A-Z0-9]{1,5}")
+
+
 def _hist_follows(text: str, marker_end: int, kind: str) -> bool:
     w1, w2 = _word_after(text, marker_end)
     if not w1:
@@ -784,6 +875,10 @@ def _hist_follows(text: str, marker_end: int, kind: str) -> bool:
         return True
     if _is_clinical_word(w1):
         return True
+    if _RE_ACRO.fullmatch(w1) and not (w2 and w2.isalpha() and w2.isupper() and len(w2) > 1):
+        return True                    # "C/O: RTA - bike skid", "h/o PCOS", "h/o PTB 2011": an acronym in mixed text
+    if kind == "low" and w1[:1].islower() and w1.isalpha():
+        return True                    # lowercase "h/o tobacco (mishri)": history of a habit
     if re.match(r"[\u0900-\u097F]", w1):
         return w1 in lexicon.COMPLAINT_WORDS or w1 in lexicon.CLINICAL_WORDS
     if w1[:1].islower():
@@ -802,11 +897,32 @@ def is_complaint_of(text: str, pos: int) -> bool:
         return False
     mk = re.sub(r"\s+", " ", m.group().lower())
     kind = "kco" if mk in ("k/c/o", "kco", "known case of", "history of", "p/h/o", "f/h/o") or mk.startswith("complain") else "co"
+    if kind == "co" and m.group() in ("h/o", "c/o"):
+        kind = "low"
     return _hist_follows(t, m.end(), kind)
 
 
+_PCACHE = {}  # type: dict
+_PCACHE_MAX = 4096
+
+
+def reset_protected_cache() -> None:
+    _PCACHE.clear()
+
+
 def protected_spans(text: str) -> List[Span]:
-    """Clinical stretches that must never be redacted, non-overlapping and sorted."""
+    """Clinical stretches that must never be redacted, non-overlapping and sorted. Memoised per text
+    (detect, sanitize and the field layer ask for the same string); callers get a fresh list."""
+    hit = _PCACHE.get(text)
+    if hit is None:
+        hit = tuple((sp.start, sp.end, sp.kind, sp.value) for sp in _protected_spans(text))
+        if len(_PCACHE) >= _PCACHE_MAX:
+            _PCACHE.clear()
+        _PCACHE[text] = hit
+    return [Span(a, b, c, d) for a, b, c, d in hit]
+
+
+def _protected_spans(text: str) -> List[Span]:
     t = _to_ascii_digits(text)
     c: List[Tuple[int, int, int, str, str]] = []
     for m in _RE_HIST_MARK.finditer(t):
@@ -830,6 +946,10 @@ def protected_spans(text: str) -> List[Span]:
             c.append((2, m.start(), m.end(), "EPONYM", ""))
     for m in _RE_ASHA.finditer(t):
         c.append((2, m.start(), m.end(), "ASHA", ""))
+    for rx, hint in _KEEP_SHIELDS:
+        if hint.search(t):
+            for m in rx.finditer(t):
+                c.append((2, m.start(), m.end(), "EPONYM", ""))
     for a, b in _eponym_spans(t):
         c.append((2, a, b, "EPONYM", ""))
     for m in _RE_BRAND.finditer(t):
