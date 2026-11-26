@@ -163,3 +163,67 @@ class AdversarialVariantsTest(unittest.TestCase):
     def test_initial_is_not_a_name_key(self):
         from raksha import sanitize
         self.assertEqual(sanitize._name_keys("R. Hegde"), [sanitize._name_keys("Hegde")[0]])
+
+
+class RobustnessSweepTest(unittest.TestCase):
+    """Odd but plausible inputs end in a full release with none of the planted (invented) values."""
+
+    PLANTED = ("Ravindra Pokharkar", "9811122334", "Suvarna Tidke", "9722233445", "3041 7712 905",
+               "Kunnathu Veedu", "Dhanraj Ukey")
+
+    def _run(self, files):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+        from raksha import pipeline
+        from raksha.policy import DEFAULTS
+        with tempfile.TemporaryDirectory() as td:
+            inp, out = Path(td) / "in", Path(td) / "out"
+            for rel, body in files.items():
+                p = inp / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(body.encode("utf-8"))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                pipeline.run(inp, out, b"unit-secret", dict(DEFAULTS))
+            blob = b""
+            for p in sorted(out.rglob("*")):
+                if p.is_file():
+                    blob += p.read_bytes() + str(p.relative_to(out)).encode("utf-8")
+            recs = [json.loads(x) for x in (out / "records.jsonl").read_text(encoding="utf-8").splitlines() if x]
+            return blob.decode("utf-8", "replace"), recs
+
+    def test_sweep(self):
+        fhir = ('{"resourceType": "Bundle", "type": "collection", "entry": [{"resource": {"resourceType": '
+                '"Patient", "name": [{"text": "Dhanraj Ukey"}], "telecom": [{"value": "9811122334"}]}}]}')
+        files = {
+            "a/header_line3.csv": "OPD register\nexported 2026\nname,mobile,diagnosis\n"
+                                  "Ravindra Pokharkar,9811122334,Lobar pneumonia\n",
+            "a/totals.tsv": "name\tmobile\tamount\nSuvarna Tidke\t9722233445\t1200\nTOTAL\t\t1200\n",
+            "a/single.json": '"Ravindra Pokharkar 9811122334"',
+            "a/scalars.json": '["Lobar pneumonia", 3, "9811122334"]',
+            "a/broken.ndjson": '{"name": "Suvarna Tidke", "mobile": "9722233445"}\n{"name": "x", \n'
+                               '{"name": "Ravindra Pokharkar", "mobile": "9811122334"}\n',
+            "a/empty_bundle.json": '{"resourceType": "Bundle", "type": "collection", "entry": []}',
+            "a/headers_only.csv": "name,mobile,diagnosis\n",
+            "b/Ravindra Pokharkar रवि 9811122334 notes.txt": "Seen in OPD. Stable.\n",
+            "Ravindra Pokharkar/l2/l3/l4/visit.txt": "Patient Ravindra Pokharkar, mob 9811122334. BP 120/80.\n",
+            "c/one/same.csv": "name,mobile\nSuvarna Tidke,9722233445\n",
+            "c/two/same.csv": "name,mobile\nDhanraj Ukey,9811122334\n",
+            "d/bundle.csv": fhir,
+            "e/preauth.txt": "# pre-auth\ninsured.name = Ravindra Pokharkar\ninsured.house = Kunnathu Veedu\n"
+                             "insured.landline = 9811122334\nproposer.bank_ac = 3041 7712 905\n"
+                             "diagnosis.1 = Lobar pneumonia\n",
+            "e/claims.csv": 'claim_batch,name,bank_ac,address\n9988776655,Suvarna Tidke,3041 7712 905,'
+                            '"Kunnathu Veedu,\nMele Para,\nKottayam 686001"\n',
+        }
+        blob, recs = self._run(files)
+        for v in self.PLANTED:
+            self.assertNotIn(v, blob)
+        self.assertNotIn("686001", blob)
+        self.assertIn("Lobar pneumonia", blob)
+        self.assertIn("9988776655", blob)                 # a claim batch number stays
+        st = {r["file"]: r["status"] for r in recs}
+        self.assertFalse(any("broken.ndjson" in f for f in st), st)    # quarantined, never passed through
+        self.assertEqual(sum(1 for f in st if f.endswith("same.csv")), 2)

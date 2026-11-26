@@ -771,3 +771,59 @@ class RoundFresh4MessageRows(unittest.TestCase):
         self.assertIsNotNone(m[("x/sms.csv", "row:0")])
         self.assertEqual(m[("x/sms.csv", "row:0")], m[("x/reg.csv", "row:0")])
         self.assertIsNone(m[("x/sms.csv", "row:1")])
+
+
+class DottedKeyAndKvRules(unittest.TestCase):
+    """Dotted keys typed by their last segment, bank accounts, object numbers, key=value documents."""
+
+    def test_dotted_person_prefix_types_by_last_segment(self):
+        self.assertEqual(F.classify_label("insured.name"), F.NAME)
+        self.assertEqual(F.classify_label("insured.house"), F.HOUSE)
+        self.assertEqual(F.classify_label("insured.place"), F.VILLAGE)
+        self.assertEqual(F.classify_label("insured.pin"), F.PIN)
+        self.assertEqual(F.classify_label("insured.landline"), F.PHONE)
+        self.assertEqual(F.classify_label("insured.uhid"), F.PATIENT_ID)
+        self.assertEqual(F.classify_label("patient.addr.village"), F.VILLAGE)
+        self.assertEqual(F.classify_label("proposer.name"), F.RELATIVE)
+        self.assertEqual(F.classify_label("nominee.name"), F.RELATIVE)
+        self.assertEqual(F.classify_label("insured.policy_no"), F.INSURANCE)
+        self.assertEqual(F.classify_label("diagnosis.2"), F.CLINICAL)
+
+    def test_dotted_facility_prefix_is_the_institution_number(self):
+        self.assertEqual(F.classify_label("hospital.rohini_id"), F.OTHER_ID)
+        self.assertEqual(F.classify_label("facility.phone"), F.OTHER_ID)
+
+    def test_bank_account_labels(self):
+        for lb in ("bank_ac", "Bank A/C", "A/C No", "Account No", "khata no", "proposer.bank_ac"):
+            self.assertEqual(F.classify_label(lb), F.BANK, lb)
+        self.assertEqual(F.classify_label("Account Holder Name"), F.NAME)
+        self.assertTrue(F.is_pii_type(F.BANK))
+
+    def test_object_number_labels_are_not_patient_ids(self):
+        for lb in ("claim_batch", "settled_utr", "kit_lot", "sample_barcode"):
+            self.assertEqual(F.classify_label(lb), F.OTHER_ID, lb)
+        self.assertEqual(F.classify_column("claim_batch", ["9988776655", "9988776655"]), F.OTHER_ID)
+
+    def test_alias_label_is_a_name(self):
+        self.assertEqual(F.classify_label("alias"), F.NAME)
+        self.assertEqual(F.classify_label("insured.aka"), F.NAME)
+
+    def test_kv_document_slots(self):
+        text = ("# pre-auth request\ninsured.name = Ravindra Pokharkar\ninsured.uhid = QX/26/004411\n"
+                "insured.house = Kunnathu Veedu\nproposer.name = Suvarna\nward = Female Medical Ward\n"
+                "diagnosis.1 = Lobar pneumonia\nproposer.bank_ac = 3041 7712 905\n")
+        got = {lb: (text[a:b], t) for lb, a, b, t in harvest.kv_doc_slots(text)}
+        self.assertEqual(got["insured.name"], ("Ravindra Pokharkar", F.NAME))
+        self.assertEqual(got["insured.house"][1], F.HOUSE)
+        self.assertEqual(got["proposer.name"][1], F.RELATIVE)
+        self.assertEqual(got["proposer.bank_ac"][1], F.BANK)
+        self.assertNotIn("ward", got)
+        self.assertNotIn("diagnosis.1", got)
+        self.assertEqual(harvest.kv_doc_slots("a = 1\nsome prose here\nmore prose\nand more\nb = 2\n"), [])
+
+    def test_kv_document_id_links(self):
+        text = ("insured.name = Ravindra Pokharkar\ninsured.uhid = QX/26/004411\ninsured.age = 61 Y\n"
+                "ward = Female Medical Ward\ndiagnosis.1 = Lobar pneumonia\n")
+        pf = ParsedFile(rel="x/preauth.txt", sha256="c" * 64, kind=KIND_TEXT, text=text)
+        recs = harvest.harvest_file(pf)
+        self.assertTrue(any("QX26004411" in i.replace("/", "") for i in recs[0].facts.ids), recs[0].facts.ids)
