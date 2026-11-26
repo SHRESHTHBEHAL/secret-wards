@@ -626,3 +626,66 @@ class FinalRound(unittest.TestCase):
     def test_obstetric_surgical_eponyms(self):
         for t in ("MgSO4 as per Pritchard regimen given.", "Dissection of Calot's triangle was difficult."):
             self.assertEqual(kinds(t, "PERSON") + kinds(t, "PATIENT_NAME"), [], t)
+
+
+class HonorificAndLabels(unittest.TestCase):
+    def test_lower_word_after_honorific_not_a_name(self):
+        k = kinds("Patient seen. Haresh bhai aavya hata ane report lidho.")
+        self.assertNotIn("aavya", [v for _, v in k])
+        self.assertIn("Haresh", " ".join(v for kd, v in k if kd in ("PATIENT_NAME", "RELATIVE_NAME", "PERSON")))
+        self.assertIn(("RELATIVE_NAME", "tulsiram"), kinds("ramu ka bhai tulsiram aaya"))
+
+    def test_birth_date_label_not_a_relative(self):
+        for t in ("वय / लिंग : ४४ वर्षे / स्त्री          जन्मतारीख : ११ डिसेंबर १९७१",
+                  "लिंग : स्त्री जन्म दिनांक: ११ जुलै १९८१", "pati janm tarikh 1981"):
+            self.assertEqual(kinds(t, "RELATIVE_NAME"), [], t)
+
+    def test_devanagari_address_word_after_name(self):
+        k = kinds("आज सुनयना ताई आल्या होत्या")
+        self.assertIn("सुनयना", [v for _, v in k])
+        self.assertNotIn("आल्या", " ".join(v for _, v in k))
+        self.assertTrue(kinds("साक्षी: रमेश पवार", "PERSON"))
+
+    def test_glued_marathi_suffix_only_for_document_name(self):
+        k = kinds("रुग्ण: सुनयना पवार\nसुनयनाताई आल्या")
+        self.assertEqual([v for _, v in k].count("सुनयना"), 1)
+        self.assertNotIn("सुनयनाताई", [v for _, v in k])
+        self.assertEqual(kinds("रुग्ण: सुनयना पवार\nताराबाई आल्या, पवारबाई आल्या"), [("PATIENT_NAME", "सुनयना पवार")])
+        self.assertEqual(kinds("ताराबाई आल्या"), [])
+
+
+class TextFormats(unittest.TestCase):
+    def test_vcard_address_parts(self):
+        t = "BEGIN:VCARD\nVERSION:3.0\nFN:Tarini Bora\nADR;TYPE=HOME:;;7 Kalibari Path;Rongpur Gaon;Assam;785001;India\nEND:VCARD"
+        k = kinds(t)
+        self.assertIn(("ADDRESS", "7 Kalibari Path"), k)
+        self.assertIn(("VILLAGE", "Rongpur Gaon"), k)
+        self.assertIn(("PIN", "785001"), k)
+        self.assertNotIn("Assam", [v for _, v in k])
+
+    def test_icalendar_lines(self):
+        t = ("BEGIN:VEVENT\nUID:appt-1100@clinic.example.org\nDTSTAMP:20260101T101010Z\n"
+             "ATTENDEE;CN=Tarini Bora:mailto:tarini.b@example.com\n"
+             "ORGANIZER;CN=Dr. Hemen Saikia:mailto:opd@clinic.example.org\nEND:VEVENT")
+        k = kinds(t)
+        self.assertNotIn("appt-1100@clinic.example.org", [v for _, v in k])
+        self.assertNotIn("opd@clinic.example.org", [v for _, v in k])
+        self.assertIn(("EMAIL", "tarini.b@example.com"), k)
+        self.assertIn("Tarini Bora", [v for _, v in k])
+
+    def test_yaml_and_ini_keys(self):
+        t = ("patient:\n  naam: Tarini Bora\n  janm_tarikh: 1981-04-09\n  pata: |\n    7 Kalibari Path,\n"
+             "    Rongpur Gaon\n  gaam: Rongpur Gaon\n  doctor: Dr. Hemen Saikia\n")
+        k = kinds(t)
+        self.assertIn(("DOB", "1981-04-09"), k)
+        self.assertIn(("VILLAGE", "Rongpur Gaon"), k)
+        self.assertNotIn("Hemen Saikia", " ".join(v for _, v in k))
+        t2 = "[rec]\npeyar = Selvan Arul\nnok = Arul Kumaran\nvill = Pudhur\nref = 12\npeyar_code = PSN-77AB12"
+        k2 = kinds(t2)
+        self.assertIn(("RELATIVE_NAME", "Arul Kumaran"), k2)
+        self.assertIn(("VILLAGE", "Pudhur"), k2)
+        self.assertNotIn("PSN", " ".join(v for _, v in k2))
+
+    def test_formats_inert_on_prose(self):
+        t = "Seen in OPD. pata nahi kab se dard hai. gaon me sab theek."
+        self.assertEqual([x for x in kinds(t) if x[0] in ("ADDRESS", "VILLAGE")], [])
