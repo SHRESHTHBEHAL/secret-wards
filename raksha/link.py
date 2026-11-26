@@ -342,6 +342,21 @@ def _same(x: str, y: str) -> bool:
     return v
 
 
+def _distinct_names(lists) -> List[List[str]]:
+    """The distinct non-empty name lists (pairwise checks over thousands of identical holders of one
+    shared number were quadratic; equal lists are always compatible with each other)."""
+    seen = set()  # type: Set[Tuple[str, ...]]
+    out = []  # type: List[List[str]]
+    for n in lists:
+        if not n:
+            continue
+        t = tuple(sorted(set(n)))
+        if t not in seen:
+            seen.add(t)
+            out.append(list(t))
+    return out
+
+
 def _names_compat(a: List[str], b: List[str]) -> bool:
     for x in a:
         for y in b:
@@ -612,7 +627,7 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
         if not t.startswith(ID_PHONE + ":"):
             continue
         roots = sorted({lk.find(i) for i in by_tok[t]})
-        named = [lk.groups[x].names for x in roots if lk.groups[x].names]
+        named = _distinct_names(lk.groups[x].names for x in roots)
         bad = any(not _names_compat(named[i], named[j])
                   for i in range(len(named)) for j in range(i + 1, len(named)))
         if bad:
@@ -644,7 +659,7 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     for c in sorted(by_core):
         members = by_core[c]
         roots = sorted({lk.find(i) for i in members})
-        named = [lk.groups[x].names for x in roots if lk.groups[x].names]
+        named = _distinct_names(lk.groups[x].names for x in roots)
         one = all(_names_compat(named[i], named[j])
                   for i in range(len(named)) for j in range(i + 1, len(named)))
         for idx in range(1, len(members)):
