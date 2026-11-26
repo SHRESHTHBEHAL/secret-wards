@@ -827,3 +827,50 @@ class DottedKeyAndKvRules(unittest.TestCase):
         pf = ParsedFile(rel="x/preauth.txt", sha256="c" * 64, kind=KIND_TEXT, text=text)
         recs = harvest.harvest_file(pf)
         self.assertTrue(any("QX26004411" in i.replace("/", "") for i in recs[0].facts.ids), recs[0].facts.ids)
+
+
+class AttributeValueJson(unittest.TestCase):
+    """Facts stored as {"a": <code>, "v": <value>} pairs (invented data)."""
+
+    def _data(self):
+        return {"site": {"units": [{"unit": "Gen Med", "enc": [
+            {"eid": "E1", "obs": [{"a": "pt_nm", "v": "Pemba Lhamo Negi"}, {"a": "crno", "v": "QZ/77/120045"},
+                                  {"a": "mob1", "v": "9876012345"}, {"a": "cc", "v": "giddiness 2 days"},
+                                  {"a": "res", "v": {"vpo": "Kharogla", "hs": "Plot 9, Upper Lane", "pc": "176201"}}]},
+            {"eid": "E2", "obs": [{"a": "pt_nm", "v": "Dorje Bodh"}, {"a": "crno", "v": "QZ/77/120046"}]}]}]}}
+
+    def test_pair_list_detected_and_codes_typed(self):
+        obs = self._data()["site"]["units"][0]["enc"][0]["obs"]
+        self.assertTrue(F.av_list(obs))
+        self.assertEqual(F.av_pair(obs[0]), ("a", "v", "pt_nm"))
+        self.assertIsNone(F.av_pair(obs[3]))          # unknown / clinical code: kept as is
+        self.assertIsNone(F.av_pair({"name": "Kamal Dev", "value": 3}))
+        self.assertFalse(F.av_list([{"a": 1, "b": 2}, {"x": "y"}]))
+
+    def test_address_parts_only_under_address_group(self):
+        self.assertEqual(F.json_key_type(["obs", "res", "vpo"], "Kharogla"), F.VILLAGE)
+        self.assertEqual(F.json_key_type(["obs", "res", "hs"], "Plot 9"), F.HOUSE)
+        self.assertEqual(F.json_key_type(["obs", "res", "pc"], "176201"), F.PIN)
+        self.assertNotEqual(F.json_key_type(["labs", "glucose", "pc"], "142"), F.PIN)
+
+    def test_record_is_the_owner_of_the_pairs(self):
+        recs = harvest.harvest_file(_json(self._data()))
+        self.assertEqual([r.loc for r in recs], ["/site/units/0/enc/0", "/site/units/0/enc/1"])
+        self.assertIn("phone:9876012345", recs[0].facts.ids)
+        self.assertTrue(any("120045" in i for i in recs[0].facts.ids), recs[0].facts.ids)
+
+
+class SchemaColumnarJson(unittest.TestCase):
+    def test_table_schema_fields_label_rows(self):
+        data = {"schema": {"fields": [{"name": "case_no", "type": "any"}, {"name": "nm", "type": "any"},
+                                      {"name": "mob", "type": "any"}, {"name": "dob_yyyymmdd", "type": "any"}]},
+                "data": [["QZ/55/0091", "Tashi Wangmo", 9812233445, 19870314],
+                         ["QZ/55/0092", "Lobsang Dorje", 9723344556, 19790921]]}
+        self.assertEqual(harvest.columnar_rows(data), ("data", ["case_no", "nm", "mob", "dob_yyyymmdd"]))
+        recs = harvest.harvest_file(_json(data))
+        self.assertEqual([r.loc for r in recs], ["/data/0", "/data/1"])
+        self.assertIn("phone:9812233445", recs[0].facts.ids)
+
+    def test_self_named_case_number_under_visit_key(self):
+        self.assertEqual(F.json_key_type(["data", "visit_no"], "CASE#40917"), F.PATIENT_ID)
+        self.assertEqual(F.json_key_type(["visit_no"], "V-1234"), F.OTHER_ID)
