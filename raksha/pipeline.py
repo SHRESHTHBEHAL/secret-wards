@@ -18,7 +18,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from . import detect as _detect_mod
 from . import gate
+from . import harvest as _harvest_mod
 from .harvest import harvest_file
 from .ingest import R_INTERNAL, R_UNSUPPORTED, dump_json, escapes_root, link_marker_sha, load, walk
 from .link import link
@@ -189,6 +191,17 @@ def _write_text(root: Path, rel: str, content: str) -> None:
 # ----------------------------------------------------------------------------- run
 
 def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]) -> int:
+    # run-wide caches and cross-file typing state never outlive one run
+    _detect_mod.reset_caches()
+    _harvest_mod.reset()
+    try:
+        return _run(input_dir, output_dir, secret, policy)
+    finally:
+        _detect_mod.reset_caches()
+        _harvest_mod.reset()
+
+
+def _run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]) -> int:
     t0 = time.monotonic()
     if not secret:
         sys.stderr.write("raksha: no secret configured; nothing processed\n")
@@ -228,10 +241,24 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
 
     # 2. harvest (once per content, cloned per path)
     harvested = {}  # type: Dict[str, Optional[List[Record]]]
+    first = {}  # type: Dict[str, List[Record]]
+    try:  # cross-file id-column typing; files it leaves untouched keep their first-pass records
+        uniq = {}  # type: Dict[str, ParsedFile]
+        for it in items:
+            if not it.reason and it.pf.sha256 not in uniq:
+                uniq[it.pf.sha256] = dataclasses.replace(it.pf, rel=it.rel)
+        first = _harvest_mod.prepare([uniq[k] for k in sorted(uniq)]) or {}
+    except Exception as exc:  # noqa: BLE001
+        err("harvest", exc)
+        _harvest_mod.reset()
+        first = {}
     for it in items:
         if it.reason:
             continue
         sha = it.pf.sha256
+        if (sha not in harvested and sha in first and harvest_file is _harvest_mod.harvest_file
+                and not _harvest_mod.has_override(it.pf)):
+            harvested[sha] = first[sha]
         if sha not in harvested:
             try:
                 harvested[sha] = list(harvest_file(dataclasses.replace(it.pf, rel=it.rel)))

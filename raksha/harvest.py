@@ -438,7 +438,7 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
         named = bool(keys) and not isinstance(keys[-1], int) and \
             _RECORD_KEY.search(str(keys[-1]).lower()) is not None
         if node and (any(_is_record(e, keys) for e in node[:50])
-                     or (named and all(isinstance(e, dict) for e in node))):
+                     or ((named or (depth == 0 and not ptr)) and all(isinstance(e, dict) for e in node))):
             for i, e in enumerate(node):
                 out.append(("%s/%d" % (ptr, i), keys, e))
             return
@@ -839,15 +839,27 @@ def _id_key(v: str) -> str:
     return k if len(re.sub(r"[^0-9]", "", k)) >= 3 else ""
 
 
-def prepare(pfs: Sequence[ParsedFile]) -> None:
+def reset() -> None:
+    """Forget cross-file typing state (called at the start and end of every pipeline run)."""
+    _OVERRIDES.clear()
+
+
+def has_override(pf: ParsedFile) -> bool:
+    return bool(_OVERRIDES.get(_okey(pf)))
+
+
+def prepare(pfs: Sequence[ParsedFile]) -> Dict[str, List[Record]]:
     """Two-pass typing: harvest every file once, collect the hospital / admission ids typed by
     label or shape, then mark slots of other files whose values overlap them (>= half of the
     distinct values) as PATIENT_ID / ENC_ID for the following harvest_file calls."""
     _OVERRIDES.clear()
     owners: Dict[str, Set[str]] = {}
+    first: Dict[str, List[Record]] = {}
     for pf in pfs:
         try:
-            for r in harvest_file(pf):
+            recs = list(harvest_file(pf))
+            first[_okey(pf)] = recs
+            for r in recs:
                 for t in (r.facts.ids if r.facts else []):
                     typ, _, val = t.partition(":")
                     if typ in (ID_UHID, ID_ENC):
@@ -874,6 +886,7 @@ def prepare(pfs: Sequence[ParsedFile]) -> None:
                 _OVERRIDES[me] = ov
         except Exception:  # noqa: BLE001
             continue
+    return first
 
 
 def harvest_all(pfs: Sequence[ParsedFile]) -> Dict[str, List[Record]]:
