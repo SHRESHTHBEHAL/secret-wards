@@ -730,6 +730,25 @@ _LANDMARK_PHRASE = re.compile(r"(?<![A-Za-z])((?:near|behind|opp\.?|opposite|bes
                               r"(?:[A-Z][A-Za-z]*)?)")
 
 
+_PATH_NAME = re.compile(r"(?:(?<=[\\/])|^)((?:[A-Z][a-z]+[_ ]){1,3})([A-Z]{1,3}[_ ])?([0-9]{5,14})(?=[\\/_.\s\"]|$)", re.M)
+
+
+def _layer_path_names(cx: _Ctx) -> None:
+    """Export folders named after the patient: ".../Girija_NA_010607/visits.json"."""
+    t = cx.text
+    for m in _PATH_NAME.finditer(t):
+        pieces = [p for p in re.split(r"[_ ]", m.group(1)) if p]
+        if any(_low(p) in _STOP or _low(p) in patterns._UNDERSCORE_WORDS or _low(p) in _EN_COMMON for p in pieces):
+            continue   # "Ward_Register_00123", "Lab_Results_202611": a folder label, not a person
+        if len(pieces) == 1 and not m.group(2) and len(m.group(3)) < 6:
+            continue
+        pos = m.start(1)
+        for piece in re.split(r"[_ ]", m.group(1)):
+            if piece and _low(piece) not in _GENERIC:
+                cx.add(pos, pos + len(piece), "PATIENT_NAME", "", 4)
+            pos += len(piece) + 1
+
+
 def _layer_places(cx: _Ctx) -> None:
     """Villages and landmarks written in sentences rather than address lines."""
     t = cx.text
@@ -1159,6 +1178,7 @@ def _run(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set
     _layer_dob(cx, order)
     _layer_address_lines(cx)
     _layer_places(cx)
+    _layer_path_names(cx)
     _layer_kinship(cx)
     _layer_honorifics(cx)
     _layer_verbs(cx)

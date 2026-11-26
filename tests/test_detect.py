@@ -293,3 +293,18 @@ class DefectFixTests(unittest.TestCase):
         self.assertIn(("PATIENT_NAME", "Ravina"), got)
         self.assertIn(("PATIENT_NAME", "Tondon"), got)
         self.assertIn(("MRN", "051234"), got)
+
+
+class PathNameTest(unittest.TestCase):
+    def test_patient_named_export_folders(self):
+        from raksha import detect
+        for s, name in [(r"D:\HIS\exports\opd\Girija_NA_010607\visits.json", ["Girija"]),
+                        ("/exports/Kavya_Reddy_0076912/ward.xlsx", ["Kavya", "Reddy"])]:
+            got = [s[x.start:x.end] for x in detect.detect(s) if x.kind == "PATIENT_NAME"]
+            self.assertEqual(got, name)
+
+    def test_label_folders_untouched(self):
+        from raksha import detect
+        for s in ["/data/Report_00005/a.json", "/srv/Visits_2026_03/x.csv", "Lab_Results_202611/out.json",
+                  "/backup/Ward_Register_00123/a.csv", "/x/Register_00123/a"]:
+            self.assertEqual([x for x in detect.detect(s) if x.kind == "PATIENT_NAME"], [], s)
