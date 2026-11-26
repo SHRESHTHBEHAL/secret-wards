@@ -992,6 +992,9 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
                     head_facts.append(g)
     if head_facts:
         file_patient = True
+    # patients as COLUMNS (a pivoted lab grid "Test, Unit, <name (hospital no)>, ..."): every row
+    # covers several people, so no row is anyone's record
+    pivoted = _hl == 1 and sum(1 for h in header if _PERSON_HEADER.search(_s(h))) >= 2
     out: List[Record] = []
     for i, row in enumerate(rows):
         f = _row_facts(row, types, orders, text_order, [])
@@ -1017,8 +1020,30 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
         # a row of a log without patient columns (an SMS / message export) whose own text carries a
         # hospital number is that patient's row
         f.is_patient = file_patient or any(t.startswith(ID_UHID + ":") for t in f.ids)
+        if pivoted or _two_people_row(row, types):
+            # one line for two people ("A + B"): scrubbed everywhere, nobody's record
+            for t in f.ids:
+                raw = t.split(":", 1)[-1]
+                if raw and raw not in f.raw_ids:
+                    f.raw_ids.append(raw)
+            f.ids = []
+            f.is_patient = False
         out.append(Record(rel=pf.rel, loc="row:%d" % i, facts=f))
     return out
+
+
+_PERSON_HEADER = re.compile(r"[^\W\d_]{2,}.*\(\s*[A-Za-z]{1,6}[\-/ ]?[0-9]{4,}\s*\)")
+_TWO_NAMES = re.compile(r"^\s*[^\W\d_][\w.' ]*?\s+(?:\+|&|and|aur|evam)\s+[^\W\d_][\w.' ]*$", re.I)
+
+
+def _two_people_row(row: Sequence[Any], types: List[str]) -> bool:
+    """A patient-name cell holding two names joined by "+" / "&" / "and" (two people on one line)."""
+    for c, t in enumerate(types):
+        if t in (F.NAME, F.LOCAL_NAME) and c < len(row):
+            v = _s(row[c])
+            if v and _TWO_NAMES.match(v):
+                return True
+    return False
 
 
 def _row_facts(row: Sequence[Any], types: List[str], orders: List[str], text_order: str,
@@ -1210,9 +1235,14 @@ def _fixed_width(lines: List[str], starts: List[int]) -> Optional[TextTable]:
         if not rule.strip() or set(rule.strip()) - set("- "):
             continue
         groups = [(m.start(), m.end()) for m in _DASH_GROUPS.finditer(rule)]
+        head = lines[h]
+        if len(groups) == 1:
+            got = _fixed_width_one_rule(lines, starts, h, groups[0])
+            if got is not None:
+                return got
+            continue
         if len(groups) < 3:
             continue
-        head = lines[h]
         spans = []  # type: List[Tuple[int, Optional[int]]]
         for k, (a, _b) in enumerate(groups):
             spans.append((a, groups[k + 1][0] if k + 1 < len(groups) else None))
@@ -1240,6 +1270,231 @@ def _fixed_width(lines: List[str], starts: List[int]) -> Optional[TextTable]:
     return None
 
 
+_HEAD_TOKEN = re.compile(r"\S+")
+
+
+def _fixed_width_one_rule(lines: List[str], starts: List[int], h: int,
+                          rule: Tuple[int, int]) -> Optional[TextTable]:
+    """A print with one long rule under the header (a mainframe / register print): the columns start
+    where a header word starts and every data row has a blank just before it. The rows run from the
+    rule to the first blank line, rule line or footer line (one that starts with a non-alphanumeric
+    character, e.g. "*** END OF REPORT")."""
+    head = lines[h].rstrip("\r")
+    if rule[0] > 2 or rule[1] < len(head.rstrip()) - 2:
+        return None
+    toks = [(m.start(), m.group(0)) for m in _HEAD_TOKEN.finditer(head)]
+    if len(toks) < 4 or any(not any(ch.isalpha() for ch in t) for _p, t in toks):
+        return None
+    data = []  # type: List[int]
+    for i in range(h + 2, len(lines)):
+        ln = lines[i].rstrip("\r")
+        st = ln.strip()
+        if not st or _RULE_LINE.match(ln) or not st[0].isalnum():
+            break
+        data.append(i)
+    if len(data) < 2:
+        return None
+    rows_txt = [lines[i].rstrip("\r") for i in data]
+    bounds = [toks[0][0]]
+    for p, _t in toks[1:]:
+        if all(len(r) <= p - 1 or r[p - 1] == " " for r in rows_txt) and head[p - 1] == " ":
+            bounds.append(p)
+    if len(bounds) < 4:
+        return None
+    # nothing may start left of the first column
+    if any(r[:bounds[0]].strip() for r in rows_txt):
+        return None
+    spans = [(a, bounds[k + 1] if k + 1 < len(bounds) else None) for k, a in enumerate(bounds)]
+    labels = [" ".join((head[a:b] if b is not None else head[a:]).split()) for a, b in spans]
+    rows = []
+    for i, ln in zip(data, rows_txt):
+        cells = []
+        for (a, b), lb in zip(spans, labels):
+            seg = ln[a:b] if b is not None else ln[a:]
+            v = seg.strip()
+            if v:
+                off = a + seg.index(v)
+                cells.append((lb, starts[i] + off, starts[i] + off + len(v)))
+        rows.append((i, i, cells))
+    return (labels, rows)
+
+
+_SQL_CREATE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?([\w.]+)[`\"]?\s*\(", re.I)
+_SQL_INSERT = re.compile(r"^\s*INSERT\s+INTO\s+[`\"]?([\w.]+)[`\"]?\s*(\([^)]*\))?\s*VALUES\s*", re.I)
+_SQL_COLDEF = re.compile(r"^\s*[`\"]?([A-Za-z_]\w*)[`\"]?\s+[A-Za-z]")
+_SQL_NOT_COL = re.compile(r"^\s*(?:PRIMARY|KEY|UNIQUE|INDEX|CONSTRAINT|FOREIGN|CHECK|FULLTEXT)\b", re.I)
+_SQL_NUM = re.compile(r"-?[0-9][0-9.eE+\-]*")
+
+
+def _sql_split_top(body: str) -> List[str]:
+    out, depth, cur = [], 0, []  # type: List[str], int, List[str]
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
+def _sql_columns(text: str) -> Dict[str, List[str]]:
+    """Column names of every CREATE TABLE in a dump."""
+    out = {}  # type: Dict[str, List[str]]
+    for m in _SQL_CREATE.finditer(text):
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+            i += 1
+        if depth:
+            continue
+        cols = []
+        for d in _sql_split_top(text[m.end():i - 1]):
+            if _SQL_NOT_COL.match(d):
+                continue
+            c = _SQL_COLDEF.match(d)
+            if c:
+                cols.append(c.group(1))
+        if cols:
+            out[m.group(1).lower()] = cols
+    return out
+
+
+def _sql_tuples(ln: str, pos: int) -> Optional[List[List[Optional[Tuple[int, int]]]]]:
+    """The VALUES tuples of one INSERT line from pos: per tuple, per cell, the (start, end) of its
+    value (inside the quotes for a string; None for NULL); None if the line does not parse."""
+    tuples = []
+    n = len(ln)
+    i = pos
+    while True:
+        while i < n and ln[i] in " \t":
+            i += 1
+        if i >= n or ln[i] != "(":
+            return None
+        i += 1
+        cells = []  # type: List[Optional[Tuple[int, int]]]
+        while True:
+            while i < n and ln[i] in " \t":
+                i += 1
+            if i >= n:
+                return None
+            if ln[i] == "'":
+                j = i + 1
+                while j < n:
+                    if ln[j] == "\\":
+                        j += 2
+                        continue
+                    if ln[j] == "'":
+                        if j + 1 < n and ln[j + 1] == "'":
+                            j += 2
+                            continue
+                        break
+                    j += 1
+                if j >= n:
+                    return None
+                cells.append((i + 1, j))
+                i = j + 1
+            elif ln[i:i + 4].upper() == "NULL":
+                cells.append(None)
+                i += 4
+            else:
+                m = _SQL_NUM.match(ln, i)
+                if not m:
+                    return None
+                cells.append((m.start(), m.end()))
+                i = m.end()
+            while i < n and ln[i] in " \t":
+                i += 1
+            if i < n and ln[i] == ",":
+                i += 1
+                continue
+            if i < n and ln[i] == ")":
+                i += 1
+                break
+            return None
+        tuples.append(cells)
+        while i < n and ln[i] in " \t":
+            i += 1
+        if i < n and ln[i] == ",":
+            i += 1
+            continue
+        if ln[i:].strip() in (";", ""):
+            return tuples
+        return None
+
+
+def sql_dump_lines(text: str) -> int:
+    """How many lines of a text are SQL "INSERT INTO ... VALUES" statements."""
+    if "INSERT" not in text.upper():
+        return 0
+    return sum(1 for ln in text.split("\n") if _SQL_INSERT.match(ln))
+
+
+def _sql_inserts(lines: List[str], starts: List[int]) -> Optional[TextTable]:
+    """A SQL dump: one row per INSERT line of a table that holds a person name column (columns from
+    CREATE TABLE or the INSERT's own column list; every tuple must match the column count). Lines of
+    other tables are left to the free-text scrub."""
+    text = "\n".join(lines)
+    if not sql_dump_lines(text):
+        return None
+    created = _sql_columns(text)
+    parsed = []  # type: List[Tuple[int, str, List[str], List[List[Optional[Tuple[int, int]]]]]]
+    for i, raw in enumerate(lines):
+        ln = raw.rstrip("\r")
+        m = _SQL_INSERT.match(ln)
+        if not m:
+            continue
+        tab = m.group(1).lower()
+        cols = created.get(tab)
+        if m.group(2):
+            cols = [c.strip().strip("`\"") for c in m.group(2)[1:-1].split(",")]
+        tuples = _sql_tuples(ln, m.end())
+        if not cols or tuples is None or any(len(t) != len(cols) for t in tuples):
+            return None
+        parsed.append((i, tab, cols, tuples))
+    if not parsed:
+        return None
+    # which tables hold people: a column typed as a person name
+    person_tabs = set()
+    by_tab = {}  # type: Dict[str, Dict[str, List[str]]]
+    for i, tab, cols, tuples in parsed:
+        d = by_tab.setdefault(tab, {})
+        for t in tuples:
+            for c, sp in zip(cols, t):
+                if sp is not None:
+                    d.setdefault(c, []).append(lines[i][sp[0]:sp[1]])
+    for tab in sorted(by_tab):
+        for c in sorted(by_tab[tab]):
+            try:
+                ct = F.classify_column(c, by_tab[tab][c][:500])
+            except Exception:  # noqa: BLE001
+                ct = F.OTHER
+            if ct in (F.NAME, F.FIRST_NAME, F.LAST_NAME):
+                person_tabs.add(tab)
+    rows = []
+    labels = []  # type: List[str]
+    for i, tab, cols, tuples in parsed:
+        if tab not in person_tabs:
+            continue
+        cells = []
+        for t in tuples:
+            for c, sp in zip(cols, t):
+                if sp is not None and sp[1] > sp[0]:
+                    cells.append((c, starts[i] + sp[0], starts[i] + sp[1]))
+        for c in cols:
+            if c not in labels:
+                labels.append(c)
+        rows.append((i, i, cells))
+    return (labels, rows) if rows else None
+
+
 def _text_table_types(text: str, table: TextTable) -> Dict[str, str]:
     cols = {}  # type: Dict[str, List[str]]
     for _a, _b, cells in table[1]:
@@ -1251,6 +1506,9 @@ def _text_table_types(text: str, table: TextTable) -> Dict[str, str]:
             out[lb] = F.classify_column(lb, cols[lb][:500])
         except Exception:  # noqa: BLE001
             out[lb] = F.OTHER
+        # a column of serial numbers (1, 2, 101 ...) is a row / table key, not a hospital number
+        if out[lb] in (F.PATIENT_ID, F.ENC_ID) and all(re.match(r"^[0-9]{1,4}$", v.strip()) for v in cols[lb]):
+            out[lb] = F.OTHER
     return out
 
 
@@ -1260,14 +1518,14 @@ def text_table(text: str) -> Optional[TextTable]:
         return None
     lines = text.split("\n")
     starts = _line_starts(text)
-    for finder, least in ((_kv_lines, 3), (_kv_blocks, 3), (_fixed_width, 2)):
+    for finder, least in ((_sql_inserts, 1), (_kv_lines, 3), (_kv_blocks, 3), (_fixed_width, 2)):
         try:
             got = finder(lines, starts)
         except Exception:  # noqa: BLE001
             got = None
         if not got or len(got[1]) < least:
             continue
-        if finder is not _fixed_width:
+        if finder is not _fixed_width and finder is not _sql_inserts:
             sets = [frozenset(c[0] for c in r[2]) for r in got[1]]
             common = frozenset.intersection(*sets)
             if len(common) < 3 or any(len(common) * 10 < len(x) * 6 for x in sets):
@@ -1293,7 +1551,13 @@ def _text_table_records(pf: ParsedFile, table: TextTable) -> List[Record]:
         for lb, x, y in cells:
             put(fb, types.get(lb, F.OTHER), text[x:y], orders.get(lb) or text_order)
         f = fb.finish()
-        f.is_patient = True
+        # a row with neither a personal id nor a birth date (a name, a phone, an age) is nobody's
+        # record: an unfinished entry or a contact line
+        f.is_patient = bool(f.dob or any(t.split(":", 1)[0] in _STRONG_ID_TYPES for t in f.ids))
+        labs = [c[0] for c in cells]
+        if len(set(labs)) < len(labs):  # one line holding several people (a multi-row INSERT)
+            f.is_patient = False
+            f.ids = []
         out.append(Record(rel=pf.rel, loc="row:%d" % n, facts=f))
     return out
 
@@ -1358,12 +1622,16 @@ def _text_records(pf: ParsedFile) -> List[Record]:
 
 
 _TABLE_SEP = re.compile(r"\||\t")
+_VBLOCK = re.compile(r"^BEGIN:(?:VEVENT|VCARD|VTODO)\s*$", re.M | re.I)
 _LONG_RUN = re.compile(r"[0-9]{5,}")
 
 
 def _multi_patient_text(text: str, f: Facts) -> bool:
     """A text that lists several people: a table with two or more rows that carry different contact
     numbers / ids, two unrelated full names, or two different relatives of one kind (two wives)."""
+    # a calendar / contact export of several entries (iCalendar VEVENT, vCard blocks)
+    if len(_VBLOCK.findall(text)) >= 2:
+        return True
     rows = [ln for ln in text.splitlines()[:5000] if len(_TABLE_SEP.findall(ln)) >= 2]
     if len(rows) >= 3:
         runs = set()
