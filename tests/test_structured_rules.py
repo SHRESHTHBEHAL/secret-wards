@@ -418,3 +418,79 @@ class HandoverAndPlaceColumns(unittest.TestCase):
         from raksha import fields as F
         self.assertEqual(F.classify_column("TOWN", ["Pune", "Nagpur", "Thane", "Nashik"]), F.DISTRICT)
         self.assertEqual(F.classify_column("TOWN", ["Wwww", "Xxxxpur", "Pune"]), F.VILLAGE)
+
+
+class HindiKeyVisitsAndGuards(unittest.TestCase):
+    """Invented data: transliterated-Hindi visit lists, export headers, quantity values, guards."""
+
+    def _slips(self):
+        return {"niryat": {"application": "Sehat Kosh", "facility": "Dhanpur Zila Chikitsalaya",
+                           "sampark_sahayata": "Helpdesk 9811100223"},
+                "parchiyan": [
+                    {"parchi_kramank": "OPD-1101", "mareez_sandarbh": "DZC.P.700101", "dinank": "02.03.2026",
+                     "dawaiyan": [{"dawa": "Tab Paracetamol", "matra": "500 mg"}],
+                     "tippani": "Gomti ke pita saath aaye."},
+                    {"parchi_kramank": "OPD-1102", "mareez_sandarbh": "DZC.P.700202", "dinank": "03.03.2026",
+                     "dawaiyan": [{"dawa": "Inj IVIG", "matra": "0.4 g/kg"}], "tippani": "Follow up."}]}
+
+    def test_hindi_keyed_visit_list_splits_per_entry(self):
+        recs = harvest.harvest_file(_json(self._slips()))
+        self.assertEqual([r.loc for r in recs], ["/parchiyan/0", "/parchiyan/1"])
+        self.assertEqual(recs[0].facts.ids, ["uhid:DZCP700101"])
+        self.assertNotIn("phone:9811100223", recs[0].facts.ids + recs[1].facts.ids)
+        mapping, _ = link(recs)
+        self.assertNotEqual(mapping[(recs[0].rel, recs[0].loc)], mapping[(recs[1].rel, recs[1].loc)])
+
+    def test_key_types(self):
+        self.assertEqual(F.json_key_type(["parchiyan", "mareez_sandarbh"], "DZC.P.700101"), F.PATIENT_ID)
+        self.assertEqual(F.json_key_type(["dawaiyan", "matra"], "500 mg"), F.CLINICAL)
+        self.assertEqual(F.json_key_type(["meta", "application"], "Sehat Kosh"), F.OTHER)
+        self.assertEqual(F.json_key_type(["rows", "vid"], "ab12cd34"), F.OTHER_ID)
+        # a quantity with a unit is never a place, whatever the key
+        self.assertEqual(F.json_key_type(["addr", "gaon"], "4 g"), F.CLINICAL)
+        self.assertEqual(F.json_key_type(["addr", "gaon"], "Kesarpur"), F.VILLAGE)
+
+    def test_transliterated_institutions(self):
+        for v in ("Dhanpur Lokseva Rugnalaya", "Dhanpur Zila Chikitsalaya", "Hriday Rog Vibhag",
+                  "Shishu Gahan Ikai", "Cardio Step-down", "Isolation Bay"):
+            self.assertTrue(F.is_institution(v), v)
+        self.assertFalse(F.is_institution("Kamla Devi"))
+
+    def test_kinship_word_longest_match(self):
+        self.assertEqual(harvest.split_relative("पुत्री रामेश्वर"), ("पुत्री", "रामेश्वर"))
+        self.assertEqual(harvest.split_relative("पुत्र रामेश्वर"), ("पुत्र", "रामेश्वर"))
+
+    def test_header_id_does_not_merge_visits_of_different_patients(self):
+        data = {"exportHeader": {"facility": "Dhanpur Mission Hospital", "requestedFor": "DMH26A10001"},
+                "opVisits": [{"hospNoRef": "DMH26A10001", "dateOfVisit": "01.02.2026"},
+                             {"hospNoRef": "DMH26A20002", "dateOfVisit": "02.02.2026"}]}
+        recs = harvest.harvest_file(_json(data))
+        self.assertEqual([r.loc for r in recs], ["/opVisits/0", "/opVisits/1"])
+
+    def test_old_unlabelled_date_is_not_an_event_date(self):
+        import datetime as dt
+        from raksha.types import Facts
+        reg = Facts(names=["Kesari Wankhede"], ids=["uhid:QXH55001", "aadhaar:556677889900"],
+                    dob=dt.date(1980, 5, 6), gender="F")
+        note = Facts(names=["Kesari Wankhede"], ids=["uhid:QXH55001"], age=45, gender="F",
+                     ref_date=dt.date(1980, 5, 6))
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="d/b.txt", loc="doc", facts=note)]
+        mapping, _ = link(recs)
+        self.assertIsNotNone(mapping[("r/a.csv", "row:0")])
+        self.assertEqual(mapping[("r/a.csv", "row:0")], mapping[("d/b.txt", "doc")])
+
+    def test_country_code_phone_is_not_an_aadhaar_conflict(self):
+        from raksha.types import Facts
+        reg = Facts(names=["Lanu Ao"], ids=["uhid:QXH66001", "aadhaar:334455667788", "phone:9876501234"])
+        note = Facts(names=["Lanu Ao"], ids=["uhid:QXH66001", "aadhaar:919876501234", "phone:9876501234"])
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=reg), Record(rel="d/b.txt", loc="doc", facts=note)]
+        mapping, _ = link(recs)
+        self.assertEqual(mapping[("r/a.csv", "row:0")], mapping[("d/b.txt", "doc")])
+
+    def test_real_aadhaar_conflict_still_blocks(self):
+        from raksha.types import Facts
+        a = Facts(names=["Lanu Ao"], ids=["uhid:QXH66001", "aadhaar:334455667788"])
+        b = Facts(names=["Lanu Ao"], ids=["uhid:QXH66001", "aadhaar:998877665544"])
+        recs = [Record(rel="r/a.csv", loc="row:0", facts=a), Record(rel="d/b.txt", loc="doc", facts=b)]
+        mapping, _ = link(recs)
+        self.assertNotEqual(mapping[("r/a.csv", "row:0")], mapping[("d/b.txt", "doc")])
