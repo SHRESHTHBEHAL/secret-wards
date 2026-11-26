@@ -721,7 +721,9 @@ def _institution_ranges(text: str) -> List[Tuple[int, int]]:
 
 _INST_HINT = re.compile(r"Hosp|Home|Clinic|College|Institute|Memorial|Trust|Mission|Cent|Diagnostic|Patholog|Lab|"
                         r"TPA|Insurance|Assurance|Ward|Wing|Block|Unit|OPD|ICU|Dispensary|Foundation|Society|"
-                        r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|होम|कॉलेज|ट्रस्ट|संस्थान|वार्ड")
+                        r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|होम|कॉलेज|ट्रस्ट|संस्थान|वार्ड|"
+                        r"Rugnala|Chikitsala|Aspatal|Kendra|Vibhag|Ikai|Kaksh|Bay|Step|HDU|CU\b|Store|"
+                        r"RUGNALA|CHIKITSALA|ASPATAL|HOSPITAL|VIBHAG")
 
 
 def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, ages_on: bool = True,
