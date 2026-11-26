@@ -338,3 +338,68 @@ class ClinicalShields(unittest.TestCase):
         self.assertTrue(any(sp.kind in ("VILLAGE", "TEHSIL") for sp in detect.detect("R/o village X, tehsil Kotri, Jaipur.")))
         self.assertTrue(any(sp.kind == "DISTRICT" and "Imphal West" in "Add: Some Leikai, Imphal West"[sp.start:sp.end]
                             for sp in detect.detect("Add: Some Leikai, Imphal West")))
+
+
+class InstitutionsWardsDiseases(unittest.TestCase):
+    """Invented facility, ward and place names only."""
+
+    def _gone(self, t):
+        return [k for k, _ in kinds(t) if k in ("PERSON", "PATIENT_NAME", "RELATIVE_NAME", "VILLAGE", "LOCALITY")]
+
+    def test_regional_institution_heads(self):
+        for t in ("Vindhya Janseva Rugnalaya - Dawa ki Parchi", "VINDHYA JANSEVA RUGNALAYA, PUNE",
+                  "Referred to Kesari Zila Chikitsalaya OPD", "Seen at Tapti Arogya Kendra today",
+                  "Tamarai Maruthuvamanai discharge summary", "Saraswati Seva Sadan, ward 2"):
+            self.assertEqual(self._gone(t), [], t)
+
+    def test_named_wards(self):
+        for t in ("वार्ड: Mahila Kaksh 3, बिस्तर 17", "Moved to Gahan Chikitsa Ikai", "Admitted to Asthi Rog Ward",
+                  "Shifted to Nephro Step-down", "14:00 - Isolation Bay - stable.", "TIPPANI / Purush Kaksh 2 / Palang 12"):
+            self.assertEqual(self._gone(t), [], t)
+
+    def test_disease_names(self):
+        for t in ("बीमारी: Kyasanur Forest disease (A98.2)", "1. Scrub typhus in any febrile patient",
+                  "Japanese encephalitis vaccine given"):
+            self.assertEqual(self._gone(t), [], t)
+        self.assertTrue(self._gone("Ramesh Kumar fever x 3 days"))
+
+
+class AddressAndIds(unittest.TestCase):
+    def test_house_labels(self):
+        self.assertIn(("HOUSE", "Door No. 3-117"), kinds("Domicile: Door No. 3-117, Kovil Street"))
+        self.assertIn(("HOUSE", "Holding No. 302"), kinds("Home: C/O Ram Das, Holding No. 302, Ward No. 5, Nalbari Road"))
+
+    def test_landmarks(self):
+        self.assertIn(("LANDMARK", "KSRTC depot"), kinds("behind KSRTC depot"))
+        self.assertIn(("LANDMARK", "Railway gumti"), kinds("near Railway gumti"))
+        self.assertEqual(kinds("Patient came to the station near OPD", "LANDMARK"), [])
+
+    def test_admission_numbers(self):
+        self.assertIn(("MRN", "W26-00031"), kinds("TIPPANI / Palang 12 / Bharti W26-00031"))
+        self.assertIn(("MRN", "W26-00031"), kinds("भर्ती W26-00031"))
+        self.assertEqual(kinds("Bharti 25 saal ki hai", "MRN"), [])
+
+    def test_international_phones(self):
+        for t, v in (("Son abroad: +1 (415) 555-0134.", "+1 (415) 555-0134"), ("call 00971 50 123 4567", "00971 50 123 4567"),
+                     ("+44 (20) 7946 0958", "+44 (20) 7946 0958")):
+            self.assertIn(("PHONE", v), ids(t), t)
+        self.assertEqual(ids("Hb 12.5 (11-15)"), [])
+
+
+class NameFrames(unittest.TestCase):
+    def test_given_name_cues(self):
+        self.assertIn(("PATIENT_NAME", "Pallavi"), kinds("Walk-in, number not traced. Pallavi naam bataya."))
+        self.assertIn(("PATIENT_NAME", "Pallavi"), kinds("Pallavi baideo ka report aa gaya"))
+        self.assertIn(("PATIENT_NAME", "Mohan"), kinds("Mohan bhau ka BP 130/80"))
+
+    def test_devanagari_name_before_kin(self):
+        self.assertIn(("PATIENT_NAME", "कमली"), kinds("कमली, पत्नी रामू, को स्थिर हालत में घर भेजा।"))
+
+    def test_village_frames(self):
+        self.assertIn(("VILLAGE", "Kanholi"), kinds("Ramesh hai, Kanholi wala - file mix mat karna."))
+        self.assertIn(("VILLAGE", "रामपुरा खेड़ा"), kinds("कमला, उम्र 60 वर्ष, रामपुरा खेड़ा से। बेटे के साथ आए।"))
+        self.assertEqual(kinds("Sugar wala test", "VILLAGE"), [])
+
+    def test_kinship_longest_match(self):
+        self.assertIn(("RELATIVE_NAME", "कमला"), kinds("पुत्री कमला"))
+        self.assertIn(("RELATIVE_NAME", "कमला"), kinds("पुत्रीकमला"))
