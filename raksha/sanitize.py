@@ -880,6 +880,17 @@ def _area_segment(w: str, ctx: _Ctx) -> bool:
     return any(sp.start <= 1 and sp.end >= len(core) - 1 for sp in sps)
 
 
+_ADDR_PIN = re.compile(r"(?:pin\s*[:\-]?\s*)?[0-9\u0966-\u096F]{3}\s?[0-9\u0966-\u096F]{3}", re.I)
+# a six-digit PIN at the end of a district / state segment ("Hyderabad 500036", "Rajkot - 360002")
+_ADDR_PIN_TAIL = re.compile(r"(^|[\s\-:])([0-9\u0966-\u096F]{3}\s?[0-9\u0966-\u096F]{3})(?=[\s.;]*$)")
+
+
+def _pin_count(pin: str, ctx: _Ctx) -> str:
+    ctx.count("PIN")
+    ctx.generalized = True
+    return _pin_mask(pin, ctx)
+
+
 def _address_cells(v: str, out: str, ctx: _Ctx) -> str:
     """Address cell (its own column / key): every comma segment that is not just a district or a
     state is an address part (house, street, landmark, locality, village), whatever its script."""
@@ -890,10 +901,23 @@ def _address_cells(v: str, out: str, ctx: _Ctx) -> str:
     for seg in segs:
         w = seg.strip(" \t.;:-")
         lead = seg[:len(seg) - len(seg.lstrip())]
-        if not w or _ADDR_SEG_KEEP.match(w) or not re.search(r"[A-Za-z\u0900-\u097F]", w):
-            parts.append(scrub_text(seg, ctx, "full") if w else seg)
+        if not w or _ADDR_SEG_KEEP.match(w):
+            parts.append(seg)
+        elif not re.search(r"[A-Za-z\u0900-\u097F]", w):
+            if _ADDR_PIN.fullmatch(w):
+                ctx.count("PIN")
+                ctx.generalized = True
+                parts.append(lead + _pin_mask(w, ctx))
+            elif re.search(r"[0-9\u0966-\u096F]", w) and not re.search(r"\[[A-Z\-]+\]", w):
+                # a letter-free segment with digits ("16-8-244/3", "#12"): a door / plot number
+                ctx.count("ADDRESS")
+                ctx.generalized = True
+                parts.append(lead + "[ADDRESS]")
+            else:
+                parts.append(scrub_text(seg, ctx, "full"))
         elif _area_segment(w, ctx):
-            parts.append(scrub_text(seg, ctx, "full"))
+            parts.append(_ADDR_PIN_TAIL.sub(lambda m: m.group(1) + _pin_count(m.group(2), ctx),
+                                            scrub_text(seg, ctx, "full")))
         else:
             ctx.count("ADDRESS")
             ctx.generalized = True
