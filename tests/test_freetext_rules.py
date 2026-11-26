@@ -95,5 +95,78 @@ class Addresses(unittest.TestCase):
         self.assertEqual(kinds("near normal limits; behind the eye"), [])
 
 
+def names(text):
+    return [text[sp.start:sp.end] for sp in detect.detect(text) if sp.kind in detect.NAME_KINDS]
+
+
+class Propagation(unittest.TestCase):
+    def test_pet_form_and_lowercase(self):
+        t = "[1/2/26, 9:01 pm] Teru: Pu Zarvanlianga admitted\n[1/2/26, 9:05 pm] Teru: lianga chu a dam"
+        self.assertIn("lianga", names(t))
+
+    def test_common_word_name_from_strong_anchor(self):
+        t = "Mother Pooja says baby fed well. Pooja to return Monday."
+        self.assertEqual(names(t).count("Pooja"), 2)
+
+    def test_email_local_part(self):
+        t = "From: Annabella Qorvo <anna.qorvo@mailbox.example>\nPlease see report.\nAnna"
+        self.assertIn("Anna", names(t))
+
+    def test_negative_no_anchor(self):
+        self.assertEqual(names("Patient stable. Shanti and calm ward tonight."), [])
+        t = "From: Records Desk <records@hospital.example>\nrecords attached"
+        self.assertNotIn("records", names(t))
+
+
+class Layout(unittest.TestCase):
+    def test_wrapped_label_value(self):
+        t = "Name of the Patient: Qorvani\nTelmara        Age 33\nUHID No.: QQH 26 0077\n1429\n"
+        n = names(t)
+        self.assertIn("Qorvani", n)
+        self.assertIn("Telmara", n)
+        self.assertIn(("MRN", "QQH 26 0077\n1429"), kinds(t, "MRN"))
+
+    def test_wrap_negative(self):
+        self.assertNotIn("Fever", names("Name: Qorvani\nFever since 3 days\n"))
+
+    def test_letter_spaced_and_ocr_colon(self):
+        t = "Pt  Name  :  Q O R V A        Age : 55\n"
+        self.assertIn("Q O R V A", names(t))
+
+    def test_pipe_table_header(self):
+        t = ("Bed | Name | Age/Sex | Dx | Attendant / Ph\n"
+             " 3  | Qorvan P. | 49/M | CKD 3 | wife Telmi 9437000018\n"
+             " 6  | vacant |  |  |\n")
+        n = names(t)
+        self.assertIn("Qorvan P.", n)
+        self.assertIn("Telmi", n)
+        self.assertNotIn("vacant", n)
+
+    def test_space_table_keep_column(self):
+        t = ("Test            Day1      Ref range        Sample ID\n"
+             "CSF protein     186       15-45            9864000045\n")
+        self.assertEqual(kinds(t, "PHONE"), [])
+
+    def test_space_key_value(self):
+        t = "Victim            Q. Telmarong        M / ~27\nVitals            BP 124/80\n"
+        n = names(t)
+        self.assertIn("Q. Telmarong", n)
+        self.assertNotIn("Vitals", n)
+
+
+class ChatMailIntro(unittest.TestCase):
+    def test_tilde_sender(self):
+        t = "[21/02/26, 9:12 pm] +91 87298 00051: ~ Qormuii: operation done"
+        self.assertIn("Qormuii", names(t))
+
+    def test_intro_and_vocative(self):
+        self.assertIn("Qordes", names("Caller: He is my father. I am Qordes, his daughter."))
+        self.assertIn("Telmaben", names("Doctor: Telmaben, weight kitna hua?"))
+        self.assertEqual(names("I am Fine, the patient said."), [])
+
+    def test_drug_after_speaker_label(self):
+        self.assertEqual(names("Caller: Foracort 200 two puffs twice a day."), [])
+
+
 if __name__ == "__main__":
     unittest.main()

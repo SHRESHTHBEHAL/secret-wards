@@ -309,7 +309,9 @@ def _classify_label(label: str) -> str:
     if not ws:
         return ""
     j = " ".join(ws)
-    if _has(ws, ("address", "addr", "residen", "पता", "निवास"), ("add", "pata", "r/o")):
+    if all(w in ("mr", "mrs", "ms", "smt", "shri", "sri", "km", "miss", "master", "baby") for w in ws):
+        return "name"                               # "Mr/Mrs:", "Smt.:" as the label itself
+    if _has(ws, ("address", "addr", "residen", "पता", "निवास"), ("add", "pata", "r/o", "lives", "stays")):
         return "address"
     if _has(ws, ("dob", "birth", "janm", "जन्म", "d/o/b")) or j.startswith("d o b"):
         return "dob"
@@ -359,7 +361,7 @@ def _classify_label(label: str) -> str:
             ("dx", "bp", "temp")):
         return "clinical"
     if _has(ws, ("name", "naam", "patient", "rogi", "mareez", "mariz", "marij", "नाम", "मरीज", "रोगी",
-                 "benefic"), ("pt", "nam")):
+                 "benefic", "victim", "client"), ("pt", "nam")):
         return "name"
     return ""
 
@@ -518,7 +520,7 @@ _HON_RE = re.compile(r"(?<![A-Za-zऀ-ॿ])(" + "|".join(sorted(
     (re.escape(w) for w in _HON_AFTER), key=len, reverse=True)) + r")(?![A-Za-zऀ-ॿ])", re.I)
 _TITLE_RE = re.compile(
     r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Smt|Shri|Shree|Sri|Km|Kum|Kumari|Miss|Sushri|Late|Janab|Srimati|Shrimati|"
-    r"MR|MRS|MS|SMT|SHRI|SRI|KM)\.?[ \t]+"
+    r"MR|MRS|MS|SMT|SHRI|SRI|KM)\.?[ \t]+|(?<![A-Za-z])(?:Pu|Pi|Hav|Const|Sub|Nk|Sep|Insp|SI|ASI)\.?[ \t]+(?=[A-Z][a-z])"
     r"|(?<![ऀ-ॿ])(?:श्रीमती|श्री|सुश्री|कुमारी|स्वर्गीय|स्व\.|कु\.|"
     + "|".join(sorted((re.escape(w) for w in scripts.TITLES), key=len, reverse=True)) + r")[ \t]*")
 _VERB_RE = re.compile(
@@ -533,6 +535,7 @@ _OF_RE = re.compile(
 _CHAT_RE = re.compile(
     r"^[ \t]*(?:\[[^\]\n]{4,32}\]|[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4},?[ \t]+[0-9]{1,2}:[0-9]{2}(?:[ \t]*[apAP][mM])?"
     r"[ \t]*-)[ \t]*([^:\n]{1,40}?):", re.M)
+_CHAT_TILDE = re.compile(r"[ \t]*~[ \t]*([^:\n~]{1,40}?):")
 _CASE_DEV = re.compile(
     r"(?:^|(?<=[।.!?|]))[ \t]*((?:" + _DEV + r"[ \t]+){0,2}" + _DEV + r")[ \t]+(?:को|की|का|के|ने)(?![ऀ-ॿ])",
     re.M)
@@ -698,6 +701,11 @@ def _layer_identifiers(cx: _Ctx) -> None:
         cx.add(sp.start, sp.end, "PIN", sp.value, 1)
 
 
+_DOSE_AFTER = re.compile(r"[ \t]+[0-9]{1,4}(?:\.[0-9]+)?[ \t]*(?:mg|mcg|ml|iu|units?|µg)?[ \t]*"
+                         r"(?:[0-9]-[0-9]|one|two|three|puffs?|tabs?|caps?|bd|od|tds|bid|tid|twice|once|daily|x[ \t]*[0-9])",
+                         re.I)
+
+
 def _name_value(cx: _Ctx, s: int, e: int, kind: str, value: str, prio: int, mode: str = "any") -> Optional[Tuple[int, int]]:
     t = cx.text
     km = _KIN_RE.match(t, s) if s < e else None
@@ -707,6 +715,8 @@ def _name_value(cx: _Ctx, s: int, e: int, kind: str, value: str, prio: int, mode
             cx.add(nm[0], nm[1], "RELATIVE_NAME", km.group(1).upper() + "/o", prio)
         return nm
     nm = _take_name(t, s, e, mode, max_tok=5)
+    if nm and _DOSE_AFTER.match(t, nm[1]):
+        return None                                 # "Caller: <Brand> 200 two puffs": a drug, not a name
     if nm:
         cx.add(nm[0], nm[1], kind, value, prio)
     return nm
@@ -719,6 +729,9 @@ def _layer_labels(cx: _Ctx) -> None:
             continue
         bounds = [0]
         for m in _SEG_SPLIT.finditer(line):
+            if m.group()[0] in " \t" and (line[m.end():m.end() + 1] in (":", "：") or
+                                          line[m.start() - 1:m.start()] in (":", "：")):
+                continue                            # OCR spacing around a colon: "Name  :  X"
             bounds.append(m.end())
         bounds.append(len(line) + 1)
         for bi in range(len(bounds) - 1):
@@ -738,11 +751,149 @@ def _layer_labels(cx: _Ctx) -> None:
             _apply_label(cx, cls, label, vs, ve)
 
 
+_SPACED_ID = re.compile(r"(?<=[ \t:])[A-Z]{2,5}(?:[ ][0-9]{2,8}){2,4}(?![0-9A-Za-z])")
+_LETTER_SPACED = re.compile(r"[ \t]*([A-Z](?: [A-Z]){2,9})(?![A-Za-z])")
+
+
+_PERSON_COLS = ("name", "relative", "attendant", "address")
+_KEEP_COL = re.compile(r"(?i)^(?:bed|sample|ref|range|ref\.?[ \t]*range|test|result|value|unit|day|dx|rx|dose|lab|"
+                       r"specimen|accession|slide|block|bp|hr|rr|spo2|rbs|time|date|ward)(?![a-z])")
+_CELL_EMPTY = _ws("vacant empty nil na none blank free khali")
+_KIN_CELL = _ws("""wife husband son daughter father mother brother sister bro sis bro. w/o s/o d/o h/o f/o m/o c/o
+uncle aunt nephew niece grandson granddaughter self guardian bhai behen pati patni beta beti""")
+
+
+def _cell_names(cx: _Ctx, cs: int, ce: int, kind: str, value: str = "") -> None:
+    """Capitalised name runs inside a person-column cell (kin words and phone digits around them)."""
+    t = cx.text
+    run = []  # type: List[Tuple[int, int]]
+    for m in _TOK.finditer(t, cs, ce):
+        w = m.group(1)
+        lw = _low(w)
+        if (w[0].isupper() or _is_dev(w)) and lw not in _KIN_CELL and _is_name_tok(w, "any"):
+            run.append((m.start(), m.end()))
+            continue
+        if run:
+            cx.add(run[0][0], run[-1][1], kind, value, 2)
+            run = []
+    if run:
+        cx.add(run[0][0], run[-1][1], kind, value, 2)
+
+
+def _table_cell(cx: _Ctx, cls: str, cs: int, ce: int) -> None:
+    t = cx.text
+    cs, ce = _strip_span(t, cs, ce)
+    if ce <= cs or not re.search(r"[A-Za-zऀ-ॿ]", t[cs:ce]):
+        return
+    if cls == "name":
+        if _low(t[cs:ce]) in _CELL_EMPTY:
+            return
+        if re.search(r"[0-9]", t[cs:ce]) or "/" in t[cs:ce]:
+            _cell_names(cx, cs, ce, "PATIENT_NAME")    # "name / id": the name part only
+        else:
+            cx.add(cs, ce, "PATIENT_NAME", "", 2)
+    elif cls in ("relative", "attendant"):
+        _cell_names(cx, cs, ce, "RELATIVE_NAME" if cls == "relative" else "PERSON")
+    elif cls == "address":
+        _parse_address(t, cs, ce, cx.add)
+
+
+def _layer_tables(cx: _Ctx) -> List[Tuple[int, int]]:
+    """Tables drawn in text, by pipes or by aligned columns: the header row decides each column.
+    Person columns (name, attendant, address) are removed; returns the keep-column cells (bed, sample,
+    ref range ...) where id-shaped numbers are values, not identifiers."""
+    t = cx.text
+    keep = []  # type: List[Tuple[int, int]]
+    if "\n" not in t or ("|" not in t and "  " not in t):
+        return keep
+    lines = list(_lines(t))
+    i = 0
+    while i < len(lines):
+        ls, line = lines[i]
+        piped = line.count("|") >= 2
+        if piped:
+            cells = line.split("|")
+        else:
+            cells = re.split(r"[ \t]{2,}", line.strip()) if ":" not in line else []
+        heads = [c.strip() for c in cells]
+        ok = (len([h for h in heads if h]) >= 3 and all(len(h) <= 30 and not re.search(r"[0-9]{3}", h) for h in heads)
+              and sum(1 for h in heads if h and re.match(r"[A-Za-zऀ-ॿ]", h)) >= 3)
+        classes = [_classify_label(h) if h else "" for h in heads]
+        known_h = sum(1 for c, h in zip(classes, heads) if h and (c or _KEEP_COL.match(h)))
+        ok = ok and known_h * 3 >= 2 * len([h for h in heads if h])
+        if not ok or not any(c in _PERSON_COLS or _KEEP_COL.match(h) for c, h in zip(classes, heads)):
+            i += 1
+            continue
+        if not piped:
+            starts = [m.start() for m in re.finditer(r"(?:(?<=^)|(?<=[ \t]{2}))\S", line)]
+            if len(starts) != len(heads):
+                i += 1
+                continue
+        j = i + 1
+        while j < len(lines):
+            rs, row = lines[j]
+            if not row.strip():
+                break
+            if piped:
+                if row.count("|") < 2:
+                    break
+                pos = 0
+                for k, cell in enumerate(row.split("|")):
+                    if k < len(classes):
+                        cs, ce = rs + pos, rs + pos + len(cell)
+                        if classes[k] in _PERSON_COLS:
+                            _table_cell(cx, classes[k], cs, ce)
+                        elif _KEEP_COL.match(heads[k]):
+                            keep.append((cs, ce))
+                    pos += len(cell) + 1
+            else:
+                segs = [(m.start(), m.end()) for m in re.finditer(r"\S+(?:[ \t]\S+)*", row)]
+                if len(segs) < 2 or ":" in row:
+                    break
+                for a, b in segs:
+                    k = max([q for q, st in enumerate(starts) if st <= a + 2] or [0])
+                    if classes[k] in _PERSON_COLS:
+                        _table_cell(cx, classes[k], rs + a, rs + b)
+                    elif _KEEP_COL.match(heads[k]):
+                        keep.append((rs + a, rs + b))
+            j += 1
+        i = j
+    return keep
+
+
+def _layer_space_labels(cx: _Ctx) -> None:
+    """Key / value forms without colons, columns kept apart by 2+ blanks ("Victim     <name>     M / 27")."""
+    t = cx.text
+    if "  " not in t and "|" not in t:
+        return
+    for ls, line in _lines(t):
+        if ":" in line or ("  " not in line and "|" not in line):
+            continue
+        if "|" in line:
+            segs = [(m.start(), m.end()) for m in re.finditer(r"[^|\s](?:[^|]*[^|\s])?", line)]
+        else:
+            segs = [(m.start(), m.end()) for m in re.finditer(r"\S+(?:[ \t]\S+)*", line)]
+        k = 0
+        while k + 1 < len(segs):
+            a, b = segs[k]
+            lab = line[a:b]
+            if (re.match(r"[A-Z][A-Za-z./ ]{1,24}$", lab) and len(lab.split()) <= 3
+                    and _classify_label(lab) in _PERSON_COLS):
+                _apply_label(cx, _classify_label(lab), lab, ls + segs[k + 1][0], ls + segs[k + 1][1])
+                k += 2
+                continue
+            k += 1
+
+
 def _apply_label(cx: _Ctx, cls: str, label: str, vs: int, ve: int) -> None:
     t = cx.text
     if vs >= ve or not cls or cls == "clinical":
         return
     if cls == "name":
+        ls_m = _LETTER_SPACED.match(t, vs, ve)
+        if ls_m:
+            cx.add(ls_m.start(1), ls_m.end(1), "PATIENT_NAME", "", 2)
+            return
         _name_value(cx, vs, ve, "PATIENT_NAME", "", 2)
     elif cls == "relative":
         ws = _lw(label)
@@ -784,7 +935,10 @@ def _apply_label(cx: _Ctx, cls: str, label: str, vs: int, ve: int) -> None:
         if m:
             cx.add(vs + m.start(), vs + m.end(), "PIN", patterns._digits(m.group()), 1)
     elif cls in ("uhid", "enc"):
-        m = _ID_TOKEN.search(t, vs, ve)
+        m = _SPACED_ID.match(t, vs, ve)
+        if not (m and len(patterns._digits(m.group())) >= 5 and re.search(r"[A-Z]", m.group())
+                and " " in m.group()):
+            m = _ID_TOKEN.search(t, vs, ve)
         if m and len(patterns._digits(m.group())) >= 3:
             v = patterns.norm_id(m.group())
             cx.add(m.start(), m.end(), "MRN", v, 1)
@@ -1229,8 +1383,9 @@ def _layer_name_age(cx: _Ctx) -> None:
 
 
 # bare kinship word + capitalised name: "my mother Asha", "brother Ravi Kumar", Hinglish "pati Ramu"
-_KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:my[ \t]+|her[ \t]+|his[ \t]+)?(husband|wife|brother|sister|parent|mother|"
-                       r"father|son|daughter|pati|patni|pita|mata|beta|beti|bhai|behen)[ \t]+(?![oO][fF][ \t])")
+_KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:[Mm]y[ \t]+|[Hh]er[ \t]+|[Hh]is[ \t]+)?((?:[Hh]usband|[Ww]ife|[Bb]rother|[Ss]ister|"
+                       r"[Pp]arent|[Mm]other|[Ff]ather|[Ss]on|[Dd]aughter)(?:-in-law)?|pati|patni|pita|mata|beta|beti|"
+                       r"bhai|behen|bro\.|sis\.)[ \t]+(?![oO][fF][ \t])")
 
 
 def _layer_kin_bare(cx: _Ctx) -> None:
@@ -1241,6 +1396,14 @@ def _layer_kin_bare(cx: _Ctx) -> None:
         if re.match(r"(?:Dr|DR|Doctor|डॉ)\b", t[m.end():m.end() + 8]):
             continue
         nm = _take_name(t, m.end(), le, "cap", max_tok=3)
+        if not nm:
+            # a one-word name that is also an ordinary word ("Mother <Peace> says ...")
+            om = re.match(r"([A-Z][a-z]{3,})(?![A-Za-z])", t[m.end():m.end() + 30])
+            if (om and _low(om.group(1)) not in _EN_COMMON and _low(om.group(1)) not in _ORG_STOP
+                    and _low(om.group(1)) not in lexicon.CLINICAL_WORDS
+                    and _low(om.group(1)) not in lexicon.COMPLAINT_WORDS
+                    and not re.match(r"[ \t]*[:(]", t[m.end() + om.end():m.end() + om.end() + 2])):
+                nm = (m.end(), m.end() + om.end())
         if nm and t[nm[0]].isupper():
             kind = "PATIENT_NAME" if _clinical_after(t, nm[1]) and m.group().lower().startswith("my") else "RELATIVE_NAME"
             cx.add(nm[0], nm[1], kind, m.group(1).lower(), 5)
@@ -1289,6 +1452,11 @@ def _layer_honorifics(cx: _Ctx) -> None:
     t = cx.text
     chat_spans = []
     for m in _CHAT_RE.finditer(t):
+        tm = _CHAT_TILDE.match(t, m.end())
+        if tm:
+            nm = _take_name(t, tm.start(1), tm.end(1), "cap")
+            if nm:
+                cx.add(nm[0], nm[1], "PERSON", "", 3)
         s, e = m.start(1), m.end(1)
         chat_spans.append((s, e))
         hm = None
@@ -1366,6 +1534,37 @@ def _lower_name_back(t: str, pos: int) -> Optional[Tuple[int, int]]:
         return None
     s = max(0, pos - 30) + m.start(1)
     return s, s + len(w)
+
+
+_MAIL_HDR = re.compile(r"(?im)^[ \t>]*(?:from|to|cc|bcc|sender|reply-to)[ \t]*:[ \t]*\"?([^\"<>\n:,]{2,50}?)\"?[ \t]*<[^<>\n@]+@")
+_MAIL_WROTE = re.compile(r"(?i)\bon[ \t][^\n<>]{4,60}?,[ \t]*([A-Za-z][^<>\n,:]{1,40}?)[ \t]*<[^<>\n@]+@[^<>\n]+>[ \t]*wrote")
+_FWD_FROM = re.compile(r"(?i)\bforwarded[ \t]+from[ \t]+([^\n:]{2,40})")
+_INTRO = re.compile(r"(?<![A-Za-z])(?:[Mm]y[ \t]+name[ \t]+is|I[ \t]+am|I'm|[Tt]his[ \t]+is|[Mm]era[ \t]+naam|"
+                    r"[Mm]ain)[ \t]+([A-Z][a-z]{2,})(?=[ \t]*,[ \t]*(?:his|her|uski|unki|beti|beta|"
+                    r"daughter|son|wife|husband|mother|father)|[ \t]+(?:here|speaking|calling|bol))")
+_INTRO_NAME = re.compile(r"(?<![A-Za-z])(?:[Mm]y[ \t]+name[ \t]+is|[Mm]era[ \t]+naam)[ \t]+([A-Z][a-z]{2,})")
+_SUFFIX_VOC = re.compile(r"(?:^|(?<=[:.!?]))[ \t]*([A-Z][a-z]{2,}(?:ben|bhai|bai|amma|appa|anna|kutty))(?=[ \t]*[,!?])",
+                         re.M)
+
+
+def _layer_mail_intro(cx: _Ctx) -> None:
+    """E-mail display names (From / To / Cc, "On <date>, X <addr> wrote:", "Forwarded from X"), speakers
+    introducing themselves, and "-ben / -bhai / -amma" names used as a vocative at a turn start."""
+    t = cx.text
+    if len(t) < 6:
+        return
+    for rx in ((_MAIL_HDR, _MAIL_WROTE) if "@" in t else ()) + ((_FWD_FROM,) if ("orward" in t or "ORWARD" in t) else ()):
+        for m in rx.finditer(t):
+            nm = _take_name(t, m.start(1), m.end(1), "cap")
+            if nm and not any(w.lower() in _MAILBOX_WORDS for w in t[nm[0]:nm[1]].split()):
+                cx.add(nm[0], nm[1], "PERSON", "", 3)
+    for rx in (_INTRO, _INTRO_NAME):
+        for m in rx.finditer(t):
+            w = _low(m.group(1))
+            if w not in _EN_COMMON and w not in lexicon.CLINICAL_WORDS and w not in _ORG_STOP:
+                cx.add(m.start(1), m.end(1), "PERSON", "", 4)
+    for m in _SUFFIX_VOC.finditer(t):
+        cx.add(m.start(1), m.end(1), "PERSON", "", 4)
 
 
 def _layer_verbs(cx: _Ctx) -> None:
@@ -1651,37 +1850,122 @@ def _name_context(t: str, ls: int, s: int) -> bool:
     return bool(re.search(r"(?:name|naam|नाम|patient|[sdwhc]/o)[^:\n]{0,12}[:\-]?[ \t]*$", before, re.I))
 
 
+_MAILBOX_WORDS = _ws("""
+info admin office records record help helpdesk desk support contact dept department hospital clinic lab labs
+reports report opd ipd billing accounts care team mail noreply reply enquiry enquiries query queries appointments
+appointment radiology pathology medical services service health secretary director registrar casualty
+""")
+
+
 def _layer_self_propagate(cx: _Ctx, spans: List[Span]) -> None:
-    """Every other whole-word occurrence of a name token found by an anchor."""
+    """Every other whole-word occurrence of a name token found by an anchor, in any case and (through the
+    phonetic key) any script. Tokens of strong anchors (prio <= 8: labels, kinship, titles, chat senders,
+    e-mail names ...) also propagate when they are ordinary words, and as clipped / pet forms (a prefix or
+    suffix of 4+ letters, or a longer word whose prefix / suffix is the anchored token)."""
     t = cx.text
+    prio_of = {}  # type: Dict[Tuple[int, int], int]
+    for c in cx.cands:
+        k0 = (c[1], c[2])
+        if c[0] < prio_of.get(k0, 99):
+            prio_of[k0] = c[0]
     keymap = {}  # type: Dict[str, Tuple[str, str]]
+    strong_words = {}  # type: Dict[str, Tuple[str, str]]   # lowercased common-word names (strong only)
+    pets = {}  # type: Dict[str, Tuple[str, str]]           # lowercased Latin token -> kind (strong only)
     for sp in spans:
         if sp.kind not in NAME_KINDS:
             continue
+        strong = prio_of.get((sp.start, sp.end), 99) <= 8
         for w in _WORD_ANY.findall(t[sp.start:sp.end]):
             lw = _low(w)
-            if lw in _STOP or lw in _GENERIC or len(lw) < 3:
+            if lw in _GENERIC or len(lw) < 3 or lw in _DROP:
                 continue
+            if lw in _STOP:
+                if strong and (w[0].isupper() or _is_dev(w)) and len(lw) >= 4 and lw not in _EN_COMMON:
+                    strong_words.setdefault(lw, (sp.kind, sp.value))
+                continue
+            if strong and not _is_dev(w) and len(lw) >= 4:
+                prev = pets.get(lw)
+                if prev is None or (prev[0] == "PERSON" and sp.kind != "PERSON"):
+                    pets[lw] = (sp.kind, sp.value)
             for tok in name_tokens(w):
                 k = name_key(tok)
                 if k and k not in _GENERIC_KEYS and len(k) >= 2:
                     prev = keymap.get(k)
                     if prev is None or (prev[0] == "PERSON" and sp.kind != "PERSON"):
                         keymap[k] = (sp.kind, sp.value)
-    if not keymap:
+    for sp in spans:
+        if sp.kind == "EMAIL" and "@" in t[sp.start:sp.end]:
+            local = t[sp.start:sp.end].split("@")[0]
+            for w in re.split(r"[._\-+0-9]+", local):
+                lw = w.lower()
+                if (len(lw) >= 4 and lw.isalpha() and lw not in _STOP and lw not in _GENERIC
+                        and lw not in _MAILBOX_WORDS):
+                    pets.setdefault(lw, ("PERSON", ""))
+                    k = name_key(lw)
+                    if k and k not in _GENERIC_KEYS:
+                        keymap.setdefault(k, ("PERSON", ""))
+    if not keymap and not strong_words:
         return
+    pet_parts = {}  # type: Dict[str, Tuple[str, str]]
+    for lw, hit in pets.items():
+        for n in range(4, len(lw)):
+            pet_parts.setdefault(lw[:n], hit)
+            pet_parts.setdefault(lw[-n:], hit)
     for m in _WORD_ANY.finditer(t):
         w = m.group()
         lw = _low(w)
-        if lw in _STOP or lw in _GENERIC:
+        if lw in _GENERIC:
+            continue
+        if lw in _STOP:
+            hit = strong_words.get(lw)
+            if hit and (w[0].isupper() or _is_dev(w)):
+                cx.add(m.start(), m.end(), hit[0], hit[1], 10)
             continue
         toks = name_tokens(w)
         if len(toks) != 1:
             continue
-        k = name_key(toks[0])
-        hit = keymap.get(k)
+        hit = keymap.get(name_key(toks[0]))
+        if not hit and len(lw) >= 4 and not _is_dev(w) and lw not in _EN_COMMON:
+            hit = pet_parts.get(lw)
+            if not hit and w[0].isupper():
+                for n in range(4, len(lw)):
+                    hit = pets.get(lw[:n]) or pets.get(lw[-n:])
+                    if hit:
+                        break
         if hit:
             cx.add(m.start(), m.end(), hit[0], hit[1], 10)
+
+
+_WRAP_NAME = re.compile(r"(-?)[ \t]*\n[ \t]*([A-Za-z][A-Za-z'’]*(?:[ \t][A-Z][A-Za-z'’]*){0,2})"
+                        r"(?=[ \t]{2,}|[ \t]*\n|[ \t]*$)")
+_WRAP_ID = re.compile(r"[ \t]*\n[ \t]*([0-9]{2,8})[ \t]*(?=\n|$)")
+
+
+def _layer_wraps(cx: _Ctx, spans: List[Span]) -> None:
+    """A labelled name or id cut by a line break (OCR, narrow forms): the rest of the value on the next
+    line takes the same kind. Only when the value ends its line and the next line starts with name
+    tokens that stand alone (2+ blanks or the line end after them)."""
+    t = cx.text
+    if "\n" not in t:
+        return
+    for sp in spans:
+        ls = t.rfind("\n", 0, sp.start) + 1
+        if ":" not in t[ls:sp.start] and "：" not in t[ls:sp.start]:
+            continue
+        if sp.kind in NAME_KINDS:
+            m = _WRAP_NAME.match(t, sp.end)
+            if not m:
+                continue
+            hyph = bool(m.group(1)) or t[sp.end - 1] == "-"
+            ws = m.group(2).split()
+            if not hyph and not ws[0][0].isupper():
+                continue
+            if all(_is_name_tok(w, "any") for w in ws) and not re.match(r"[ \t]*[:/]", t[m.end():m.end() + 3]):
+                cx.add(m.start(2), m.end(2), sp.kind, sp.value, 2)
+        elif sp.kind == "MRN":
+            m = _WRAP_ID.match(t, sp.end)
+            if m:
+                cx.add(sp.start, m.end(1), "MRN", sp.value, 1)
 
 
 def _lift_covering_names(cx: _Ctx) -> None:
@@ -1797,6 +2081,8 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_identifiers(cx)
     _layer_pid_labels(cx)
     _layer_labels(cx)
+    keep_cells = _layer_tables(cx)
+    _layer_space_labels(cx)
     _layer_dob(cx, order)
     _layer_address_lines(cx)
     _layer_places(cx)
@@ -1813,6 +2099,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_name_age(cx)
     _layer_declarant(cx)
     _layer_honorifics(cx)
+    _layer_mail_intro(cx)
     _layer_verbs(cx)
     _layer_dev_case(cx)
     if known is not None:
@@ -1822,8 +2109,12 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_ages(cx)
     _lift_covering_names(cx)
     first = _resolve(cx.cands)
+    _layer_wraps(cx, first)
     _layer_self_propagate(cx, first)
     spans = _extend_generic(cx, _reclassify(_resolve(cx.cands), text))
+    if keep_cells:
+        spans = [sp for sp in spans if not (sp.kind in ("PHONE", "PIN", "MRN", "AADHAAR") and
+                                            any(a <= sp.start and sp.end <= b for a, b in keep_cells))]
     return spans, cx.enc_starts
 
 
