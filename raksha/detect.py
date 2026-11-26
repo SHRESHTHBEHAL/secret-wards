@@ -9,7 +9,7 @@ import bisect
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from . import dates, lexicon, patterns, scripts
 from .translit import GENERIC_NAME_PARTS, HONORIFICS, TITLES, name_key, name_tokens
@@ -210,18 +210,34 @@ def _take_name(text: str, pos: int, end: int, mode: str = "cap", max_tok: int = 
 
 def _take_name_back(text: str, pos: int, mode: str = "cap", max_tok: int = 3,
                     allow_comma: bool = False) -> Optional[Tuple[int, int]]:
-    ls = text.rfind("\n", 0, pos) + 1
+    # look back at most 256 characters; only when the walk reaches the window's first token (which
+    # may be cut) is the whole line re-read, so the result equals the unbounded scan
+    lo = max(0, pos - 256)
+    nl = text.rfind("\n", lo, pos)
+    if nl >= 0 or lo == 0:
+        return _take_name_back1(text, nl + 1, pos, mode, max_tok, allow_comma)[0]
+    res, hit0 = _take_name_back1(text, lo, pos, mode, max_tok, allow_comma)
+    if not hit0:
+        return res
+    return _take_name_back1(text, text.rfind("\n", 0, pos) + 1, pos, mode, max_tok, allow_comma)[0]
+
+
+def _take_name_back1(text: str, ls: int, pos: int, mode: str, max_tok: int,
+                     allow_comma: bool) -> Tuple[Optional[Tuple[int, int]], bool]:
     seg = text[ls:pos]
     toks = list(_TOK.finditer(seg))
     if not toks:
-        return None
+        return None, True
     cur = len(seg)
     first = -1
     last = -1
     n = 0
     n_real = 0
+    hit0 = False
     for k in range(len(toks) - 1, -1, -1):
         m = toks[k]
+        if k <= 2:  # the first tokens of a cut window may be split differently
+            hit0 = True
         gap = seg[m.end():cur]
         if n == 0:
             ok = re.fullmatch(r"[ \t]*,?[ \t]*" if allow_comma else r"[ \t]*", gap) is not None
@@ -233,7 +249,7 @@ def _take_name_back(text: str, pos: int, mode: str = "cap", max_tok: int = 3,
         lw = _low(w)
         if n and (lw in _TITLE_BEFORE or lw == "dr"):
             if lw == "dr":
-                return None
+                return None, hit0
             break
         if not _is_name_tok(w, mode) and not (lw in _GENERIC and (w[:1].isupper() or _is_dev(w))):
             break
@@ -247,8 +263,8 @@ def _take_name_back(text: str, pos: int, mode: str = "cap", max_tok: int = 3,
         if n >= max_tok:
             break
     if first < 0 or n_real == 0:
-        return None
-    return first, last
+        return None, hit0
+    return (first, last), hit0
 
 
 # ---------------------------------------------------------------- labels
@@ -531,6 +547,8 @@ class _Ctx:
         # "ASHA worker", "ASHA didi", "the ASHA": the health worker role, never a person's name
         self.asha_hard = [(a, b) for a, b in self.asha
                           if re.search(r"\s", text[a:b]) or _THE_BEFORE.search(text, max(0, a - 6), a)]
+        self.asha_iv = patterns.Intervals(self.asha)
+        self.asha_hard_iv = patterns.Intervals(self.asha_hard)
         self.prot_starts = [p[0] for p in self.prot]
 
     def protected(self, s: int, e: int) -> bool:
@@ -550,9 +568,9 @@ class _Ctx:
             return
         if kind not in ID_KINDS and kind != "PIN" and self.protected(s, e):
             return
-        if prio >= 6 and kind in NAME_KINDS and any(a < e and s < b for a, b in self.asha):
+        if prio >= 6 and kind in NAME_KINDS and self.asha_iv.hits(s, e):
             return
-        if kind in NAME_KINDS and any(a < e and s < b for a, b in self.asha_hard):
+        if kind in NAME_KINDS and self.asha_hard_iv.hits(s, e):
             return
         self.cands.append((prio, s, e, kind, value))
 
@@ -924,7 +942,7 @@ def _layer_phone_proximity(cx: _Ctx) -> None:
     t = cx.text
     phones = sorted((c[1], c[2]) for c in cx.cands if c[3] == "PHONE")
     for ps, pe in phones:
-        ls = t.rfind("\n", 0, ps) + 1
+        ls = t.rfind("\n", max(0, ps - 90), ps) + 1
         ws = max(ls, ps - 90)
         toks = list(_WORD_ANY.finditer(t, ws, ps))[-9:]
         # candidate runs of capitalised name tokens, nearest to the phone first
@@ -980,25 +998,125 @@ _JOIN_AFTER = re.compile(r"_([A-Z][a-z]{2,})(?![A-Za-z])")
 _JOIN_BEFORE = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,})_$")
 
 
-def _layer_known(cx: _Ctx, known: Known) -> None:
-    t = cx.text
-    own = sorted(k for k in known.own_keys if k and k not in _GENERIC_KEYS)
-    own_set = frozenset(own)
+# ---- run-wide caches for the known-name layer. Every entry is keyed by the identity of an
+# immutable object (frozenset / tuple) and keeps that object alive, so a hit is always for the very
+# same content: results cannot leak between inputs. reset_caches() frees them between runs.
+_KCACHE = {}  # type: Dict[int, Tuple[Any, Any]]
+_WKEY = {}  # type: Dict[str, str]
+_SMALL_OWN = 48
+
+
+def reset_caches() -> None:
+    _KCACHE.clear()
+    _WKEY.clear()
+    _RCACHE.clear()
+
+
+def _cached(obj: Any, build: Any) -> Any:
+    hit = _KCACHE.get(id(obj))
+    if hit is not None and hit[0] is obj:
+        return hit[1]
+    val = build(obj)
+    if len(_KCACHE) > 50000:
+        _KCACHE.clear()
+    _KCACHE[id(obj)] = (obj, val)
+    return val
+
+
+def _word_key(w: str) -> str:
+    k = _WKEY.get(w)
+    if k is None:
+        toks = name_tokens(w)
+        k = name_key(toks[0]) if len(toks) == 1 else ""
+        if len(_WKEY) > 200000:
+            _WKEY.clear()
+        _WKEY[w] = k
+    return k
+
+
+def _build_full(names: Any) -> Dict[int, Set[Tuple[str, ...]]]:
     full = {}  # type: Dict[int, Set[Tuple[str, ...]]]
-    for fn in known.full_names:
+    for fn in names:
         ks = tuple(sorted(k for k in fn if k))
         if len(ks) >= 2:
             full.setdefault(len(ks), set()).add(ks)
+    return full
+
+
+def _dels(k: str, depth: int) -> Set[str]:
+    out = {k}
+    frontier = {k}
+    for _ in range(depth):
+        nxt = set()  # type: Set[str]
+        for x in frontier:
+            for i in range(len(x)):
+                nxt.add(x[:i] + x[i + 1:])
+        out |= nxt
+        frontier = nxt
+    return out
+
+
+def _vnorm(k: str) -> str:
+    try:
+        from .translit import _vowel_norm
+        return _vowel_norm(k)
+    except Exception:  # pragma: no cover
+        return k
+
+
+class _OwnIndex:
+    """Exact candidate filter for `any(_fuzzy_keys(k, o) for o in own)`.
+
+    _fuzzy_keys needs edit distance <= 1 (<= 2 only when the longer key has 9+ letters), either on
+    the raw keys or on their vowel-normalised forms. Two strings within edit distance d share a
+    string reachable by <= d deletions from each, so a deletion-neighbourhood index per space
+    (1 deletion for every key, 2 deletions for keys of 7+ letters) finds every true match; each
+    candidate is then confirmed with _fuzzy_keys itself. Small sets are scanned directly."""
+
+    def __init__(self, keys: Any) -> None:
+        own = sorted(k for k in keys if k and k not in _GENERIC_KEYS)
+        self.own = own
+        self.own_set = frozenset(own)
+        self.memo = {}  # type: Dict[str, bool]
+        self.idx = None  # type: Optional[Tuple[Dict[str, List[str]], Dict[str, List[str]]]]
+        if len(own) > _SMALL_OWN:
+            raw = {}  # type: Dict[str, List[str]]
+            vow = {}  # type: Dict[str, List[str]]
+            for o in own:
+                for space, key in ((raw, o), (vow, _vnorm(o))):
+                    for v in _dels(key, 2 if len(key) >= 7 else 1):
+                        space.setdefault(v, []).append(o)
+            self.idx = (raw, vow)
+
+    def fuzzy(self, k: str) -> bool:
+        hit = self.memo.get(k)
+        if hit is not None:
+            return hit
+        if self.idx is None:
+            res = any(_fuzzy_keys(k, o) for o in self.own)
+        else:
+            raw, vow = self.idx
+            cands = set()  # type: Set[str]
+            for space, key in ((raw, k), (vow, _vnorm(k))):
+                for v in _dels(key, 2 if len(key) >= 7 else 1):
+                    cands.update(space.get(v, ()))
+            res = any(_fuzzy_keys(k, o) for o in sorted(cands))
+        self.memo[k] = res
+        return res
+
+
+def _layer_known(cx: _Ctx, known: Known) -> None:
+    t = cx.text
+    oi = _cached(known.own_keys, _OwnIndex)
+    own_set = oi.own_set
+    full = _cached(known.full_names, _build_full)
     words = [(m.start(), m.end(), m.group()) for m in _WORD_ANY.finditer(t)]
-    keys = []
-    for s, e, w in words:
-        toks = name_tokens(w)
-        keys.append(name_key(toks[0]) if len(toks) == 1 else "")
-    if own:
+    keys = [_word_key(w) for _, _, w in words]
+    if oi.own:
         for (s, e, w), k in zip(words, keys):
             if not k or k in _GENERIC_KEYS:
                 continue
-            if k in own_set or (len(k) >= 4 and any(_fuzzy_keys(k, o) for o in own)):
+            if k in own_set or (len(k) >= 4 and oi.fuzzy(k)):
                 cx.add(s, e, "PATIENT_NAME", "", 6)
                 # "<Given>_<Surname>_<number>" export folder: the joined capitalised word is the surname
                 for nm in (_JOIN_AFTER.match(t, e), _JOIN_BEFORE.search(t, max(0, s - 30), s)):
@@ -1050,7 +1168,7 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
                 nxt = re.match(r"[ \t]*([A-Za-z]+)", t[e:e + 30])
                 allcaps = all(w.isupper() and len(w) > 1 for _, _, w in run)
                 if (real and not re.match(r"[ \t]*[:：]", t[e:e + 3])
-                        and not _PLACE_BEFORE.search(t[ls:s])
+                        and not _PLACE_BEFORE.search(_tail(t, ls, s))
                         and not (nxt and _low(nxt.group(1)) in _ORG_TAIL)
                         and (not allcaps or _name_context(t, ls, s))):
                     cx.add(s, e, "PERSON", "", 9)
@@ -1069,8 +1187,17 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
         flush()
 
 
+def _tail(t: str, ls: int, s: int, keep: int = 40) -> str:
+    """The end of t[ls:s] that a `...[ \t]*$` pattern (no look-behind, short head) can match in:
+    the trailing blanks plus `keep` characters before them. Bounded, unlike t[ls:s]."""
+    j = s
+    while j > ls and t[j - 1] in " \t":
+        j -= 1
+    return t[max(ls, j - keep):s]
+
+
 def _name_context(t: str, ls: int, s: int) -> bool:
-    before = t[ls:s]
+    before = _tail(t, ls, s)
     return bool(re.search(r"(?:name|naam|नाम|patient|[sdwhc]/o)[^:\n]{0,12}[:\-]?[ \t]*$", before, re.I))
 
 
@@ -1170,7 +1297,29 @@ def _extend_generic(cx: _Ctx, spans: List[Span]) -> List[Span]:
     return out
 
 
+_RCACHE = {}  # type: Dict[Tuple[Any, ...], Tuple[Any, ...]]
+_RCACHE_MAX_TEXT = 4096
+
+
 def _run(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set[int]]:
+    """Memoised _run1: the same cell text under the same known sets (shared, immutable objects,
+    kept alive by the entry and checked by identity) is detected once per run."""
+    if not text or len(text) > _RCACHE_MAX_TEXT:
+        return _run1(text, known, order)
+    ks = (known.own_keys, known.full_names, known.id_values) if known is not None else (None, None, None)
+    key = (text, order, id(ks[0]), id(ks[1]), id(ks[2]))
+    hit = _RCACHE.get(key)
+    if hit is not None and hit[0] is ks[0] and hit[1] is ks[1] and hit[2] is ks[2]:
+        return [Span(a, b, c, d) for a, b, c, d in hit[3]], set(hit[4])
+    spans, enc = _run1(text, known, order)
+    if len(_RCACHE) > 20000:
+        _RCACHE.clear()
+    _RCACHE[key] = (ks[0], ks[1], ks[2], tuple((sp.start, sp.end, sp.kind, sp.value) for sp in spans),
+                    frozenset(enc))
+    return spans, enc
+
+
+def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set[int]]:
     if not text:
         return [], set()
     text = scripts.fold(text)  # 11 scripts -> Devanagari/Latin; same length, so spans index the original
