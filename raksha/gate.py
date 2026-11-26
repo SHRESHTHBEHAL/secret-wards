@@ -182,35 +182,55 @@ def _digit_hits(nt: str, fb: Forbidden) -> List[Tuple[int, int]]:
 
 
 def _name_hits(nt: str, fb: Forbidden) -> List[Tuple[int, int]]:
-    out = []
+    """Runs of adjacent words whose keys form a known full name. Words are streamed through a
+    window of `width` + 1 words, so memory stays flat on a 30 MB text."""
+    out = []  # type: List[Tuple[int, int]]
     if not fb._name_sets:
         return out
-    words = [(m.start(), m.end(), m.group(0)) for m in _WORD.finditer(nt)]
-    if not words:
-        return out
-    keys = [name_key(w[2]) for w in words]
     all_keys = fb._name_keys
     width = fb._max_name + 3
+    it = _WORD.finditer(nt)
+    buf = []  # type: List[Tuple[int, int, str, str]]   (start, end, word, key)
+    base = 0                                           # global index of buf[0]
+    done = False
+
+    def have(g: int) -> bool:                          # word g available (fetching lazily)
+        nonlocal done
+        while not done and g - base >= len(buf):
+            m = next(it, None)
+            if m is None:
+                done = True
+                break
+            w = m.group(0)
+            buf.append((m.start(), m.end(), w, name_key(w)))
+        return g - base < len(buf)
 
     def adjacent(a: int, b: int) -> bool:
-        gap = nt[words[a][1]:words[b][0]]
+        gap = nt[buf[a - base][1]:buf[b - base][0]]
         return len(gap) <= 3 and all(_GAP_OK.match(c) for c in gap)
 
-    for i, k in enumerate(keys):
-        if k not in all_keys:
-            continue
-        cur = {k}
-        for j in range(i + 1, min(len(words), i + width)):
-            if not adjacent(j - 1, j):
-                break
-            kj = keys[j]
-            if kj in all_keys:
-                cur.add(kj)
-                if len(cur) >= 2 and frozenset(cur) in fb._name_sets:
-                    if not (i > 0 and adjacent(i - 1, i) and words[i - 1][2] in _DOCTOR_WORDS):
-                        out.append((words[i][0], words[j][1]))
-            elif kj not in _SKIP_KEYS:
-                break
+    i = 0
+    while have(i):
+        if i - base > 1:                               # keep word i - 1 for the look-behind
+            del buf[:i - 1 - base]
+            base = i - 1
+        k = buf[i - base][3]
+        if k in all_keys:
+            cur = {k}
+            j = i + 1
+            while j < i + width and have(j):
+                if not adjacent(j - 1, j):
+                    break
+                kj = buf[j - base][3]
+                if kj in all_keys:
+                    cur.add(kj)
+                    if len(cur) >= 2 and frozenset(cur) in fb._name_sets:
+                        if not (i > 0 and adjacent(i - 1, i) and buf[i - 1 - base][2] in _DOCTOR_WORDS):
+                            out.append((buf[i - base][0], buf[j - base][1]))
+                elif kj not in _SKIP_KEYS:
+                    break
+                j += 1
+        i += 1
     return out
 
 
