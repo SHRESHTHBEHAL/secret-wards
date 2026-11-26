@@ -349,7 +349,11 @@ def find_identifiers(text: str) -> List[Span]:
     for m in _RE_AADHAAR_MASK.finditer(t):
         c.append((4, m.start(), m.end(), "AADHAAR_MASKED", m.group(1)))
     for m in _RE_AADHAAR_SPACED.finditer(t):
-        c.append((5, m.start(), m.end(), "AADHAAR", _digits(m.group())))
+        d = _digits(m.group())
+        if d.startswith("91") and d[2] in "6789" and t[max(0, m.start() - 1):m.start()] == "+":
+            c.append((5, m.start() - 1, m.end(), "PHONE", d[2:]))   # "+9198-7654-3210": +91 glued to a mobile
+            continue
+        c.append((5, m.start(), m.end(), "AADHAAR", d))
     for m in _RE_AADHAAR_SOLID.finditer(t):
         g = m.group()
         # a 91-prefixed mobile is far likelier than an Aadhaar failing its checksum
