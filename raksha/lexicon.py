@@ -121,6 +121,17 @@ mahine saal ghanta ghante neend li lena dena khana peena chalna jana aana
 इस उस इसका उसका उनका अपना अपनी हम आप तुम मेरा मेरी कुछ बहुत ज्यादा कम थोड़ा सब कोई क्या क्यों कब कैसे
 कहाँ जब तब तो ही बस फिर बाद पहले साथ लिए तक रोज़ एक दो तीन चार पांच हफ्ते महीने साल घंटे से नाम आयु उम्र
 वर्ष पुरुष महिला पता तारीख की
+बजे बजकर सुबह शाम दोपहर रात्रि आज कल परसों लगभग करीब केवल सिर्फ हालत स्थिति समय दिनांक घंटे मिनट
+मैं मुझे मुझको मेरे हमें हमारा हमारी हमारे उन्होंने उसने इसने वह वे यह ये जो जिसे जिसको जिनको किसी कोई
+सभी स्वयं खुद यहाँ यहां वहाँ वहां अंदर बाहर ऊपर नीचे पास दूर साथ बिना लिए द्वारा हेतु तथा एवं अथवा परंतु लेकिन
+किया गया दिया लिया लाया लाए लेकर देकर आकर जाकर करके होकर रहे रहा रही था थे थी है हैं हो होगा होगी होंगे
+करें करे करना करने कराया कराई करवाया बताया बताए बताई बताया कहा कहे सुना देखा मिला मिली मिले पाया पाई
+पीने पीकर खाने खाकर लेने देने आने जाने चलने सोने उठने बैठने गिरने गिरकर काटने काटा लगा लगी लगे हुआ हुई
+सिर माथा आंख आँख कान नाक मुंह मुँह दांत गला गर्दन कंधा हाथ उंगली छाती पेट कमर पीठ पैर घुटना एड़ी त्वचा
+हृदय दिल फेफड़ा फेफड़े गुर्दा लिवर यकृत खून रक्त पेशाब मल हड्डी नस नसें मांसपेशी पुतली नाड़ी सांस
+बुखार दर्द सूजन जलन खुजली चक्कर बेहोशी कमजोरी थकान उल्टी दस्त खांसी कंपकंपी ठंड पसीना घाव चोट जख्म
+सूचना पत्र कार्ड पर्ची पर्चा सारांश रेफरल प्रमाण सहमति घोषणा महोदय महोदया सेवा प्रभारी अधीक्षक चिकित्सा
+विषाक्तता कीटनाशक जहर सांप साँप बिच्छू कुत्ता काटने वर्षीय वर्षीया पुत्र पुत्री भतीजा भतीजी भांजा भांजी
 """))
 
 KINSHIP_MARKERS = (
@@ -143,3 +154,62 @@ ADDRESS_CUES = (
     "ward", "वार्ड", "post", "po", "p.o", "block", "pin", "pincode", "pin code", "पिन", "address", "पता",
     "street", "road", "nagar", "colony", "sector", "lane", "gali", "गली", "basti", "bazar", "chowk",
 )
+
+# Public geography: districts / major towns of India (Latin, lowercase) and their common Devanagari
+# spellings. Districts and states are kept in the release; this list stops the place-phrase rules from
+# taking them as villages. Not exhaustive.
+DISTRICTS = _words("""
+agra ahmedabad ahmednagar aizawl ajmer akola alappuzha aligarh allahabad prayagraj almora alwar ambala
+amravati amritsar anand anantapur anantnag angul araria ariyalur arwal ashoknagar auraiya aurangabad azamgarh
+badaun bagalkot bageshwar baghpat bahraich balaghat balangir baleshwar ballia balrampur banaskantha banda
+bankura banswara barabanki baramulla baran bardhaman bareilly bargarh barmer barnala barpeta barwani bastar
+basti bathinda beed begusarai belgaum belagavi bellary ballari betul bhadrak bhagalpur bhandara bharatpur
+bharuch bhavnagar bhilwara bhind bhiwani bhojpur bhopal bidar bijapur vijayapura bijnor bikaner bilaspur
+birbhum bokaro bongaigaon budaun bulandshahr buldhana bundi burhanpur buxar cachar chamba chamoli champawat
+chandauli chandigarh chandrapur changlang chatra chennai chhatarpur chhindwara chikkamagaluru chitradurga
+chitrakoot chittoor chittorgarh churu coimbatore cuddalore cuttack dahod dakshina damoh dantewada darbhanga
+darjeeling darrang datia dausa davanagere dehradun deoghar deoria dewas dhanbad dhar dharmapuri dharwad
+dhemaji dhenkanal dholpur dhubri dhule dibrugarh dimapur dindigul dindori dumka dungarpur durg east west
+north south ernakulam erode etah etawah faizabad ayodhya faridabad faridkot farrukhabad fatehabad fatehpur
+firozabad ferozepur gadag gadchiroli gajapati ganderbal gandhinagar ganjam garhwa gaya ghaziabad ghazipur
+giridih goalpara godda golaghat gonda gondia gopalganj gorakhpur gulbarga kalaburagi gumla guna guntur
+gurdaspur gurgaon gurugram guwahati gwalior hailakandi hamirpur hanumangarh hapur harda hardoi haridwar
+hassan hathras haveri hazaribagh hingoli hisar hooghly hoshangabad hoshiarpur howrah hyderabad idukki
+imphal indore jabalpur jagatsinghpur jaipur jaisalmer jajpur jalandhar jalaun jalgaon jalna jalore
+jalpaiguri jammu jamnagar jamshedpur jamtara jamui janjgir jashpur jaunpur jehanabad jhabua jhajjar
+jhalawar jhansi jharsuguda jhunjhunu jind jodhpur jorhat junagadh kadapa kaithal kakinada kalahandi
+kamrup kanchipuram kandhamal kangra kanker kannauj kannur kanpur kanyakumari kapurthala karaikal karauli
+karbi karimganj karimnagar karnal karur kasaragod kathua katihar katni kaushambi kendrapara kendujhar
+keonjhar khagaria khammam khandwa khargone kheda khordha khunti kinnaur kishanganj kishtwar kodagu koderma
+kohima kokrajhar kolar kolasib kolhapur kolkata kollam koppal koraput korba koriya kota kottayam kozhikode
+krishna kullu kupwara kurnool kurukshetra kutch lakhimpur lakhisarai lalitpur latur lawngtlai leh lohardaga
+lucknow ludhiana lunglei madhepura madhubani madurai mahabubnagar mahasamund mahendragarh mahoba mainpuri
+malappuram malda mamit mandi mandla mandsaur mandya mangalore mathura mau mayurbhanj medak meerut mehsana
+mirzapur moga mokokchung moradabad morena morigaon mumbai munger murshidabad muzaffarnagar muzaffarpur
+mysore mysuru nabarangpur nadia nagaon nagapattinam nagaur nagpur nainital nalanda nalbari nalgonda namakkal
+nanded nandurbar narmada narsinghpur nashik navsari nawada nayagarh neemuch nellore nicobar nilgiris nizamabad
+noida nuapada osmanabad palakkad palamu palghar pali palwal panchkula panchmahal panipat panna papum
+parbhani pashchim patan pathanamthitta pathankot patiala patna pauri perambalur pilibhit pithoragarh
+porbandar pratapgarh pudukkottai pulwama pune puri purnia purulia raebareli raichur raigad raigarh raipur
+raisen rajgarh rajkot rajnandgaon rajouri rajsamand ramanathapuram ramgarh rampur ranchi ratlam ratnagiri
+rayagada reasi rewa rewari rohtak rohtas rudraprayag rupnagar sabarkantha sagar saharanpur saharsa sahibganj
+saiha salem samastipur sambalpur sangli sangrur sant saran satara satna sawai sehore senapati seoni serchhip
+shahdol shahjahanpur shajapur sheikhpura sheohar shimla shimoga shivamogga shivpuri shopian shravasti
+siddharthnagar sidhi sikar simdega sindhudurg singrauli sirmaur sirohi sirsa sitamarhi sitapur sivaganga
+sivasagar siwan solan solapur sonbhadra sonipat sonitpur srikakulam srinagar sultanpur sundargarh supaul
+surat surendranagar surguja tapi tarn thane thanjavur theni thiruvananthapuram thoothukudi thrissur tikamgarh
+tinsukia tirap tiruchirappalli tirunelveli tiruppur tiruvallur tiruvannamalai tonk tumkur tumakuru tuensang
+udaipur udalguri udham udhampur udupi ujjain ukhrul umaria una unnao uttara vadodara vaishali valsad
+varanasi vellore vidisha villupuram virudhunagar visakhapatnam vizianagaram warangal wardha washim wayanad
+yadgir yamunanagar yavatmal zunheboto bardez salcete tiswadi pernem bicholim sattari ponda sanguem quepem
+canacona mormugao dharashiv shillong
+आगरा अहमदाबाद अजमेर अलीगढ़ अल्मोड़ा अलवर अमृतसर आजमगढ़ बहराइच बलिया बांकुड़ा बाँकुड़ा बांदा बाराबंकी बरेली
+बरगढ़ बाड़मेर बस्ती बेगूसराय भागलपुर भरतपुर भीलवाड़ा भोपाल बीकानेर बिलासपुर बोकारो बुलंदशहर चतरा छिंदवाड़ा
+दरभंगा देहरादून देवघर देवरिया धनबाद धार डिब्रूगढ़ दुमका दुर्ग इटावा फैजाबाद अयोध्या फर्रुखाबाद फतेहपुर
+गया गाजियाबाद गाज़ीपुर गिरिडीह गोंडा गोरखपुर गुमला ग्वालियर हमीरपुर हरदोई हरिद्वार हजारीबाग इंदौर जबलपुर
+जयपुर जालौन जौनपुर झांसी झाँसी जोधपुर कानपुर कटिहार खूंटी कोडरमा कोटा लखनऊ ललितपुर लोहरदगा मधुबनी
+महोबा मैनपुरी मथुरा मऊ मेरठ मिर्जापुर मुरादाबाद मुंगेर मुजफ्फरपुर नागपुर नालंदा नवादा पलामू पटना
+पूर्णिया पुरुलिया प्रयागराज रायबरेली रायपुर राजगढ़ रामगढ़ रांची राँची रीवा रोहतास सागर सहारनपुर समस्तीपुर
+संबलपुर सारण सतना सीहोर शाहजहांपुर सीतापुर सीवान सोनभद्र सुल्तानपुर उदयपुर उज्जैन उन्नाव वाराणसी
+विदिशा साहिबगंज सिमडेगा पाकुड़ गोड्डा जामताड़ा गढ़वा लातेहार पश्चिमी पूर्वी सिंहभूम जुन्नर पुणे नाशिक
+""")
