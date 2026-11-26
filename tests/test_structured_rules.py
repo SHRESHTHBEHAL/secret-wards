@@ -246,3 +246,40 @@ class MetadataAndHeaders(unittest.TestCase):
         self.assertTrue(f.is_patient)
         self.assertIn("phone:9000012345", f.ids)
         self.assertNotIn("phone:9000099999", f.ids)
+
+
+class InstitutionAndReferenceRules(unittest.TestCase):
+    def test_institution_named_after_person_is_hospital(self):
+        from raksha import fields as F
+        self.assertEqual(F.classify_column("Hosp", ["Aaaa Bbbb Memorial Hospital", "Cccc Trust Hospital"]),
+                         F.HOSPITAL)
+        self.assertEqual(F.json_key_type(["tpa"], "Dddd Health TPA"), F.HOSPITAL)
+        self.assertEqual(F.json_key_type(["site", "name"], "Eeee Ffff Block Microbiology"), F.HOSPITAL)
+        self.assertFalse(F.is_institution("Gggg Block"))
+
+    def test_reference_columns_are_other_ids(self):
+        from raksha import fields as F
+        for label in ("Sample No", "Batch", "Call ID", "Vehicle", "Pre-Auth No", "encId", "visitId",
+                      "episode", "gatePass"):
+            self.assertEqual(F.classify_label(label), F.OTHER_ID, label)
+        for label in ("Odo (km)", "MRP", "Estimate", "roomRentPerDay", "Access"):
+            self.assertEqual(F.classify_label(label), F.CLINICAL, label)
+        self.assertEqual(F.classify_label("IPD No"), F.ENC_ID)
+
+    def test_eponym_score_is_not_a_name(self):
+        from raksha import fields as F
+        self.assertNotEqual(F._value_shape("Hhhh Coma Scale"), F.NAME)
+
+    def test_unlabelled_relative_and_village_columns(self):
+        from raksha import fields as F
+        cols = [["S/o Aaaa Bbbb", "W/o Cccc Dddd"], ["Eeeevillage", "Ffffpur"], ["Gggg", "Hhhh"],
+                ["400001", "500002"]]
+        out = F.refine_unlabelled(["", "", "", ""], [F.OTHER, F.OTHER, F.OTHER, F.PIN], cols)
+        self.assertEqual(out[0], F.RELATIVE)
+        self.assertEqual(out[1], F.VILLAGE)
+        self.assertEqual(out[2], F.OTHER)
+
+    def test_kin_phrase_tail(self):
+        from raksha.sanitize import _KIN_TAIL
+        out = _KIN_TAIL.sub(lambda m: m.group(1) + "[RELATIVE]", "[NAME] ke parijan Iiii Jjjj: shift kiya")
+        self.assertNotIn("Iiii", out)
