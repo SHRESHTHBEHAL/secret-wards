@@ -308,3 +308,22 @@ class PathNameTest(unittest.TestCase):
         for s in ["/data/Report_00005/a.json", "/srv/Visits_2026_03/x.csv", "Lab_Results_202611/out.json",
                   "/backup/Ward_Register_00123/a.csv", "/x/Register_00123/a"]:
             self.assertEqual([x for x in detect.detect(s) if x.kind == "PATIENT_NAME"], [], s)
+
+
+class PatientAnchorAndAnatomyTest(unittest.TestCase):
+    def _names(self, s):
+        from raksha import detect
+        return [s[x.start:x.end] for x in detect.detect(s) if x.kind in ("PATIENT_NAME", "PERSON")]
+
+    def test_name_after_patient_word(self):
+        self.assertEqual(self._names("Patient Ravi complains of Neck pain"), ["Ravi"])
+        self.assertEqual(self._names("Pt Mohd Arif seen"), ["Mohd Arif"])
+
+    def test_admin_words_after_patient_word_stay(self):
+        for s in ("Patient Education given. Patient Advised rest.", "PATIENT DETAILS", "Pt Shifted to ICU",
+                  "Patient Counselling done", "Patient Stable on Discharge"):
+            self.assertEqual(self._names(s), [], s)
+
+    def test_anatomy_is_not_a_person(self):
+        for s in ("Lesion near Optic Disc noted.", "Mitral Valve prolapse, Carotid Bruit absent."):
+            self.assertEqual(self._names(s), [], s)

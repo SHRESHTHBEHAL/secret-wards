@@ -112,8 +112,8 @@ generative models and no trained or pretrained ML models.
   utility than it bought privacy.
 * Tamil script has no separate voiced consonants and Urdu leaves short vowels implicit, so some cross-script name
   keys differ from their Latin spelling; linking then abstains rather than guesses.
-* Capitalised two-word phrases after "near" can be read as a person in free text ("near Optic Disc"), a small
-  over-redaction.
+* The broad free-text name net can still take an unknown capitalised phrase for a person ("Information Leaflet"),
+  a small over-redaction that we accept to catch unlabelled names.
 * 10-year bands are coarser than the 5-year bands a researcher may prefer; the policy file makes this one line.
 
 ## Repository

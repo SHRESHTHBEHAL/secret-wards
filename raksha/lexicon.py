@@ -83,8 +83,19 @@ _HINDI = """
 अस्पताल वार्ड बिस्तर डॉक्टर नर्स जांच जाँच रिपोर्ट भर्ती छुट्टी सलाह आहार परहेज
 """
 
+# anatomy and examination findings: capitalised in notes ("Optic Disc normal"), never a person
+_ANATOMY = """
+optic disc disk retina retinal cornea corneal lens pupil pupils fundus fundi macula conjunctiva sclera eyelid
+tonsil tonsils pharynx larynx trachea bronchus bronchi lung lungs lobe pleura pleural atrium ventricle valve aorta
+artery arteries vein veins liver spleen kidney kidneys ureter bladder urethra prostate uterus ovary ovaries cervix
+stomach duodenum jejunum ileum colon rectum pancreas gallbladder thyroid adrenal pituitary brain cerebrum
+cerebellum spinal cord nerve nerves muscle muscles tendon ligament femur tibia fibula humerus ulna pelvis spine
+vertebra vertebrae skull rib ribs sternum knee hip shoulder elbow wrist ankle abdomen chest thorax scalp neck
+lymph node nodes axilla groin umbilicus sinus sinuses mitral tricuspid aortic pulmonary carotid femoral radial
+"""
+
 CLINICAL_WORDS = frozenset(
-    _words(_DRUGS) | _words(_FORMS) | _words(_LABS) | _words(_DIAG) | _words(_HINGLISH) | _words(_HINDI)
+    _words(_DRUGS) | _words(_FORMS) | _words(_LABS) | _words(_DIAG) | _words(_HINGLISH) | _words(_HINDI) | _words(_ANATOMY)
 )
 
 COMPLAINT_WORDS = frozenset(_words("""

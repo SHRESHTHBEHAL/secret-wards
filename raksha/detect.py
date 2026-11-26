@@ -762,6 +762,35 @@ _LANDMARK_PHRASE = re.compile(r"(?<![A-Za-z])((?:near|behind|opp\.?|opposite|bes
 _PATH_NAME = re.compile(r"(?:(?<=[\\/])|^)((?:[A-Z][a-z]+[_ ]){1,3})([A-Z]{1,3}[_ ])?([0-9]{5,14})(?=[\\/_.\s\"]|$)", re.M)
 
 
+_PT_ANCHOR = re.compile(r"(?<![A-Za-z])(?:Pt\.?|PT\.?|Patient|PATIENT|patient|pt\.)[ \t]+(?=[A-Z])")
+
+
+_NOT_NAME_SUFFIX = re.compile(r"(?:ed|ing|tion|sion|ment|ness|ity|ance|ence|ive|ous|ful|less|ary|ory|ics|ism|ally)$", re.I)
+_ADMIN_WORDS = frozenset("""details detail education information info history profile summary record records care consent
+counselling counseling stable unstable critical shifted referred discharged admitted transferred expired died reviewed
+examined seen complains complained presented known came has was is had status condition id no number name list
+""".split())
+
+
+def _name_shaped(w: str) -> bool:
+    return not (w.isupper() and len(w) > 1) and not _NOT_NAME_SUFFIX.search(w) and _low(w) not in _ADMIN_WORDS
+
+
+def _layer_patient_anchor(cx: _Ctx) -> None:
+    """"Pt Ravi", "Patient Ravi complains of ...": a capitalised name right after the patient word."""
+    t = cx.text
+    for m in _PT_ANCHOR.finditer(t):
+        le = t.find("\n", m.end())
+        nm = _take_name(t, m.end(), le if le >= 0 else len(t), "cap", 3)
+        if not nm:
+            continue
+        words = [(w.start() + nm[0], w.end() + nm[0], w.group()) for w in re.finditer(r"\S+", t[nm[0]:nm[1]])]
+        while words and not _name_shaped(words[-1][2]):
+            words.pop()
+        if words and all(_name_shaped(w) for _, _, w in words) and not _is_stopish(" ".join(w for _, _, w in words)):
+            cx.add(words[0][0], words[-1][1], "PATIENT_NAME", "", 6)
+
+
 def _layer_path_names(cx: _Ctx) -> None:
     """Export folders named after the patient: ".../Girija_NA_010607/visits.json"."""
     t = cx.text
@@ -1526,6 +1555,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_address_lines(cx)
     _layer_places(cx)
     _layer_path_names(cx)
+    _layer_patient_anchor(cx)
     _layer_residence(cx)
     _layer_kinship(cx)
     _layer_kin_bare(cx)
