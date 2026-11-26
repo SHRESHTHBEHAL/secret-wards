@@ -141,7 +141,10 @@ _S = {
                  "request", "booking", "package", "lot", "batch", "serial", "sl", "sno",
                  "row", "index", "page", "version", "room", "opd", "odo", "odometer", "expiry", "exp",
                  "gatepass", "preauth", "auth", "approval", "authorisation", "authorization", "scn",
-                 "reagent", "kit", "consignment", "dispatch"),
+                 "reagent", "kit", "consignment", "dispatch",
+                 # blood-bank / lab / stores objects: a bag, issue or slide number is not the patient's
+                 "bag", "issue", "segment", "crossmatch", "component", "cartridge", "slide",
+                 "requisition", "indent", "challan"),
     "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
                "kramank", "kod", "key"),
     "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
@@ -698,7 +701,9 @@ def _combine(lt: str, vt: str) -> str:
 _NOT_PATIENT_CODE_LABEL = frozenset({"bill", "invoice", "receipt", "sample", "specimen", "visit", "package",
                                      "claim", "token", "bed", "order", "trip", "ticket", "voucher", "txn",
                                      "transaction", "accession", "barcode", "batch", "lot", "serial", "loinc",
-                                     "icd", "code", "sku", "item", "drug", "test"})
+                                     "icd", "code", "sku", "item", "drug", "test", "bag", "issue", "donation",
+                                     "segment", "crossmatch", "component", "cartridge", "slide", "requisition",
+                                     "indent", "challan", "kit"})
 
 
 def code_column_type(label: str, values: Sequence[Any]) -> str:
