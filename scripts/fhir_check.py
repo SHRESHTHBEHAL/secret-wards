@@ -15,6 +15,7 @@ import base64
 import binascii
 import calendar
 import collections
+import hashlib
 import json
 import re
 import sys
@@ -730,6 +731,8 @@ def check_file(path: Path, cmp_path: Optional[Path] = None) -> Tuple[Problems, P
 def main(argv: List[str]) -> int:
     args = [a for a in argv if a not in ("-v", "--verbose")]
     verbose = len(args) != len(argv)
+    show_names = "--names" in args      # file names are printed only on request; the default is an opaque handle
+    args = [a for a in args if a != "--names"]
     cmp_root = None
     if "--compare" in args:
         i = args.index("--compare")
@@ -756,6 +759,8 @@ def main(argv: List[str]) -> int:
         total.update(c)
         inh_total.update(inh.counts())
         label = f.relative_to(root) if root.is_dir() else f.name
+        if not show_names:                 # a file name can hold personal data when the input side is checked
+            label = "bundle-" + hashlib.sha256(str(label).encode("utf-8", "replace")).hexdigest()[:8]
         extra = "" if cmp_root is None or cp is not None else " (no input to compare)"
         print("%s: %d problem(s)%s %s" % (label, len(P.items), extra,
                                         " ".join("%s=%d" % kv for kv in sorted(c.items()))))
