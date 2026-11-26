@@ -482,6 +482,54 @@ def _homogeneous(node: list, keys: List[Any]) -> bool:
     return False
 
 
+def _wrapper_list(node: list, keys: List[Any]) -> bool:
+    """A list of batch / page objects: every element holds only metadata of its own and an inner
+    list of objects that carry the patient leaves ({"batchId": .., "visits": [{..}, {..}]}). The
+    record level is the inner list's entries, not the batch."""
+    if not node or not all(isinstance(e, dict) for e in node):
+        return False
+    sig = _RECORD_SIGNAL | _PERSON_LEAF
+    inner = False
+    for e in node[:50]:
+        for n, (lk, v) in enumerate(_leaves(e, list(keys))):
+            if n > 400:
+                break
+            if not _s(v) or _ktype(lk, v) not in sig:
+                continue
+            rel = lk[len(keys):]
+            if not any(isinstance(x, int) for x in rel):
+                return False
+            inner = True
+        if not any(isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+                   and (len(v) >= 2 or _RECORD_KEY.search(str(k).lower()) is not None) for k, v in e.items()):
+            return False
+    return inner
+
+
+_COLUMNS_KEY = re.compile(r"^(?:columns?|cols?|headers?|header_row|fields?|field_?names|col_?names|schema)$", re.I)
+
+
+def columnar_rows(node: Any) -> Optional[Tuple[str, List[str]]]:
+    """(rows key, column labels) of a column-oriented table object
+    ({"columns": ["uhid", "name", ..], "data": [[..], [..]]}), else None. One record per inner array."""
+    if not isinstance(node, dict) or len(node) > 200:
+        return None
+    labels = None  # type: Optional[List[str]]
+    for k, v in node.items():
+        if (_COLUMNS_KEY.match(str(k)) and isinstance(v, list) and len(v) >= 2
+                and all(isinstance(x, str) and x.strip() for x in v)):
+            labels = [str(x) for x in v]
+            break
+    if labels is None:
+        return None
+    for k, v in node.items():
+        if (isinstance(v, list) and v and all(isinstance(r, list) for r in v)
+                and all(len(r) <= len(labels) + 1 for r in v)
+                and sum(1 for r in v if len(r) == len(labels)) * 2 >= len(v)):
+            return str(k), labels
+    return None
+
+
 def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, List[Any], Any]],
                    depth: int = 0, homog: bool = False) -> None:
     """Find lists of record objects; arrays nested inside a record are not split."""
@@ -490,7 +538,7 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
     if isinstance(node, list):
         named = bool(keys) and not isinstance(keys[-1], int) and \
             _RECORD_KEY.search(str(keys[-1]).lower()) is not None
-        if node and (any(_is_record(e, keys) for e in node[:50])
+        if node and not _wrapper_list(node, keys) and (any(_is_record(e, keys) for e in node[:50])
                      or (homog and _homogeneous(node, keys))
                      or ((named or (depth == 0 and not ptr)) and all(isinstance(e, dict) for e in node))):
             for i, e in enumerate(node):
@@ -500,6 +548,13 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
             if isinstance(e, (dict, list)):
                 _record_arrays(e, "%s/%d" % (ptr, i), keys, out, depth + 1, homog)
     elif isinstance(node, dict):
+        col = columnar_rows(node)
+        if col is not None:
+            rk, labels = col
+            for i, row in enumerate(node[rk]):
+                out.append(("%s/%s/%d" % (ptr, _ptr(rk), i), keys + [rk],
+                            {labels[j] if j < len(labels) else "": c for j, c in enumerate(row)}))
+            return
         if _keyed_collection(node, keys):
             for k in list(node.keys()):
                 out.append(("%s/%s" % (ptr, _ptr(str(k))), keys, node[k]))
@@ -768,6 +823,59 @@ def _title_line(header: Sequence[Any], rows: Sequence[Sequence[Any]]) -> bool:
     return nlab * 2 >= len(sub) and not any(_cell_class(x) for x in sub)
 
 
+def _nfilled(line: Sequence[Any]) -> int:
+    return sum(1 for c in line if _s(c))
+
+
+def _comment_line(line: Sequence[Any]) -> bool:
+    return bool(line) and _s(line[0]).startswith("#")
+
+
+def _preamble_lines(lines: List[List[Any]]) -> int:
+    """Number of preamble lines (export comment "#...", report titles, run metadata, blank lines)
+    above the real column header, or 0. The header is the first line of three or more filled,
+    digit-free cells that follows only sparse lines (at most two filled cells, or a "#" comment)
+    and is followed by a data line of comparable width."""
+    for h in range(1, min(len(lines) - 1, 12)):
+        before = lines[:h]
+        if not all(_comment_line(x) or _nfilled(x) <= 2 for x in before):
+            return 0
+        if not any(_nfilled(x) for x in before):
+            continue
+        line, nxt = lines[h], lines[h + 1]
+        n = _nfilled(line)
+        if n < 3 or _comment_line(line) or not _digit_free(line):
+            continue
+        if _nfilled(nxt) < 3 or _digit_free(nxt) or n * 10 < _nfilled(nxt) * 6:
+            return 0
+        if sum(1 for x in line if _label_cell(x)) < 2:
+            return 0
+        return h
+    return 0
+
+
+def _footer_lines(lines: List[List[Any]]) -> int:
+    """Trailing footer lines (blank lines and lines of one free-text cell in the first column:
+    "End of report", "Printed by ...", a helpline line) below the data, or 0. Kept in the output
+    but never records."""
+    n = 0
+    seen_text = False
+    for line in reversed(lines[2:]):
+        k = _nfilled(line)
+        if k == 0:
+            n += 1
+            continue
+        first = _s(line[0]) if line else ""
+        if k == 1 and first and len(first.split()) >= 2 and not _cell_class(first):
+            n += 1
+            seen_text = True
+            continue
+        break
+    if not seen_text or len(lines) - n < 2:
+        return 0
+    return n
+
+
 def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
     """(column labels, data rows, header line count) of a parsed CSV.
 
@@ -776,6 +884,13 @@ def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
     the real header. Data row i always has the locator row:i."""
     header = list(pf.header or [])
     rows = [list(r or []) for r in (pf.rows or [])]
+    lines = [header] + rows
+    keep = len(lines) - _footer_lines(lines)
+    if keep < len(lines):
+        header, rows = lines[0], lines[1:keep]
+    pre = _preamble_lines(lines[:keep])
+    if pre:
+        return [_s(x) for x in lines[pre]], lines[pre + 1:keep], pre + 1
     filled = [c for c in header if _s(c)]
     if filled and _first_line_is_data(header, rows):
         return [""] * len(header), [header] + rows, 0
@@ -896,7 +1011,9 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
                         skip.append(n)
             if skip:
                 f.link_skip = skip
-        f.is_patient = file_patient
+        # a row of a log without patient columns (an SMS / message export) whose own text carries a
+        # hospital number is that patient's row
+        f.is_patient = file_patient or any(t.startswith(ID_UHID + ":") for t in f.ids)
         out.append(Record(rel=pf.rel, loc="row:%d" % i, facts=f))
     return out
 
@@ -999,8 +1116,190 @@ def _looks_patient(f: Facts) -> bool:
     return _has_patient_facts(f) or bool(f.names) or bool(f.relatives)
 
 
+# ---------------------------------------------------------------- text tables
+# A .txt that is a table of visits pools several patients in one "doc" record. Three layouts are
+# split one record per row (locator row:N): key=value log lines, repeated "Label: value" blocks and
+# a fixed-width table (header line + dashed rule + aligned rows). Every row must carry a person
+# column (name / hospital number / phone); anything else stays one document.
+
+_KV_PAIR = re.compile(r"(?<![\w.\-])([A-Za-z_][\w.\-]{0,30})=(\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']*)")
+_BLOCK_LINE = re.compile(r"^\s*([A-Za-zऀ-ॿ][^:=\n]{0,30}?)\s*[:=]\s*(.*?)\s*$")
+_RULE_LINE = re.compile(r"^\s*[\-=_*~#.]{3,}\s*$")
+_DASH_GROUPS = re.compile(r"-{2,}")
+_PERSON_COLS = frozenset({F.NAME, F.FIRST_NAME, F.LAST_NAME, F.PATIENT_ID, F.PHONE})
+
+# a table: (labels, rows); a row: (first line, last line, [(label, start, end) absolute cell spans])
+TextTable = Tuple[List[str], List[Tuple[int, int, List[Tuple[str, int, int]]]]]
+
+
+def _line_starts(text: str) -> List[int]:
+    out, pos = [], 0
+    for ln in text.split("\n"):
+        out.append(pos)
+        pos += len(ln) + 1
+    return out
+
+
+def _kv_lines(lines: List[str], starts: List[int]) -> Optional[TextTable]:
+    """Log lines of three or more key=value pairs (comment lines "#..." and blank lines aside)."""
+    rows = []
+    for i, ln in enumerate(lines):
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        ms = list(_KV_PAIR.finditer(ln))
+        if len(ms) < 3:
+            return None
+        cells = []
+        lead = ln[:ms[0].start()].strip()
+        if lead:
+            a = ln.index(lead)
+            cells.append(("", starts[i] + a, starts[i] + a + len(lead)))
+        for m in ms:
+            a, b = m.start(2), m.end(2)
+            v = m.group(2)
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                a, b = a + 1, b - 1
+            if b > a:
+                cells.append((m.group(1), starts[i] + a, starts[i] + b))
+        rows.append((i, i, cells))
+    return ([], rows) if rows else None
+
+
+def _kv_blocks(lines: List[str], starts: List[int]) -> Optional[TextTable]:
+    """Blocks of "Label: value" lines separated by blank lines or rules; a block that is not one
+    may only precede the first or follow the last (title, footer)."""
+    blocks, cur = [], []  # type: List[List[int]], List[int]
+    for i, ln in enumerate(lines):
+        if not ln.strip() or _RULE_LINE.match(ln):
+            if cur:
+                blocks.append(cur)
+            cur = []
+        else:
+            cur.append(i)
+    if cur:
+        blocks.append(cur)
+    rows = []
+    bad_after = False
+    for blk in blocks:
+        cells = []
+        ok = True
+        for i in blk:
+            m = _BLOCK_LINE.match(lines[i])
+            if m is None:
+                ok = False
+                break
+            a, b = m.start(2), m.end(2)
+            if b > a:
+                cells.append((m.group(1).strip(), starts[i] + a, starts[i] + b))
+        if ok and len(blk) >= 3:
+            if bad_after:
+                return None
+            rows.append((blk[0], blk[-1], cells))
+        elif rows:
+            bad_after = True
+    return ([], rows) if rows else None
+
+
+def _fixed_width(lines: List[str], starts: List[int]) -> Optional[TextTable]:
+    """A header line, a rule of dash groups under it and aligned rows until the next blank line."""
+    for h in range(0, min(len(lines) - 2, 40)):
+        rule = lines[h + 1]
+        if not rule.strip() or set(rule.strip()) - set("- "):
+            continue
+        groups = [(m.start(), m.end()) for m in _DASH_GROUPS.finditer(rule)]
+        if len(groups) < 3:
+            continue
+        head = lines[h]
+        spans = []  # type: List[Tuple[int, Optional[int]]]
+        for k, (a, _b) in enumerate(groups):
+            spans.append((a, groups[k + 1][0] if k + 1 < len(groups) else None))
+        labels = [(head[a:b] if b is not None else head[a:]).strip() for a, b in spans]
+        if sum(1 for x in labels if x) < 3:
+            return None
+        rows = []
+        for i in range(h + 2, len(lines)):
+            ln = lines[i]
+            if not ln.strip():
+                break
+            # text running across a column gap: not an aligned row
+            for _a, b in spans:
+                if b is not None and 0 < b < len(ln) and ln[b - 1] != " " and ln[b] != " ":
+                    return None
+            cells = []
+            for (a, b), lb in zip(spans, labels):
+                seg = ln[a:b] if b is not None else ln[a:]
+                v = seg.strip()
+                if v:
+                    off = a + seg.index(v)
+                    cells.append((lb, starts[i] + off, starts[i] + off + len(v)))
+            rows.append((i, i, cells))
+        return (labels, rows) if len(rows) >= 2 else None
+    return None
+
+
+def _text_table_types(text: str, table: TextTable) -> Dict[str, str]:
+    cols = {}  # type: Dict[str, List[str]]
+    for _a, _b, cells in table[1]:
+        for lb, x, y in cells:
+            cols.setdefault(lb, []).append(text[x:y])
+    out = {}  # type: Dict[str, str]
+    for lb in sorted(cols):
+        try:
+            out[lb] = F.classify_column(lb, cols[lb][:500])
+        except Exception:  # noqa: BLE001
+            out[lb] = F.OTHER
+    return out
+
+
+def text_table(text: str) -> Optional[TextTable]:
+    """The rows of a text table (see above), or None."""
+    if not text or len(text) > 2000000:
+        return None
+    lines = text.split("\n")
+    starts = _line_starts(text)
+    for finder, least in ((_kv_lines, 3), (_kv_blocks, 3), (_fixed_width, 2)):
+        try:
+            got = finder(lines, starts)
+        except Exception:  # noqa: BLE001
+            got = None
+        if not got or len(got[1]) < least:
+            continue
+        if finder is not _fixed_width:
+            sets = [frozenset(c[0] for c in r[2]) for r in got[1]]
+            common = frozenset.intersection(*sets)
+            if len(common) < 3 or any(len(common) * 10 < len(x) * 6 for x in sets):
+                continue
+        types = _text_table_types(text, got)
+        if not any(t in _PERSON_COLS for t in types.values()):
+            continue
+        return got
+    return None
+
+
+def _text_table_records(pf: ParsedFile, table: TextTable) -> List[Record]:
+    text = pf.text or ""
+    types = _text_table_types(text, table)
+    orders = {}  # type: Dict[str, str]
+    for lb in types:
+        if types[lb] in (F.DATE, F.DOB):
+            orders[lb] = _date_order([text[x:y] for _a, _b, cs in table[1] for l2, x, y in cs if l2 == lb], lb)
+    text_order = _date_order(_DATEISH.findall(text))
+    out = []
+    for n, (_a, _b, cells) in enumerate(table[1]):
+        fb = _FB()
+        for lb, x, y in cells:
+            put(fb, types.get(lb, F.OTHER), text[x:y], orders.get(lb) or text_order)
+        f = fb.finish()
+        f.is_patient = True
+        out.append(Record(rel=pf.rel, loc="row:%d" % n, facts=f))
+    return out
+
+
 def _text_records(pf: ParsedFile) -> List[Record]:
     text = pf.text or ""
+    table = text_table(text)
+    if table is not None:
+        return _text_table_records(pf, table)
     order = _date_order(_DATEISH.findall(text))
     fb = _FB()
     fb.merge(_text_facts(text, order))
