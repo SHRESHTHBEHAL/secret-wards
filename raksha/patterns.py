@@ -16,18 +16,26 @@ from .types import Span
 
 # ---------------------------------------------------------------- helpers
 
+_DIGIT_TABLE = {cp: str(unicodedata.decimal(chr(cp))) for cp in range(0x0660, 0x20000)
+                if unicodedata.decimal(chr(cp), None) is not None}
+_LAST_ASCII = ["", ""]
+
+
 def _to_ascii_digits(s: str) -> str:
-    """Map every Unicode decimal digit to ASCII, keeping length (private fallback)."""
-    if not s or max(s) < "\u0660":  # nothing to map (the loop below keeps every such character)
+    """Map every Unicode decimal digit to ASCII, keeping length (private fallback). The last long
+    input is remembered, since the history checks ask again for the same text."""
+    if s is _LAST_ASCII[0] or s is _LAST_ASCII[1]:
+        return _LAST_ASCII[1]
+    if not s or max(s) < "\u0660":  # nothing to map
+        if len(s) > 256:
+            _LAST_ASCII[0] = _LAST_ASCII[1] = s
         return s
-    out = []
-    for ch in s:
-        if "0" <= ch <= "9" or ch < "\u0660":
-            out.append(ch)
-            continue
-        d = unicodedata.decimal(ch, None)
-        out.append(str(d) if d is not None else ch)
-    return "".join(out)
+    out = s.translate(_DIGIT_TABLE)
+    if out == s:
+        out = s
+    if len(s) > 256:
+        _LAST_ASCII[0], _LAST_ASCII[1] = s, out
+    return out
 
 
 def _digits(s: str) -> str:
@@ -297,15 +305,27 @@ def _spoken_digits(g: str) -> str:
     return "".join(out)
 
 
+_RE_ANY_DIGIT = re.compile(r"[0-9]")
+
+
 def find_identifiers(text: str) -> List[Span]:
     """PHONE, AADHAAR, AADHAAR_MASKED, ABHA_NUMBER, ABHA_ADDRESS, EMAIL, PAN, INSURANCE_ID."""
     t = _to_ascii_digits(text)
     tl = t.lower()
     c: List[Tuple[int, int, int, str, str]] = []
-    for m in _RE_ABHA_ADDR.finditer(t):
-        c.append((0, m.start(), m.end(), "ABHA_ADDRESS", m.group().lower()))
-    for m in _RE_EMAIL.finditer(t):
-        c.append((1, m.start(), m.end(), "EMAIL", m.group().lower()))
+    if "@" in t:
+        for m in _RE_ABHA_ADDR.finditer(t):
+            c.append((0, m.start(), m.end(), "ABHA_ADDRESS", m.group().lower()))
+        for m in _RE_EMAIL.finditer(t):
+            c.append((1, m.start(), m.end(), "EMAIL", m.group().lower()))
+    if not _RE_ANY_DIGIT.search(t):
+        # every other shape below has an ASCII digit (after the Indic-digit mapping) except spoken numbers
+        for m in (_RE_PHONE_WORDS.finditer(t) if _RE_NUMWORD_HINT.search(tl) else ()):
+            d = _spoken_digits(m.group())
+            words = len(re.findall(r"[A-Za-z]+", m.group()))
+            if len(d) == 10 and d[0] in "6789" and words >= 4:
+                c.append((7, m.start(), m.end(), "PHONE", d))
+        return _resolve(c)
     # insurance: known prefix tokens, or any id-ish token right after an insurance label
     for m in _RE_CODE.finditer(t):
         tok = m.group()
@@ -974,12 +994,13 @@ def _protected_spans(text: str) -> List[Span]:
         if not strong and _RE_WARD_ADDR_CTX.search(_line_before(t, m.start(), 100)):
             continue
         c.append((3, m.start(), m.end(), "WARD", ""))
-    for m in _RE_VITAL.finditer(t):
+    dig = _RE_ANY_DIGIT.search(t) is not None   # vitals, labs, ranges and drug numbers all have digits
+    for m in (_RE_VITAL.finditer(t) if dig else ()):
         if re.search(r"[0-9]", m.group()):
             c.append((4, m.start(), m.end(), "VITAL", ""))
-    for m in _RE_LAB.finditer(t):
+    for m in (_RE_LAB.finditer(t) if dig else ()):
         c.append((5, m.start(), m.end(), "LAB", ""))
-    for m in _RE_RANGE.finditer(t):
+    for m in (_RE_RANGE.finditer(t) if dig else ()):
         a, b = m.group(1), m.group(2)
         if len(a.replace(".", "")) > 5 or len(b.replace(".", "")) > 5:
             continue
@@ -990,7 +1011,7 @@ def _protected_spans(text: str) -> List[Span]:
         c.append((7, m.start(), m.end(), "FREQ", ""))
     for m in _RE_DOSE.finditer(t):
         c.append((8, m.start(), m.end(), "DOSE", ""))
-    for m in _RE_DRUG_NUM.finditer(t):
+    for m in (_RE_DRUG_NUM.finditer(t) if dig else ()):
         w = m.group(1).lower()
         if w in lexicon.CLINICAL_WORDS and w not in _NOT_DRUG:
             c.append((8, m.start(), m.end(), "DOSE", ""))
