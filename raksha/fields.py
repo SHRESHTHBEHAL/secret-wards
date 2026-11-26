@@ -139,7 +139,9 @@ _S = {
                  "machine", "vehicle", "call", "scan", "template", "dlt", "preauth", "gate", "pass",
                  "accession", "barcode", "visit", "voucher", "token", "txn", "transaction", "claim",
                  "request", "booking", "package", "lot", "batch", "serial", "sl", "sno",
-                 "row", "index", "page", "version", "room", "opd"),
+                 "row", "index", "page", "version", "room", "opd", "odo", "odometer", "expiry", "exp",
+                 "gatepass", "preauth", "auth", "approval", "authorisation", "authorization", "scn",
+                 "reagent", "kit", "consignment", "dispatch"),
     "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
                "kramank", "kod", "key"),
     "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
@@ -193,7 +195,9 @@ _S = {
                  "parinam", "vibhag", "vard", "display", "occupied", "cases", "rate", "rr", "hr",
                  "symptom", "symptoms", "treatment", "advice", "findings", "impression", "condition",
                  "allergy", "allergies", "qty", "quantity", "price", "total", "paid", "balance",
-                 "dosha", "outcome", "triage", "severity", "specimen_type", "method", "flag"),
+                 "dosha", "outcome", "triage", "severity", "specimen_type", "method", "flag", "score",
+                 "scores", "scale", "access", "rent", "estimate", "mrp", "tariff", "deposit", "discount",
+                 "copay", "km"),
 }
 
 _VOCAB = frozenset(_squash(w) for ws in _S.values() for w in ws) | frozenset({"of", "ka", "ki", "ke", "s"})
@@ -247,7 +251,8 @@ _EXACT_GROUPS = frozenset({"dateverb", "relation"})
 _EXACT_ONLY = frozenset({"fullname", "firstname", "lastname", "forename", "patientid", "registrationno", "hospid", "uhidno", "regdno", "mrdno", "hospno", "nextofkin", "drname", "fhname", "filename", "freetext", "card", "file", "case", "chart", "record", "member",
                          "place", "jela", "paal", "varsha", "cont", "seen", "joined", "booked", "batch", "serial",
                          "index", "version", "pati", "pita", "mata", "pata", "pin", "pan", "state", "on", "at", "line",
-                         "form", "test", "rate", "inpatient", "apartment", "temp", "case", "note", "text", "file", "fee", "flag"})
+                         "form", "test", "rate", "inpatient", "apartment", "temp", "case", "note", "text", "file", "fee", "flag",
+                         "exp", "odo", "auth", "kit", "rent", "km", "scale", "access", "score"})
 
 
 @lru_cache(maxsize=65536)
@@ -285,6 +290,8 @@ _BY_PRIVATE = frozenset({"raised", "requested", "submitted", "called", "complain
                          "initiated", "opened", "created_for", "paid", "claimed", "accompanied_by_patient"})
 
 _MEMO_LABEL_TYPE = {}  # type: Dict[Any, Any]
+_VISIT_WORDS = frozenset({"enc", "encounter", "episode", "epi", "visit", "encid", "visitid", "episodeid"})
+_ADMIT_WORDS = frozenset({"ipd", "ip", "adm", "admn", "admission", "admit", "inpatient", "bharti", "ipno", "ipdno"})
 
 
 def _label_type(toks: Tuple[str, ...]) -> str:
@@ -301,6 +308,10 @@ def _label_type_impl(toks: Tuple[str, ...]) -> str:
     t = _label_type1(toks)
     if t == OTHER and len(toks) > 1 and not any(c.isdigit() for c in "".join(toks)):
         t = _label_type1(("".join(toks),))      # "Whats App" -> "whatsapp"
+        if t == OTHER:
+            seg = _segment("".join(toks))        # "Pre Auth No" -> "preauth", "no"
+            if seg != toks and len(seg) > 1:
+                t = _label_type1(seg)
     return t
 
 
@@ -321,6 +332,9 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
     if is_id and any(t in ("lab", "labs", "laboratory", "path", "pathology", "radiology") for t in toks) and not (
             h("uhid") or h("patient") or h("idhost")):
         return OTHER_ID        # "Lab Ref", "Lab No": the laboratory's own reference, not the patient's id
+    if is_id and any(t in _VISIT_WORDS for t in toks) and not any(t in _ADMIT_WORDS for t in toks) and not (
+            h("uhid") or h("idhost") or h("name")):
+        return OTHER_ID
     if is_id and h("idhost") and not (h("other_id") or h("name") or h("phone") or h("aadhaar") or h("abha")
                                       or h("pan") or h("insurance") or h("email") or h("date") or h("dob")):
         if h("enc"):
@@ -366,7 +380,9 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         return PHONE
     if h("pin"):
         return PIN
-    # Identifiers.
+    # Identifiers. An encounter / visit / episode id is the visit's own reference, not the patient's.
+    if any(t in _VISIT_WORDS for t in toks) and not any(t in _ADMIT_WORDS for t in toks) and not h("name"):
+        return OTHER_ID
     if h("enc") and not h("name"):
         return ENC_ID
     if h("other_id") and (is_id or len(toks) == 1) and not h("name"):
@@ -482,10 +498,50 @@ def _value_shape(v: str) -> str:
     return hit
 
 
+_INST_SUFFIX = (r"Hospitals?|Hosp\.?|Nursing\s+Home|Clinics?|Polyclinic|Medical\s+College|Institute|Memorial|Trust|"
+                r"Mission|Centre|Center|Diagnostics|Pathology|Labs?|Laborator(?:y|ies)|TPA|Insurance|Assurance|"
+                r"Ward|Wing|Block|Unit|OPD|ICU|Dispensary|Sanatorium|Foundation|Society|Health\s+Services|"
+                r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|नर्सिंग\s+होम|मेडिकल\s+कॉलेज|ट्रस्ट|संस्थान|वार्ड|औषधालय")
+_INST_WORD = r"(?:[A-Z][A-Za-z.'&\-]*|[ऀ-ॿ]+|of|and|&|the|for|de|St\.?)"
+# A capitalised (or Devanagari) run ending in an institution word, optionally followed by a short
+# department name ("... Block Microbiology"): an institution, even when named after a person.
+RE_INSTITUTION = re.compile(r"(?<![A-Za-z0-9ऀ-ॿ])(?:[A-Z][A-Za-z.'&\-]*|[ऀ-ॿ]+)(?:\s+%s){0,7}?\s+(?:%s)"
+                            r"(?:\s+[A-Z][a-z]+){0,2}(?![A-Za-z0-9ऀ-ॿ])" % (_INST_WORD, _INST_SUFFIX))
+# Unit-like suffixes that also name places ("<name> Block" is a tehsil, "Ward 5" a locality).
+_PLACE_SUFFIX = re.compile(r"(?:^|\s)(?:Ward|Wing|Block|Unit|वार्ड)(?:\s+[A-Z][a-z]+){0,2}$")
+
+
+def is_institution(v: Any) -> bool:
+    """A whole value that names a hospital, clinic, lab, insurer, TPA or a ward / block of one."""
+    if not isinstance(v, str):
+        return False
+    s = v.strip()
+    if not s or len(s) > 90 or any(c.isdigit() for c in to_ascii_digits(s)) or "," in s or "@" in s:
+        return False
+    if not RE_INSTITUTION.fullmatch(s):
+        return False
+    pm = _PLACE_SUFFIX.search(s)
+    if pm and len(s[:pm.start()].split()) < 2:
+        return False             # "<village> Block" is a tehsil, not an institution
+    return True
+
+
+def is_place_unit(v: Any) -> bool:
+    return isinstance(v, str) and bool(_PLACE_SUFFIX.search(v.strip()))
+
+
+_MED_TAIL = frozenset({"scale", "score", "syndrome", "disease", "sign", "test", "repair", "procedure",
+                       "operation", "criteria", "index", "classification", "reflex", "phenomenon", "manoeuvre",
+                       "maneuver", "triad", "fracture", "palsy", "tumour", "tumor", "ulcer", "abdomen", "law",
+                       "staging", "grading", "regimen", "protocol", "point", "tenderness"})
+
+
 def _value_shape_impl(v: str) -> str:
     s = v.strip()
     if not s:
         return ""
+    if is_institution(s):
+        return HOSPITAL
     low = s.casefold()
     if _RE_EMAIL.match(s):
         return EMAIL
@@ -544,7 +600,8 @@ def _value_shape_impl(v: str) -> str:
     if 2 <= len(toks) <= 4 and len(s) <= 48 and all(_NAME_TOKEN.match(t) for t in toks):
         words = [t.strip(".'-").casefold() for t in toks]
         cased = all(t[0].isupper() or is_deva(t) for t in toks) or s.islower() and len(toks) <= 3
-        if cased and not any(w in CLINICAL_WORDS for w in words) and sum(1 for w in words if len(w) >= 2) >= 2:
+        if cased and not any(w in CLINICAL_WORDS for w in words) and sum(1 for w in words if len(w) >= 2) >= 2 \
+                and words[-1] not in _MED_TAIL:
             return NAME
     return ""
 
@@ -566,7 +623,7 @@ def _shares(values: Sequence[Any]) -> Tuple[int, dict]:
 
 
 _VALUE_ORDER = (EMAIL, ABHA_ADDR, PAN, AADHAAR, ABHA, PHONE, PIN, DATE, AGE_SEX, AGE, GENDER,
-                RELATION, DOCTOR, NAME)
+                RELATION, DOCTOR, HOSPITAL, NAME)
 
 
 def _code_vote(values: Sequence[Any], threshold: float = 0.8) -> str:
@@ -624,6 +681,11 @@ def _combine(lt: str, vt: str) -> str:
         if lt in (DOB, DATE, CLINICAL, FREE_TEXT, AGE):
             return lt
         return DATE
+    if vt == HOSPITAL:
+        if lt in (NAME, FIRST_NAME, LAST_NAME, LOCAL_NAME, OTHER, PATIENT_ID, INSURANCE, CLINICAL, RELATIVE,
+                  FREE_TEXT, OTHER_ID, DOCTOR):
+            return HOSPITAL
+        return lt
     if lt == OTHER:
         return vt
     if lt in (NAME, FIRST_NAME, LAST_NAME) and vt == DOCTOR:
@@ -650,6 +712,39 @@ def code_column_type(label: str, values: Sequence[Any]) -> str:
                                                             "episode", "inpatient") for t in toks)):
         return ENC_ID
     return v
+
+
+_RE_REL_VALUE = re.compile(r"^\s*(?:[SDWCH]\s*/\s*O|son\s+of|daughter\s+of|wife\s+of|husband\s+of)\b\.?\s*\S", re.I)
+_RE_PLACE_VALUE = re.compile(r"^(?:[A-Z][a-z'.\-]+|[ऀ-ॿ]+)(?:\s+(?:[A-Z][a-z'.\-]+|[ऀ-ॿ]+)){0,2}$")
+
+
+def _share(values: Sequence[Any], rx: "re.Pattern[str]") -> float:
+    vals = [str(v).strip() for v in values if v is not None and str(v).strip()]
+    if not vals:
+        return 0.0
+    return sum(1 for v in vals if rx.match(v)) / float(len(vals))
+
+
+def refine_unlabelled(labels: Sequence[str], types: List[str], columns: Sequence[Sequence[Any]]) -> List[str]:
+    """Columns with no header, typed by value shape and neighbours: "S/o <name>" values are a
+    RELATIVE; of two short place-like columns just before a PIN column the first is the VILLAGE."""
+    out = list(types)
+    blank = lambda i: i < 0 or i >= len(labels) or not str(labels[i] or "").strip()  # noqa: E731
+    for i, t in enumerate(out):
+        if blank(i) and t in (OTHER, NAME) and i < len(columns) and _share(columns[i], _RE_REL_VALUE) >= 0.6:
+            out[i] = RELATIVE
+    for j, t in enumerate(out):
+        if t != PIN:
+            continue
+        run = []
+        k = j - 1
+        while k >= 0 and len(run) < 2 and blank(k) and out[k] in (OTHER, NAME) and k < len(columns) \
+                and _share(columns[k], _RE_PLACE_VALUE) >= 0.6:
+            run.append(k)
+            k -= 1
+        if len(run) == 2:
+            out[run[1]] = VILLAGE      # the column next to the PIN (the district) is left as it is
+    return out
 
 
 def classify_column(label: str, values: Sequence[Any]) -> str:
@@ -811,6 +906,8 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
             return CLINICAL
         if vh == DOCTOR:
             return DOCTOR
+        if vh == HOSPITAL:
+            return HOSPITAL
         if isinstance(value, str) and is_deva(value) and _has(toks, "local"):
             return LOCAL_NAME
         return NAME
@@ -878,4 +975,4 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
         return OTHER
     if lt == OTHER:
         return vh if vh in _STRONG else OTHER
-    return _combine(lt, vh if vh in (_STRONG | {DATE, DOCTOR, AGE_SEX}) else "")
+    return _combine(lt, vh if vh in (_STRONG | {DATE, DOCTOR, AGE_SEX, HOSPITAL}) else "")
