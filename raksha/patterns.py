@@ -169,6 +169,10 @@ _RE_PHONE = re.compile(
     r"[6-9](?:" + _SEP + r"?[0-9]){9}(?![0-9A-Za-z])"
 )
 _RE_PHONE_PLUS = re.compile(r"\+91[0-9]{10}(?![0-9])")
+# "+971 50 318 2264", "+44 7700 900123": any other country code, 7-12 digits in groups
+_RE_PHONE_INTL = re.compile(r"(?<![0-9A-Za-z+])\+(?!91)[1-9][0-9]{0,2}(?:[ \t.\-]?[0-9]){7,12}(?![0-9A-Za-z])")
+# "(04576) 262418", "(011) 2345 6789": STD code in brackets
+_RE_PHONE_STD = re.compile(r"(?<![0-9A-Za-z])\(0[1-9][0-9]{1,4}\)[ \t\-]?[2-9][0-9]{1,3}[ \t\-]?[0-9]{2,4}(?![0-9A-Za-z])")
 # "+91 (98765) 43210", "(98765) 43210", "0091 (98765)-43210"
 _RE_PHONE_PAREN = re.compile(r"(?<![0-9A-Za-z+])(?:(?:\+|00)[ \t]?91[ \t.\-]*)?\([ \t]?[6-9][0-9]{4}[ \t]?\)"
                              r"[ \t.\-]?[0-9]{5}(?![0-9A-Za-z])")
@@ -234,6 +238,26 @@ _RE_AADHAAR_LAST4 = re.compile(
     r"|(?:last|ending)\s+(?:four|4)\s+(?:digits?\s+)?(?:of\s+(?:my\s+|her\s+|his\s+)?aadhaa?r\s+)?(?:is\s+|are\s+)?(?<![0-9])([0-9]{4})(?![0-9])", re.I)
 
 
+# a mobile read out in number words, possibly finished in digits: "nau-aath-ek-chhe-shunya, 43725"
+_NUM_WORDS = {"shunya": "0", "shoonya": "0", "sunya": "0", "zero": "0", "ek": "1", "one": "1", "do": "2", "two": "2",
+              "teen": "3", "tin": "3", "three": "3", "char": "4", "chaar": "4", "four": "4", "paanch": "5", "panch": "5",
+              "five": "5", "chhe": "6", "chhah": "6", "che": "6", "six": "6", "saat": "7", "sat": "7", "seven": "7",
+              "aath": "8", "ath": "8", "eight": "8", "nau": "9", "no": "9", "nine": "9"}
+_NW = r"(?:" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")"
+_RE_PHONE_WORDS = re.compile(r"(?<![A-Za-z])" + _NW + r"(?:[ \t]*[\-,][ \t]*|[ \t]+)(?:" + _NW +
+                             r"(?:[ \t]*[\-,][ \t]*|[ \t]+))+(?:" + _NW + r"|[0-9]{1,8})(?![A-Za-z0-9])", re.I)
+
+
+_RE_NUMWORD_HINT = re.compile(r"shunya|shoonya|sunya|zero|aath|chhe|paanch|saat|nine|eight|seven|teen|char")
+
+
+def _spoken_digits(g: str) -> str:
+    out = []
+    for w in re.findall(r"[A-Za-z]+|[0-9]+", g):
+        out.append(_NUM_WORDS.get(w.lower(), w if w.isdigit() else ""))
+    return "".join(out)
+
+
 def find_identifiers(text: str) -> List[Span]:
     """PHONE, AADHAAR, AADHAAR_MASKED, ABHA_NUMBER, ABHA_ADDRESS, EMAIL, PAN, INSURANCE_ID."""
     t = _to_ascii_digits(text)
@@ -273,11 +297,21 @@ def find_identifiers(text: str) -> List[Span]:
         c.append((5, m.start(), m.end(), "AADHAAR", g))
     for m in _RE_PAN.finditer(t):
         c.append((6, m.start(), m.end(), "PAN", m.group().upper()))
+    for rx in (_RE_PHONE_INTL, _RE_PHONE_STD):
+        for m in rx.finditer(t):
+            d = _digits(m.group())
+            if 9 <= len(d) <= 14 and not _phone_vetoed(t, tl, m.start()):
+                c.append((7, m.start(), m.end(), "PHONE", d))
     for rx in (_RE_PHONE_PLUS, _RE_PHONE, _RE_PHONE_PAREN, _RE_PHONE_WRAP):
         for m in rx.finditer(t):
             p = norm_phone(m.group())
             if p and not _phone_vetoed(t, tl, m.start()):
                 c.append((7, m.start(), m.end(), "PHONE", p))
+    for m in (_RE_PHONE_WORDS.finditer(t) if _RE_NUMWORD_HINT.search(tl) else ()):
+        d = _spoken_digits(m.group())
+        words = len(re.findall(r"[A-Za-z]+", m.group()))
+        if len(d) == 10 and d[0] in "6789" and words >= 4:
+            c.append((7, m.start(), m.end(), "PHONE", d))
     for m in _RE_LANDLINE.finditer(t):
         if not _phone_vetoed(t, tl, m.start()):
             c.append((8, m.start(), m.end(), "PHONE", _digits(m.group())))
@@ -305,7 +339,9 @@ _RE_NON_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:bill|invoice|inv|receipt|rcpt|sample|specimen|visit|package|pkg|txn|transaction|"
     r"order|token|barcode|claim|voucher|accession|ticket|batch|lot|payment|बिल|रसीद|नमूना|"
     r"lab\s*(?:no|ref|id|number|#|accession)|(?<!patient )(?<!pt )ref(?:erence)?\.?\s*(?:no|number|#)|cyto(?:logy)?\s*no|"
-    r"trip\s*(?:id|no)|mlc|mlr|ml\s*no|certificate|cert|film|slide|room|ext|extn)(?![a-z])"
+    r"trip\s*(?:id|no)|mlc|mlr|ml\s*no|certificate|cert|film|slide|room|ext|extn|"
+    r"pre-?\s*auth(?:ori[sz]ation)?|approval|rejection|letter|fir|gd|session|consultation|"
+    r"(?<!patient )(?<!pt )ref(?:erence)?\.?\s*[:#]|call\s*ref|complaint|vehicle|ambulance|utr|bag)(?![a-z])"
 )
 _RE_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:uhid|mrn|mr\s*no|cr\s*no|hosp(?:ital)?[\s_]*(?:no|id|uhid)|patient[\s_]*(?:id|no|ref)|"
@@ -341,6 +377,13 @@ def _underscore_id(tok: str) -> bool:
 
 
 _RE_FILE_EXT = re.compile(r"\.(?:txt|csv|tsv|json|pdf|xml|html?|log|md|docx?|xlsx?|jpe?g|png)$", re.I)
+
+
+# an OP / IP / UHID segment inside the id itself marks a patient number whatever label precedes it
+_RE_PID_SEGMENT = re.compile(r"(?:^|[/\-])(?:OP|IP|OPD|IPD|UHID|MRN|MRD)(?:[/\-])", re.I)
+# a patient / mother-child tracking number written in spaced digit groups: "MCTS 32 045 0091 7745 2"
+_RE_SPACED_PID = re.compile(r"(?<![A-Za-z])(?:MCTS|RCH|UHID|MRN|MRD|CR[ \t]*No\.?|IP[ \t]*No\.?|Reg(?:n|d)?\.?[ \t]*No\.?)"
+                            r"[ \t]*[:#\-]?[ \t]*([0-9]{2,6}(?:[ ][0-9]{1,6}){2,5})(?![0-9A-Za-z])", re.I)
 
 
 def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
@@ -390,7 +433,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
         if _RE_HEXISH.search(tok) or (len(tok) > 24 and not re.search(r"[\-/._]", tok)):
             continue                                                 # uuid / hash / base64 run
         seg = _segment_before(tl, ms, 40)
-        if _RE_NON_PATIENT_LABEL.search(seg):
+        if _RE_NON_PATIENT_LABEL.search(seg) and not _RE_PID_SEGMENT.search(tok):
             continue
         if re.match(r"(?:mob|mobile|ph|phone|tel|cell|call|contact)$", lead, re.I):
             continue
@@ -399,6 +442,9 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
         if after_label_only and not labelled:
             continue
         out.append((0, ms, me, "MRN", norm_id(tok)))
+    for m in _RE_SPACED_PID.finditer(t):
+        if len(_digits(m.group(1))) >= 8:
+            out.append((0, m.start(1), m.end(1), "MRN", _digits(m.group(1))))
     # bare digit numbers right after an explicit patient-id label
     for m in _RE_DIGIT_TOKEN.finditer(t):
         seg = _segment_before(tl, m.start(), 40)
@@ -414,7 +460,8 @@ _ADDR_CUE_RX = re.compile(
         re.escape(c) for c in sorted(lexicon.ADDRESS_CUES, key=len, reverse=True) if len(c) >= 3
     ) + r")(?![a-z])"
 )
-_RE_PIN = re.compile(r"(?<![0-9A-Za-z.,/:\-])[1-9][0-9]{5}(?![0-9A-Za-z]|[.,/:][0-9])")
+_RE_PIN = re.compile(r"(?<![0-9A-Za-z.,/:\-])[1-9][0-9]{5}(?![0-9A-Za-z]|[.,/:][0-9]|-[0-9A-Za-z])")
+_RE_TOWN_BEFORE = re.compile(r",[ \t]*(?:[A-Z][a-z]+[ \t]+)?([A-Z][a-z]{2,})[ \t]*[\-,]?[ \t]*$")
 _RE_PIN_SPACED = re.compile(r"(?<![0-9A-Za-z])[1-9][0-9]{2} [0-9]{3}(?![0-9A-Za-z])")
 _RE_UNIT_AFTER = re.compile(r"\s*(?:/|per\b|cells|lakh|mg|ml|iu|u/l|units?|rs|inr|₹|%|x\s*10)", re.I)
 _RE_MONEY_BEFORE = re.compile(r"(?:rs\.?|inr|₹|amount|amt|total|paid|fee|charges?|cost|price|count|wbc|platelets?)[\s:=]*$", re.I)
@@ -438,6 +485,10 @@ def find_pins(text: str) -> List[Span]:
                 ok = True
             if not ok and _ADDR_CUE_RX.search(before):
                 ok = True
+            if not ok:
+                tm = _RE_TOWN_BEFORE.search(t, max(0, s - 60), s)
+                if tm and tm.group(1).lower() not in lexicon.CLINICAL_WORDS:
+                    ok = True                 # "..., Vallabh Nagar, Anand 388120": a PIN closing an address
             if ok:
                 out.append(Span(s, e, "PIN", _digits(m.group())))
     out.sort(key=lambda sp: (sp.start, sp.end))
@@ -461,7 +512,9 @@ _RE_DOCTOR = re.compile(
 
 _UNITS = (r"(?:mg/dl|mg/dL|g/dl|g/dL|mmol/l|mmol/L|meq/l|mEq/L|iu/l|IU/L|u/l|U/L|ng/ml|ng/mL|pg/ml|pg/mL|"
           r"µiu/ml|uIU/mL|µIU/mL|/uL|/ul|/µL|/cumm|/mm3|cells/cumm|/hpf|lakh(?:s)?(?:/cumm)?|x\s*10\^?\d+/[uµ]?L|"
-          r"mmHg|mm\s*Hg|fl|fL|pg|sec|%|mm/hr|mm/1st\s*hr|gm/dl|gm%|g%)")
+          r"mmHg|mm\s*Hg|fl|fL|pg|sec|%|mm/hr|mm/1st\s*hr|gm/dl|gm%|g%|"
+          r"ग्राम[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्रा\.?[ \t]*/[ \t]*डी\.?[ \t]*एल\.?|ग्राम[ \t]*प्रतिशत|ग्राम%|"
+          r"मि\.?[ \t]*ग्रा\.?(?:[ \t]*/[ \t]*डी\.?[ \t]*एल\.?)?|मिग्रा|मि\.?[ \t]*ली\.?|मिली|मिमी[ \t]*पारा|प्रति[ \t]*मिनट)")
 _DOSE_UNITS = r"(?:mg|mcg|µg|ug|gm|g|ml|mL|iu|IU|units?|U|meq|mEq|mmol|%|puffs?|drops?|tabs?|caps?)"
 _FORMS = r"(?:tab|tabs|tablet|cap|caps|capsule|inj|injection|syp|syr|syrup|susp|oint|cream|gel|drops?|neb|inh|sachet|lotion|iv|im)"
 _RE_DOSE = re.compile(
@@ -547,7 +600,7 @@ _RE_EPONYM2 = re.compile(
     r"(?![A-Za-z])")
 # government schemes and programmes named after people or ordinary words
 _RE_SCHEME = re.compile(
-    r"(?<![A-Za-z])(?:(?:[A-Z][a-z]+[ \t]+){0,3}(?:Yojana|Yojna|Abhiyan|Abhiyaan)|Mission[ \t]+[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?|"
+    r"(?<![A-Za-z])(?:(?:[A-Z][a-z]+[ \t]+){0,3}(?:Yojana|Yojna|Abhiyan|Abhiyaan)|(?:[A-Z][a-z]+[ \t]+){1,2}(?:Vahan|Vahini|Vahika)|Mission[ \t]+[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?|"
     r"Ayushman[ \t]+Bharat(?:[ \t]+[A-Z][A-Za-z\-]+)?|Janani[ \t]+Suraksha|Nikshay(?:[ \t]+Poshan)?)(?![A-Za-z])"
     r"|(?:[ऀ-ॿ]+[ \t]+){0,3}(?:योजना|अभियान)(?![ऀ-ॿ])|(?:आयुष्मान[ \t]+भारत|निक्षय|महात्मा[ \t]+फुले)(?:[ \t]+[ऀ-ॿ]+){0,3}")
 _RE_ASHA = re.compile(
@@ -562,6 +615,146 @@ _RE_HIST_MARK = re.compile(
     re.I,
 )
 _RE_HIST_END = re.compile(r"(?:\.(?![0-9])|[;\n\r\t|,\"।]|\s+(?:mob|mobile|ph|phone|contact|tel)\b|$)", re.I)
+
+
+# ---- generalised eponym shield: "<Name> [<Name>] <scale / score / prosthesis / ...>"
+EPONYMS = frozenset(w.lower() for w in """
+Apgar Glasgow Barthel Berg Ashworth Braden Morse Norton Waterlow Ramsay Richmond Mallampati Child-Pugh Child Pugh
+Ranson Wells Framingham Lake-Louise Louise Bishop Ballard Silverman Downes Tanner Gleason Breslow Clark Dukes
+Ann-Arbor Arbor Bethesda Bosniak Fisher Hunt-Hess Hunt Hess Killip Kellgren-Lawrence Kellgren Lawrence Garden
+Gartland Salter-Harris Salter Harris Neer Schatzker Gustilo Anderson Austin-Moore Moore Thompson Kirschner Steinmann
+Ilizarov Thomas Denis-Browne Browne Foley Ryle Swan-Ganz Sengstaken Blakemore Hickman Seldinger Heimlich Valsalva
+Trendelenburg Fowler Sims McBurney Pfannenstiel Kocher Whipple Hartmann Billroth Roux Nissen Heller Lichtenstein
+Shouldice Bassini Burch Wertheim Bartholin Papanicolaou Ziehl-Neelsen Ziehl Neelsen Mantoux Widal Weil-Felix Weil
+Felix Coombs Romberg Babinski Kernig Brudzinski Murphy Rovsing Homans Tinel Phalen Lachman McMurray Trousseau
+Chvostek Cushing Addison Graves Hashimoto Crohn Hodgkin Non-Hodgkin Parkinson Alzheimer Bell Down Turner Marfan
+Kawasaki Guillain-Barre Guillain-Barré Guillain Barre Barré Stevens-Johnson Stevens Johnson Wilson Paget Raynaud
+Sjogren Sjögren Behcet Behçet Reiter Still Pott Colles Smith Monteggia Galeazzi Bennett Jones Lisfranc Barton
+Jefferson Hangman Maisonneuve Rolando Chopart Hoehn Yahr Karnofsky ECOG Mini-Mental Folstein Hamilton Beck Likert
+Wong-Baker Wong Baker Lund Browder Rule Parkland Brooke Cockcroft-Gault Cockcroft Gault Friedewald Henderson
+Hasselbalch Starling Frank Poiseuille Laplace Duke Jones Centor McIsaac Alvarado Rockall Blatchford Glasgow-Blatchford
+Forrest Balthazar Marshall Atlanta Rome Manning Bristol Kayser-Fleischer Kayser Fleischer Argyll Robertson Horner
+Holmes Adie Marcus Gunn Battle Cullen Grey-Turner Kehr Courvoisier Virchow Troisier Sister Joseph Osler Janeway Roth
+Quincke Corrigan Duroziez Traube Austin-Flint Flint Kussmaul Cheyne-Stokes Cheyne Stokes Biot Beck Ortner Pemberton
+Kanavel Finkelstein Allen Adson Spurling Lhermitte Hoffmann Gower Gowers Ober Patrick FABER Thomas Trendelenburg
+Ortolani Barlow Galeazzi Perthes Legg-Calve-Perthes Calve Osgood-Schlatter Osgood Schlatter Sever Kienbock Kienböck
+Preiser Freiberg Kohler Köhler Scheuermann Sprengel Klippel-Feil Klippel Feil Erb Klumpke Volkmann Sudeck Charcot
+Dupuytren Ledderhose Peyronie Baker Morton Heberden Bouchard Tietze Mondor Buerger Takayasu Wegener Churg-Strauss
+Henoch-Schonlein Henoch Schonlein Kaposi Burkitt Ewing Wilms Krukenberg Brenner Meigs Sertoli Leydig Hurthle Hürthle
+Reed-Sternberg Sternberg Langerhans Kupffer Purkinje Schwann Auer Howell-Jolly Howell Jolly Heinz Russell Mallory
+Councilman Aschoff Negri Lewy Pick Hirano Call-Exner Psammoma Charcot-Leyden Leyden Curschmann Rokitansky Meckel
+Zenker Barrett Mallory-Weiss Boerhaave Plummer-Vinson Plummer Vinson Schatzki Hirschsprung Ogilvie Dieulafoy
+Menetrier Ménétrier Zollinger-Ellison Zollinger Ellison Gilbert Crigler-Najjar Crigler Najjar Dubin-Johnson Dubin
+Rotor Budd-Chiari Budd Chiari Wernicke Korsakoff Broca Bell Todd Jacksonian Lennox-Gastaut Lennox Gastaut West
+Dravet Rett Tourette Huntington Friedreich Charcot-Marie-Tooth Duchenne Becker Erb Guyon Volkmann Bankart Hill-Sachs
+Hill Sachs Monteggia Essex-Lopresti Lauge-Hansen Weber Danis Tscherne Gustilo-Anderson Sanders Hawkins Garden Pauwels
+Evans Seinsheimer Winquist Schatzker Tile Young-Burgess Letournel Judet Denis Frankel ASIA Nurick Japanese Oswestry
+Constant Harris Lysholm Tegner WOMAC Kapandji Jebsen Purdue Fugl-Meyer Fugl Meyer Brunnstrom Rivermead Tinetti
+Timed Snellen Jaeger Ishihara Amsler Schirmer Goldmann Tonometry Rinne Weber Schwabach Dix-Hallpike Hallpike Epley
+Caloric Mallampati Cormack-Lehane Cormack Lehane Macintosh Miller Magill Guedel Ambu Bain Mapleson Jackson-Rees
+Rees Boyle Venturi Hudson Bird Starling Gram Giemsa Leishman Wright Field Romanowsky Masson Perls Congo Alcian
+Grocott Warthin-Starry Warthin Starry Fontana Gomori Papanicolaou Pap Kleihauer Ham Schilling Coombs Paul-Bunnell
+Monospot Elek Schick Dick Casoni Frei Tzanck Nikolsky Auspitz Koebner Darier Wickham Kerley Westermark Hampton
+Fleischner Golden Spalding Robert Hegar Chadwick Goodell Jacquemier Braxton-Hicks Braxton Hicks Naegele Leopold
+Pawlik Pinard Bandl Montgomery Mauriceau Lovset Burns-Marshall Ritgen Kielland Simpson Wrigley Shirodkar McDonald
+Pomeroy Irving Uchida Madlener Cesarean Joel-Cohen Misgav-Ladach Pfannenstiel Maylard Cherney Lanz Rutherford
+Kocher Mercedes Chevron Battle Rockey-Davis Rockey Davis Gridiron Lord Jaboulay Milligan-Morgan Milligan Morgan
+Longo Ferguson Parks Goodsall Hartmann Roux-en-Y Kasai Duhamel Swenson Soave Ramstedt Ladd Nuss Ravitch Malgaigne
+Tenckhoff Quinton Permcath Groshong Broviac Hickman Port-a-Cath Sengstaken-Blakemore Minnesota Linton Levin Salem
+Malecot Pezzer Nelaton Coude Tiemann Councill Silastic Kehr Penrose Jackson-Pratt Redivac Romovac Hemovac Blake
+Pigtail Malecot Babcock Allis Kocher Mosquito Halsted Kelly Crile Mayo Metzenbaum Langenbeck Deaver Morris Doyen
+Balfour Gelpi Weitlaner Volkmann Hohmann Bennett Cobb Kerrison Gigli Liston Lane Lambotte Verbrugge Steinmann
+Kirschner Kuntscher Küntscher Ender Rush Gamma Russell-Taylor Dynamic Condylar DHS DCS Herbert Acutrak Bohler Böhler
+Braun Thomas Bohler-Braun Denis-Browne Milwaukee Boston Jewett Taylor Knight Philadelphia Minerva Halo Aspen Miami
+Sarmiento Gallows Hamilton-Russell Bryant Buck Dunlop Perkins Charnley Exeter Muller Thompson Moore Bipolar Unipolar
+Bateman Hastings Neer Copeland Swanson Silastic Starr-Edwards Starr Edwards Bjork-Shiley Bjork Shiley Carpentier
+Hancock Medtronic Palmaz Wallstent Greenfield Fogarty Swan Ganz Pulmonary Dotter Judkins Amplatz Sones Cournand
+Seldinger Tuohy Quincke Whitacre Sprotte Veress Hasson Verres Tru-Cut Menghini Jamshidi Klima Salah Chiba Cope
+""".replace("-", " ").split()) | frozenset(w.lower() for w in """
+Child-Pugh Hunt-Hess Kellgren-Lawrence Salter-Harris Swan-Ganz Ziehl-Neelsen Weil-Felix Guillain-Barre Stevens-Johnson
+Austin-Moore Denis-Browne Wong-Baker Cockcroft-Gault Kayser-Fleischer Cheyne-Stokes Mallory-Weiss Reed-Sternberg
+""".split())
+# tails after which a capitalised run is a named instrument whatever the run is
+_EP_STRONG = (r"scales?|scores?|scoring|index|indices|classification|criteria|staging|prosthesis|prostheses|implant|"
+              r"manoeuvre|maneuver|technique|incision|flap|graft|splint|brace|forceps|retractor|clamp|stent|catheter|"
+              r"syndrome|reflex|balance|questionnaire|inventory|scoring[ \t]+system|grading[ \t]+system|nomogram")
+# tails that need the run to hold a known eponym ("Ramesh type 2 DM" stays a person)
+_EP_WEAK = (r"grade|grading|type|test|sign|method|procedure|operation|repair|approach|nail|plate|screw|cast|traction|"
+            r"tube|drain|needle|valve|pouch|gait|position|view|projection|fracture|dislocation|deformity|contracture|"
+            r"disease|disorder|anomaly|tumou?r|sarcoma|lymphoma|cells?|bodies|body|nodes?|nodules?|spots|lines?|law|"
+            r"formula|equation|rule|protocol|regimen|stage|level|point|triad|phenomenon|palsy|ulcer|cyst|space|"
+            r"pump|tonometer|stain|staining|reaction|maneuvre|bag|mask|circuit|blade|laryngoscope|chart|ratio")
+_EP_RUN = r"(?:[A-Z][A-Za-zéèöüçä]+(?:[\-][A-Z]?[A-Za-zéèöüçä]+)*)"
+# tail first (cheap), then the capitalised run just before it
+_RE_EP_TAIL = re.compile(r"(?<=[ \t])(?:(" + _EP_STRONG + r")|(" + _EP_WEAK + r"))(?![A-Za-z])", re.I)
+_RE_EP_BACK = re.compile(
+    r"(?<![A-Za-z])((?:(?:Modified|Revised|New|Simplified|Mod\.|Extended|Paediatric|Pediatric)[ \t]+)?"
+    + _EP_RUN + r"(?:'s|’s)?(?:[ \t]+(?:and|&)[ \t]+" + _EP_RUN + r"|[ \t]+" + _EP_RUN + r"){0,2})[ \t]+\Z")
+_RE_EP_MOD = re.compile(r"(?<![A-Za-z])(?:Modified|Revised|Simplified|Mod\.)[ \t]+(" + _EP_RUN + r")(?![A-Za-z])")
+_EP_RUN_TOK = re.compile(r"[A-Za-zéèöüçä]+")
+
+
+def _eponym_spans(t: str) -> List[Tuple[int, int]]:
+    out = []
+    for m in _RE_EP_TAIL.finditer(t):
+        lo = max(0, m.start() - 70, t.rfind("\n", 0, m.start()) + 1)
+        b = None
+        win = t[lo:m.start()]
+        for k in range(len(win)):           # earliest start whose run reaches the tail
+            if win[k].isupper() and (k == 0 or not win[k - 1].isalpha()):
+                b = _RE_EP_BACK.match(win, k)
+                if b:
+                    break
+        if not b:
+            continue
+        run = b.group(1)
+        if not run[:1].isupper() or not all(w[:1].isupper() for w in run.replace("&", " ").split()
+                                             if w.lower() not in ("and",)):
+            continue
+        words = [w.lower() for w in _EP_RUN_TOK.findall(run)]
+        if not m.group(1) and not any(w in EPONYMS for w in words):
+            continue                      # a weak tail needs a known eponym in the run
+        out.append((lo + b.start(), m.end()))
+    for m in _RE_EP_MOD.finditer(t):
+        if m.group(1).lower() in EPONYMS:
+            out.append((m.start(), m.end()))
+    return out
+
+
+# ---- drug brands: "<Brand> Plus", "<Brand>-AT", "<Brand> 125 mg", "Tab. <Brand>"
+_BRAND_SFX = r"(?:Plus|Forte|DS|SR|XR|ER|XL|LA|MR|CR|CV|OD|Gold|Duo|Trio|Kid|Kids|Junior|Total|Max|Neo|Z)"
+_RE_BRAND = re.compile(
+    r"(?<![A-Za-z])[A-Z][a-z]{2,}(?:[ \t]+" + _BRAND_SFX + r"|-(?:[A-Z]{1,3}|" + _BRAND_SFX + r"))(?![A-Za-z])"
+    r"(?:[ \t]*[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*(?:mg|mcg|µg|g|gm|ml|mL|IU|iu|%))?"
+    r"|(?<![A-Za-z])[A-Z][A-Za-z]{2,}(?:-[A-Z0-9]{1,3})?[ \t]+[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?[ \t]*"
+    r"(?:mg|mcg|µg|gm|ml|mL|IU|iu)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:Tab|Cap|Inj|Syp|Syr|Susp|Oint|Rotacap|Respule|Respules|Sachet|Supp|T|C|I)\.[ \t]*[A-Z][A-Za-z]{2,}"
+    r"(?:-[A-Z0-9]{1,3})?(?![A-Za-z])")
+_BRAND_NOT = frozenset("""
+mr mrs ms dr shri smt sri kumar kumari devi singh age aged ward bed room day days dose total
+""".split())
+
+# ---- institutions written in Hinglish / Hindi, and community health roles
+_RE_ASPATAL = re.compile(
+    r"(?<![A-Za-z])(?:(?:Sadar|Zila|Jila|Zilla|Anumandal|Anumandaliya|Upmandal|Up-mandal|Mahila|Bal|Referral|Rajkiya|"
+    r"Sarkari|Sarkaari|Samudayik|Prathmik|Prathamik|Upkhand|Prakhand|Rafral|Taluka|Taluk|Civil|District|Sub-?divisional)"
+    r"[ \t]+)+(?:Aspatal|Aspataal|Hospital|Swasthya[ \t]+Kendra|Chikitsalaya)(?:[ \t]+(?!(?:mein|me|se|ko|ka|ki|ke|le|pe|par)\b)[A-Z][a-z]+)?"
+    r"|(?<![A-Za-z])(?:PHC|CHC|SDH|UPHC|HWC|AAM|HSC|CHC/FRU|FRU)[ \t]+[A-Z][a-z]{2,}(?![A-Za-z])")
+_HI_INST = (r"(?:चिकित्सा[ \t]+महाविद्यालय|मेडिकल[ \t]+कॉलेज|चिकित्सालय|अस्पताल|उप[ \t]+स्वास्थ्य[ \t]+केंद्र|"
+            r"सामुदायिक[ \t]+स्वास्थ्य[ \t]+केंद्र|प्राथमिक[ \t]+स्वास्थ्य[ \t]+केंद्र|स्वास्थ्य[ \t]+केंद्र|स्वास्थ्य[ \t]+केन्द्र|नर्सिंग[ \t]+होम)")
+_RE_HI_INST_TYPE = re.compile(r"(?<![ऀ-ॿ])(?:(?:जिला|ज़िला|सदर|अनुमंडल|अनुमंडलीय|राजकीय|सरकारी|महिला|बाल|रेफरल|उप|"
+                              r"सामुदायिक|प्राथमिक|संभागीय|क्षेत्रीय|केंद्रीय|मंडलीय)[ \t]+)+" + _HI_INST + r"(?![ऀ-ॿ])")
+# a facility name heading a line: "<Name> <Name> चिकित्सा महाविद्यालय, <Town>"
+_RE_HI_INST_HEAD = re.compile(r"(?m)^[ \t]*(?:[ऀ-ॿ]+[ \t]+){1,5}" + _HI_INST + r"(?![ऀ-ॿ])")
+_RE_ROLE = re.compile(
+    r"(?<![A-Za-z])(?:sahiya|sahiyya|sahia|mitanin|anganwadi|aanganwadi|anganvadi)(?:[ \t]+(?:didi|di|behenji|bahenji|"
+    r"sevika|sahayika|sahaika|worker|karyakarta|kendra|wali))?(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:ANM|anm|Anm)[ \t]+(?:didi|di|behenji|bahenji|sister)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:staff[ \t]+nurse|ward[ \t]+boy|ward[ \t]+aaya|ward[ \t]+ayah|nursing[ \t]+orderly)(?![A-Za-z])"
+    r"|(?:सहिया|मितानिन|आंगनवाड़ी|आँगनवाड़ी|आंगनबाड़ी)(?:[ \t]+(?:दीदी|सेविका|सहायिका|कार्यकर्ता))?", re.I)
+
+
+_RE_ROLE_HINT = re.compile(r"(?i)sahi|mitanin|anganwadi|aanganwadi|anganvadi|anm|staff|ward|nursing|सहिया|मितानिन|आंगन|आँगन")
 
 
 def _word_after(text: str, pos: int) -> Tuple[str, str]:
@@ -637,6 +830,17 @@ def protected_spans(text: str) -> List[Span]:
             c.append((2, m.start(), m.end(), "EPONYM", ""))
     for m in _RE_ASHA.finditer(t):
         c.append((2, m.start(), m.end(), "ASHA", ""))
+    for a, b in _eponym_spans(t):
+        c.append((2, a, b, "EPONYM", ""))
+    for m in _RE_BRAND.finditer(t):
+        w = re.match(r"(?:[A-Za-z]+\.[ \t]*)?([A-Za-z]+)", m.group()).group(1).lower()
+        if w not in _BRAND_NOT:
+            c.append((8, m.start(), m.end(), "DOSE", ""))
+    for rx in (_RE_ASPATAL, _RE_HI_INST_TYPE, _RE_HI_INST_HEAD):
+        for m in rx.finditer(t):
+            c.append((2, m.start(), m.end(), "EPONYM", ""))
+    for m in (_RE_ROLE.finditer(t) if _RE_ROLE_HINT.search(t) else ()):
+        c.append((2, m.start(), m.end(), "EPONYM", ""))
     for m in _RE_WARD.finditer(t):
         g = m.group()
         strong = "(" in g or re.search(r"bed|बेड|बिस्तर", g, re.I) or re.match(r"ward\s*(?:/\s*bed)?\s*(?:no\.?)?\s*[:#]", g, re.I)
