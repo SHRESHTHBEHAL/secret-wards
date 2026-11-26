@@ -223,3 +223,73 @@ class Facts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefectFixTests(unittest.TestCase):
+    """Invented names / ids only."""
+
+    def test_possessive_known_name(self):
+        k = Known(own_keys=frozenset({name_key("Tanvika")}))
+        t = "Sample received from Tanvika's attendant (W/o Rohan Velu)"
+        self.assertIn(("PATIENT_NAME", "Tanvika"), [(a, b) for a, b, _ in found(t, k)])
+
+    def test_possessive_anchored_name(self):
+        self.assertIn("Morvi", surfaces("Report of Morvi's mother", NAMES))
+
+    def test_possessive_eponym_protected(self):
+        k = Known(own_keys=frozenset({name_key("Bell"), name_key("Parkinson")}))
+        self.assertEqual(surfaces("Known Parkinson's disease, bell's palsy.", NAMES, k), [])
+
+    def test_apostrophe_inside_name_kept(self):
+        self.assertIn("D'Souza Ferrao", surfaces("Seen with D'Souza Ferrao today", NAMES))
+
+    def test_asha_worker_never_person(self):
+        for t in ("Referred by ASHA worker of the village.", "Referred by the ASHA of the village.",
+                  "Brought by ASHA didi today.", "Informed ASHA workers yesterday."):
+            self.assertEqual(surfaces(t, NAMES), [], t)
+
+    def test_asha_first_name_still_patient(self):
+        self.assertIn(("PATIENT_NAME", "Asha"), [(a, b) for a, b, _ in found("Asha, W/o Kamal Deore, 30 F")])
+        self.assertIn(("PATIENT_NAME", "Asha"), [(a, b) for a, b, _ in found("Report of Asha ji")])
+
+    def test_ward_after_relative_is_locality(self):
+        f = found("C/O Bhanudas Yeole, Ward 8")
+        self.assertIn(("RELATIVE_NAME", "Bhanudas Yeole"), [(a, b) for a, b, _ in f])
+        self.assertIn(("LOCALITY", "Ward 8"), [(a, b) for a, b, _ in f])
+        self.assertEqual(found("Ward 8 (Medicine) / Bed 23"), [])
+        self.assertEqual(found("Ward: 4 (Medicine)"), [])
+
+    def test_respectful_word_is_patient(self):
+        f = text_facts("Zubeida amma ka BP 112/74, bukhar utar gaya hai.")
+        self.assertEqual(f.names, ["Zubeida"])
+        self.assertEqual(f.relatives, [])
+
+    def test_chat_sender_still_relative(self):
+        f = text_facts("[12/03/2026] Kamlesh Bhaiya: kal aayenge")
+        self.assertEqual(f.names, [])
+        self.assertEqual([n for _, n in f.relatives], ["Kamlesh"])
+
+    def test_lowercase_name_before_honorific(self):
+        self.assertEqual(surfaces("tarla ji ka bp theek hai", NAMES), ["tarla"])
+        self.assertEqual(surfaces("devraj sahab aaye", NAMES), ["devraj"])
+        self.assertEqual(surfaces("nimmi didi ki report aayi", NAMES), ["nimmi"])
+        for t in ("aap ji", "unki didi aayi", "mata ji ka bp", "doctor sahab ne dekha", "sister didi"):
+            self.assertEqual(surfaces(t, NAMES), [], t)
+
+    def test_devanagari_title_honorific_names(self):
+        self.assertEqual(surfaces("कल श्रीमती सुरभि खरवार आईं", NAMES), ["सुरभि खरवार"])
+        self.assertEqual(surfaces("उनको गिरिधर जी लाए", NAMES), ["गिरिधर"])
+        self.assertEqual(surfaces("आज विमला देवी आईं", NAMES), ["विमला देवी"])
+        self.assertEqual(surfaces("फिर श्री तेजपाल आए", NAMES), ["तेजपाल"])
+
+    def test_header_line_name(self):
+        self.assertEqual(surfaces("Sunbeam Lab Report of Charvi Tamhane 52 Y / F", NAMES), ["Charvi Tamhane"])
+        self.assertEqual(surfaces("Metro Hospital OPD note for Hemant Jadhavrao.", NAMES), ["Hemant Jadhavrao"])
+
+    def test_underscore_joined_surname_and_number(self):
+        k = Known(own_keys=frozenset({name_key("Ravina")}))
+        t = "D:\\HIS\\exports\\Ravina_Tondon_051234\\visits_2026_01.json"
+        got = [(a, b) for a, b, _ in found(t, k)]
+        self.assertIn(("PATIENT_NAME", "Ravina"), got)
+        self.assertIn(("PATIENT_NAME", "Tondon"), got)
+        self.assertIn(("MRN", "051234"), got)

@@ -103,7 +103,7 @@ spouse son daughter relative relation attendant
 _HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन")
 _HON_KIN = _ws("""
 bhaiya bhaiyya bhaiyaa amma ammi ammaji chacha chachi chachaji tai tau bua mausi mama mami bhabhi bhabhiji
-dada dadi nana nani babuji papa mummy uncle aunty auntie भैया अम्मा चाचा चाची ताई ताऊ बुआ मौसी मामा मामी भाभी
+dada dadi nana nani babuji papa mummy uncle aunty auntie baba kaka भैया अम्मा चाचा चाची ताई ताऊ बुआ मौसी मामा मामी भाभी
 दादा दादी नाना नानी
 """)
 _HON_AFTER = _HON_PATIENT | _HON_KIN
@@ -113,8 +113,13 @@ shrimati श्री श्रीमती सुश्री कुमार�
 """)
 _DROP = frozenset(_nfc(w.casefold()) for w in HONORIFICS | TITLES) | _TITLE_BEFORE | _HON_AFTER
 
+# Devanagari verbs and pronouns that sit next to a mid-sentence name ("उनको रमेश जी लाए")
+_HI_FUNC = _ws("""
+आई आईं आए आये आया आयी आती आते आता लाए लाये लाई लाया लाईं गईं गये गई बताया बताई कहा कहें दिखाया दिखाई
+उनको उन्हें उनकी उनके उनका इनको इन्हें इनकी इनके इनका उसको उसे उसकी उसके आप आपको आपकी आपके मरीज मरीज़ मरीजा
+""")
 _STOP = (frozenset(_nfc(w) for w in lexicon.CLINICAL_WORDS | lexicon.COMPLAINT_WORDS | lexicon.HINDI_COMMON_WORDS)
-         | _EN_COMMON | _LABEL_WORDS | _HEADER_WORDS | _HON_AFTER | _TITLE_BEFORE
+         | _EN_COMMON | _HI_FUNC | _LABEL_WORDS | _HEADER_WORDS | _HON_AFTER | _TITLE_BEFORE
          | frozenset(_nfc(w.casefold()) for w in TITLES))
 # generic parts are fine inside names but never a name on their own
 _GENERIC = frozenset(_nfc(w.lower()) for w in GENERIC_NAME_PARTS) | {"md", "mohd"}
@@ -123,7 +128,9 @@ _ABBR = frozenset({"md", "mohd", "mohd", "km", "smt", "sh", "sri", "mr", "mrs", 
 
 # ---------------------------------------------------------------- token regexes
 
-_LAT = r"[A-Za-z][A-Za-z'’\-]*"
+# an apostrophe inside a word ("D'Souza") is kept; a possessive "'s" / "’s" is not part of the name
+_POSS = r"['’](?![sS](?![A-Za-z]))(?=[A-Za-z])"
+_LAT = r"[A-Za-z](?:[A-Za-z\-]|" + _POSS + r")*"
 _DEV = r"[ऀ-ॣॱ-ॿ]+"
 _TOK = re.compile(r"(" + _LAT + r"|" + _DEV + r")")
 _IS_DEVA = re.compile(r"[ऀ-ॿ]")
@@ -477,8 +484,11 @@ _GENDER_RE = re.compile(
 _GENDER_WORD = re.compile(r"(?<![A-Za-zऀ-ॿ])(F|M|Female|Male|female|male|FEMALE|MALE|महिला|पुरुष|स्त्री)"
                           r"(?![A-Za-zऀ-ॿ])")
 _ID_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9०-९][A-Za-z0-9०-९/\-_.#]*[0-9०-९]")
-_WORD_ANY = re.compile(r"[A-Za-z][A-Za-z'’]*|" + _DEV)
+_WORD_ANY = re.compile(r"[A-Za-z](?:[A-Za-z]|" + _POSS + r")*|" + _DEV)
 _ENC_PREFIX = re.compile(r"^(?:IPD|IP|ADM|IN|INP|ADMN|ADMISSION)", re.I)
+
+
+_THE_BEFORE = re.compile(r"(?<![A-Za-z])the[ \t]+$", re.I)
 
 
 def _gender(s: str) -> str:
@@ -497,6 +507,9 @@ class _Ctx:
         self.prot = [(p.start, p.end) for p in prot if p.kind != "ASHA"]
         # "Asha" is also a common first name: an ASHA match only blocks the weak layers
         self.asha = [(p.start, p.end) for p in prot if p.kind == "ASHA"]
+        # "ASHA worker", "ASHA didi", "the ASHA": the health worker role, never a person's name
+        self.asha_hard = [(a, b) for a, b in self.asha
+                          if re.search(r"\s", text[a:b]) or _THE_BEFORE.search(text, max(0, a - 6), a)]
         self.prot_starts = [p[0] for p in self.prot]
 
     def protected(self, s: int, e: int) -> bool:
@@ -517,6 +530,8 @@ class _Ctx:
         if kind not in ID_KINDS and kind != "PIN" and self.protected(s, e):
             return
         if prio >= 6 and kind in NAME_KINDS and any(a < e and s < b for a, b in self.asha):
+            return
+        if kind in NAME_KINDS and any(a < e and s < b for a, b in self.asha_hard):
             return
         self.cands.append((prio, s, e, kind, value))
 
@@ -679,11 +694,14 @@ def _layer_address_lines(cx: _Ctx) -> None:
         if line.count(",") < 1:
             continue
         cues = 0
+        kin = False
         for part in line.split(","):
             k = _addr_part_kind(part.strip(" \t.;:-"))
-            if k and k not in ("kin", "PIN"):
+            if k == "kin":
+                kin = True
+            elif k and k != "PIN":
                 cues += 1
-        if cues >= 2:
+        if cues >= 2 or (kin and cues >= 1):
             # start after any leading label
             m = _LABEL_RE.match(line)
             st = ls + (m.end() if m else 0)
@@ -746,12 +764,17 @@ def _layer_honorifics(cx: _Ctx) -> None:
         if not _is_dev(w) and m.start() > 0 and t[m.start() - 1] not in " \t":
             continue
         bk = _take_name_back(t, m.start(), "cap", 3)
+        if not bk and not _is_dev(w) and lw in _HON_NAME_CUE:
+            bk = _lower_name_back(t, m.start())
         if not bk:
             continue
-        if lw in _HON_KIN:
+        if lw in _HON_KIN and not (lw in _HON_RESPECT and _clinical_after(t, m.end())):
             cx.add(bk[0], bk[1], "RELATIVE_NAME", w, 4)
         else:
+            # "Zarina amma ka BP ...": a respectful address word in a clinical sentence is the patient
             cx.add(bk[0], bk[1], "PATIENT_NAME", "", 4)
+    for m in _DEVI_RE.finditer(t):
+        cx.add(m.start(1), m.end(2), "PERSON", "", 4)
     for m in _TITLE_RE.finditer(t):
         le = t.find("\n", m.end())
         le = len(t) if le < 0 else le
@@ -762,6 +785,45 @@ def _layer_honorifics(cx: _Ctx) -> None:
                 nm = None
         if nm:
             cx.add(nm[0], nm[1], "PERSON", "", 4)
+
+
+_HON_RESPECT = _ws("""
+amma didi bhai bhaiya bhaiyya sahab saheb ji jee behenji chacha chachi tai dadi nani baba kaka mausi bua
+अम्मा दीदी भाई भैया साहब जी बहनजी चाचा चाची ताई दादी नानी बाबा काका मौसी बुआ
+""")
+# honorifics that follow a (possibly lower-case) given name: "asha ji", "ramesh sahab", "meera didi"
+_HON_NAME_CUE = _ws("ji jee sahab saheb sahib didi behenji bhaiya bhaiyya")
+_NOT_LOWER_NAME = _ws("""
+aap aapki aapke aapka unki unka unke inki inka inke uski uska uske meri mera mere tumhari hamari mata pita
+maa maaji papa bhai behen bahan beta beti bahu doctor dr sister nurse patient mareez mariz madam sir sahab
+master baba amma didi ji haan nahi theek accha acha bilkul ok okay thank thanks please wife husband
+""")
+_CLIN_HINT = re.compile(r"[0-9]|\b(?:bp|sugar|pulse|temp|spo2|hb|bukhar|bukhaar|dawa|dawai|dava|khansi|dard|ulti|"
+                        r"report|test|ilaj|ilaaj|tablet|injection|check|checkup|dose)\b", re.I)
+_SENT_END = re.compile(r"[.!?।\n]")
+_DEVI_RE = re.compile(r"(?<![ऀ-ॿ])(" + _DEV + r")[ \t]+(देवी|बाई|बेगम)(?![ऀ-ॿ])")
+
+
+def _clinical_after(t: str, pos: int) -> bool:
+    """The rest of the sentence after `pos` talks about the person's own health."""
+    m = _SENT_END.search(t, pos)
+    seg = t[pos:m.start() if m else len(t)][:80]
+    if _CLIN_HINT.search(seg):
+        return True
+    return any(w.lower() in lexicon.CLINICAL_WORDS or w.lower() in lexicon.COMPLAINT_WORDS
+               for w in re.findall(r"[A-Za-z]+", seg))
+
+
+def _lower_name_back(t: str, pos: int) -> Optional[Tuple[int, int]]:
+    """A single lower-case Latin word right before a name honorific ("asha ji")."""
+    m = re.search(r"(?<![A-Za-z'’\-])([a-z]{3,})[ \t]+$", t[max(0, pos - 30):pos])
+    if not m:
+        return None
+    w = m.group(1)
+    if w in _STOP or w in _NOT_LOWER_NAME or w in lexicon.HINDI_COMMON_WORDS or w in lexicon.CLINICAL_WORDS:
+        return None
+    s = max(0, pos - 30) + m.start(1)
+    return s, s + len(w)
 
 
 def _layer_verbs(cx: _Ctx) -> None:
@@ -833,6 +895,10 @@ def _layer_dev_case(cx: _Ctx) -> None:
             cx.add(s, e, "PATIENT_NAME", "", 5)
 
 
+_JOIN_AFTER = re.compile(r"_([A-Z][a-z]{2,})(?![A-Za-z])")
+_JOIN_BEFORE = re.compile(r"(?<![A-Za-z])([A-Z][a-z]{2,})_$")
+
+
 def _layer_known(cx: _Ctx, known: Known) -> None:
     t = cx.text
     own = sorted(k for k in known.own_keys if k and k not in _GENERIC_KEYS)
@@ -853,6 +919,10 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
                 continue
             if k in own_set or (len(k) >= 4 and any(_fuzzy_keys(k, o) for o in own)):
                 cx.add(s, e, "PATIENT_NAME", "", 6)
+                # "<Given>_<Surname>_<number>" export folder: the joined capitalised word is the surname
+                for nm in (_JOIN_AFTER.match(t, e), _JOIN_BEFORE.search(t, max(0, s - 30), s)):
+                    if nm and _is_name_tok(nm.group(1), "cap"):
+                        cx.add(nm.start(1), nm.end(1), "PATIENT_NAME", "", 6)
     if full:
         n = len(words)
         for L in sorted(full):
@@ -881,7 +951,7 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
 _HEADER_LINE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(sorted(_HEADER_WORDS, key=len, reverse=True)) + r")(?![A-Za-z])",
                           re.I)
 _PLACE_BEFORE = re.compile(r"(?:Distt|Dist|District|Tehsil|Tahsil|Jila|Zila|in|at|from|to|City|State)\.?[ \t]*$", re.I)
-_CAP_TOK = re.compile(r"[A-Z][A-Za-z'’]*\.?")
+_CAP_TOK = re.compile(r"[A-Z](?:[A-Za-z]|" + _POSS + r")*\.?")
 
 
 def _layer_unknown_pairs(cx: _Ctx) -> None:
