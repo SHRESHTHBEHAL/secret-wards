@@ -604,3 +604,25 @@ class SplitNumbers(unittest.TestCase):
         self.assertIn(("PHONE", "98765 4"), k)
         self.assertIn(("PHONE", "3210"), k)
         self.assertTrue(any(kd == "AADHAAR" and "23" in v for kd, v in k))
+
+
+class FinalRound(unittest.TestCase):
+    def test_institution_landline_kept(self):
+        for t in ("Hospital enquiry 03772-220000 | Fax", "Emergency: 0836-2440000", "Lab ext. 0836-2440000",
+                  "TEL;TYPE=WORK,VOICE:03772-220000;ext=214", "OPD 9-5   Appointment 01562-250000"):
+            self.assertEqual([k for k, _ in ids(t) if k == "PHONE"], [], t)
+        for t in ("emergency contact 0836-2440000", "Ph (home) 0836-2440000", "call 0389-2340000 today"):
+            self.assertIn("PHONE", [k for k, _ in ids(t)], t)
+
+    def test_marathi_month_dob(self):
+        self.assertIn(("DOB", "१२ डिसेंबर १९७०"), kinds("जन्मतारीख : १२ डिसेंबर १९७०"))
+        self.assertIn(("DOB", "१९ जुलै २०१६"), kinds("जन्म दिनांक: १९ जुलै २०१६ वजन १८ किलो"))
+
+    def test_regional_address_words(self):
+        self.assertIn(("PATIENT_NAME", "Ramji"), kinds("Ramji bapa, 66 y, knee pain."))
+        self.assertIn(("PATIENT_NAME", "Gangavva"), kinds("Bed-3\n   Gangavva ajji complains, pain knee"))
+        self.assertIn(("PATIENT_NAME", "Dipali"), kinds("Accompanied : Dipali baidew and her husband"))
+
+    def test_obstetric_surgical_eponyms(self):
+        for t in ("MgSO4 as per Pritchard regimen given.", "Dissection of Calot's triangle was difficult."):
+            self.assertEqual(kinds(t, "PERSON") + kinds(t, "PATIENT_NAME"), [], t)
