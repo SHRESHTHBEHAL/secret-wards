@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - fallback until translit lands
 
 Key = Tuple[str, str]
 
-_DEMOTABLE = (ID_PHONE, ID_PAN, ID_INS, ID_EMAIL, ID_AADHAAR, ID_ABHA)
+_DEMOTABLE = (ID_PHONE, ID_PAN, ID_INS, ID_EMAIL)
 _RULE3 = (ID_AADHAAR, ID_ABHA, ID_ABHA_ADDR, ID_PAN, ID_INS, ID_EMAIL)
 _STRONG_OWN = (ID_UHID, ID_ENC, ID_AADHAAR, ID_ABHA, ID_PAN, ID_INS)
 _CONFLICT_TYPES = (ID_AADHAAR, ID_ABHA, ID_PAN)
@@ -70,6 +70,17 @@ def _norm_token(tok: str) -> Optional[str]:
     return typ + ":" + val
 
 
+_CORE_RX = re.compile(r"^(?:[A-Z]{1,6})?([0-9]{6,12})$")
+
+
+def _uhid_core(tok: str) -> str:
+    """Hospital number without its hospital prefix ("uhid:KMH4471902" and "uhid:4471902" -> "4471902")."""
+    if not tok.startswith(ID_UHID + ":"):
+        return ""
+    m = _CORE_RX.match(tok.split(":", 1)[1])
+    return "core:" + m.group(1) if m else ""
+
+
 def _place_key(s: str) -> str:
     """Script-independent village key: phonetic key per word with inner vowels dropped
     (Devanagari vowel signs are kept inside words so the transliteration sees them)."""
@@ -82,7 +93,7 @@ def _place_key(s: str) -> str:
 
 
 class _Rec:
-    __slots__ = ("i", "key", "facts", "names", "fullkeys", "firstkeys", "ids", "rels",
+    __slots__ = ("i", "key", "facts", "names", "fullkeys", "firstkeys", "ids", "cores", "rels",
                  "relfirst", "dob", "age", "byear", "village", "gender", "fragment")
 
     def __init__(self, i: int, key: Key, f: Facts) -> None:
@@ -98,6 +109,7 @@ class _Rec:
                 fk.add(name_key(toks[0]))
         self.firstkeys = sorted(fk - {""})
         self.ids = sorted({t for t in (_norm_token(x) for x in f.ids) if t})
+        self.cores = sorted({c for c in (_uhid_core(t) for t in self.ids) if c})
         self.rels = sorted({r[1].strip() for r in f.relatives
                             if r and len(r) > 1 and r[1] and name_tokens(r[1])})
         rf = set()
@@ -376,6 +388,20 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     id_rule((ID_ENC,))
     id_rule(_RULE3)
     id_rule((ID_PHONE,), need_names=True)
+
+    # Same hospital number written with and without its prefix: only with a compatible name.
+    by_core: Dict[str, List[int]] = {}
+    for r in recs:
+        for c in r.cores:
+            by_core.setdefault(c, []).append(r.i)
+    for c in sorted(by_core):
+        members = by_core[c]
+        for idx in range(1, len(members)):
+            j = members[idx]
+            for b in members[:idx]:
+                ga, gb = lk.groups[lk.find(b)], lk.groups[lk.find(j)]
+                if ga.names and gb.names and _names_compat(ga.names, gb.names) and lk.union(b, j):
+                    break
 
     # Blocking indexes for rules 5-8 (first-name key and full-name key based).
     def name_keys(r: _Rec) -> List[str]:
