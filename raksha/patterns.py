@@ -206,6 +206,34 @@ _RE_INS_LABEL = re.compile(
 _RE_ABHA_LABEL = re.compile(r"(?:abha|health\s*id|आभा)[^0-9\n]{0,15}$")
 
 
+# a reference number shaped like a mobile: "Trip ID 98...", "package 98...", "LRN-98...", "SPL/26/98..."
+_RE_REF_BEFORE = re.compile(
+    r"(?<![a-z])(?:trip\s*(?:id|no)|token|package|pkg|lab\s*(?:ref|no|id)|ref(?:erence)?\.?\s*(?:no|id|#)?|bill(?:\s*no)?|"
+    r"sample(?:\s*(?:id|no))?|claim(?:\s*no)?|cyto\s*no|barcode|accession|batch|lot|invoice|receipt|order|rs\.?|inr|₹)"
+    r"[\s:#.\-]*$")
+
+
+def _phone_vetoed(t: str, tl: str, start: int) -> bool:
+    if start >= 2 and t[start - 1] in "-/" and t[start - 2].isalnum():
+        return True                    # glued to a letter / number prefix: part of a reference number
+    return bool(_RE_REF_BEFORE.search(tl, max(0, start - 24), start))
+
+
+# OCR wrap inside a number: "90031\n77462", "6620 1947\n3085"
+_RE_PHONE_WRAP = re.compile(r"(?<![0-9A-Za-z+])[6-9][0-9]{4}[ \t]*\n[ \t]*[0-9]{5}(?![0-9A-Za-z])")
+_RE_AADHAAR_WRAP = re.compile(_NB + r"[2-9][0-9]{3}[ \t\n\-]+[0-9]{4}[ \t]*\n[ \t]*[0-9]{4}" + _NA
+                              + r"|" + _NB + r"[2-9][0-9]{3}[ \t]*\n[ \t]*[0-9]{4}[ \t\-]+[0-9]{4}" + _NA)
+# landline: STD code 0NN / 0NNN / 0NNNN + subscriber number (total 11 digits with the 0)
+_RE_LANDLINE = re.compile(
+    r"(?<![0-9A-Za-z/\-])(?:\+91[ \-]?|0)(?:[1-9][0-9][ \-]?[2-9][0-9]{3}[ \-]?[0-9]{4}|[1-9][0-9]{2}[ \-]?[2-9][0-9]{2,3}[ \-]?[0-9]{3,4}"
+    r"|[1-9][0-9]{3}[ \-]?[2-9][0-9]{5})(?![0-9A-Za-z]|[/\-][0-9])")
+# partial Aadhaar spoken or written: "last four 7745", "Aadhaar ending 1234"
+_RE_AADHAAR_LAST4 = re.compile(
+    r"(?:aadhaa?r|aadhar|आधार|uid)[^0-9\n]{0,30}?(?:last|ending|ends?\s+(?:in|with)|अंतिम|आखिरी)[^0-9\n]{0,15}?"
+    r"(?<![0-9])([0-9]{4})(?![0-9])"
+    r"|(?:last|ending)\s+(?:four|4)\s+(?:digits?\s+)?(?:of\s+(?:my\s+|her\s+|his\s+)?aadhaa?r\s+)?(?:is\s+|are\s+)?(?<![0-9])([0-9]{4})(?![0-9])", re.I)
+
+
 def find_identifiers(text: str) -> List[Span]:
     """PHONE, AADHAAR, AADHAAR_MASKED, ABHA_NUMBER, ABHA_ADDRESS, EMAIL, PAN, INSURANCE_ID."""
     t = _to_ascii_digits(text)
@@ -245,11 +273,19 @@ def find_identifiers(text: str) -> List[Span]:
         c.append((5, m.start(), m.end(), "AADHAAR", g))
     for m in _RE_PAN.finditer(t):
         c.append((6, m.start(), m.end(), "PAN", m.group().upper()))
-    for rx in (_RE_PHONE_PLUS, _RE_PHONE, _RE_PHONE_PAREN):
+    for rx in (_RE_PHONE_PLUS, _RE_PHONE, _RE_PHONE_PAREN, _RE_PHONE_WRAP):
         for m in rx.finditer(t):
             p = norm_phone(m.group())
-            if p:
+            if p and not _phone_vetoed(t, tl, m.start()):
                 c.append((7, m.start(), m.end(), "PHONE", p))
+    for m in _RE_LANDLINE.finditer(t):
+        if not _phone_vetoed(t, tl, m.start()):
+            c.append((8, m.start(), m.end(), "PHONE", _digits(m.group())))
+    for m in _RE_AADHAAR_WRAP.finditer(t):
+        c.append((5, m.start(), m.end(), "AADHAAR", _digits(m.group())))
+    for m in _RE_AADHAAR_LAST4.finditer(t):
+        g = 1 if m.group(1) else 2
+        c.append((4, m.start(g), m.end(g), "AADHAAR_MASKED", m.group(g)))
     return _resolve(c)
 
 
@@ -267,7 +303,9 @@ TICKET LAB LB BAR BC REF PAY PMT CHQ UTR GST GSTIN BATCH LOT ICD LOINC SNOMED
 """.split())
 _RE_NON_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:bill|invoice|inv|receipt|rcpt|sample|specimen|visit|package|pkg|txn|transaction|"
-    r"order|token|barcode|claim|voucher|accession|ticket|batch|lot|payment|बिल|रसीद|नमूना)(?![a-z])"
+    r"order|token|barcode|claim|voucher|accession|ticket|batch|lot|payment|बिल|रसीद|नमूना|"
+    r"lab\s*(?:no|ref|id|number|#|accession)|(?<!patient )(?<!pt )ref(?:erence)?\.?\s*(?:no|number|#)|cyto(?:logy)?\s*no|"
+    r"trip\s*(?:id|no)|mlc|mlr|ml\s*no|certificate|cert|film|slide|room|ext|extn)(?![a-z])"
 )
 _RE_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:uhid|mrn|mr\s*no|cr\s*no|hosp(?:ital)?[\s_]*(?:no|id|uhid)|patient[\s_]*(?:id|no|ref)|"
@@ -337,6 +375,8 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
             me = ms + len(tok)
         if len(_digits(tok)) < 5:
             continue
+        if tok.count("/") >= 3 and re.search(r"/[0-9]{1,3}[MFmf]/", tok):
+            continue                              # slash-packed header line: judged field by field
         if blob_iv.hits(ms, me):
             continue
         lead = re.match(r"[A-Za-z]+", tok).group()
@@ -485,7 +525,8 @@ _RE_WARD_ADDR_CTX = re.compile(
 _EPON_TAIL = (r"(?:disease|syndrome|palsy|sign|test|phenomenon|tumou?r|ulcer|fracture|reflex|law|operation|"
               r"procedure|anomaly|triad|criteria|scale|score|lymphoma|sarcoma|disorder|encephalopathy|"
               r"thyroiditis|chorea|anaemia|anemia|contracture|cyst|node|nodes|angina|aneurysm|manoeuvre|maneuver|"
-              r"position|method|classification|stage|staging|neuralgia|block|incision|repair)")
+              r"position|method|classification|stage|staging|neuralgia|block|incision|repair|nuclei|cells?|catheter|tube|"
+              r"grade|type|category|features|body|bodies|space|line|ward)")
 _RE_EPONYM = re.compile(
     r"(?<![A-Za-z])[A-Za-z][a-z]+(?:[\-\s][A-Z][a-z]+)?(?:'s|’s|s'|’)\s+" + _EPON_TAIL + r"(?![A-Za-z])"
     r"|(?<![A-Za-z])(?:Down|Hodgkin|Non-Hodgkin|Guillain[\- ]Barr[eé]|Glasgow\s+Coma|Wilms|Kawasaki|Hashimoto|"
@@ -495,6 +536,20 @@ _RE_EPONYM = re.compile(
     r"Gram|Ziehl[\- ]Neelsen|Pfannenstiel|Whipple|Fallot)(?:'s|’s)?\s+" + _EPON_TAIL + r"?",
     re.I,
 )
+# named grades, scores, devices and descriptors that look like person names
+_RE_EPONYM2 = re.compile(
+    r"(?<![A-Za-z])(?:Forrest\s+I{1,3}[abc]?|Orphan\s+Annie(?:\s+(?:eye\s+)?nuclei)?|H[uü]rthle(?:\s+cells?)?|"
+    r"Reed[\- ]Sternberg(?:\s+cells?)?|Bethesda(?:\s+(?:category|class|system))?|Nottingham(?:\s+grade)?|"
+    r"Bloom[\- ]Richardson(?:\s+(?:score|grade))?|Sengstaken[\- ]Blakemore(?:\s+tube)?|Swan[\- ]Ganz(?:\s+catheter)?|"
+    r"Ranson(?:'s)?(?:\s+(?:score|criteria))?|Balthazar(?:\s+(?:grade|score))?|Karnofsky(?:\s+score)?|"
+    r"McBurney(?:'s)?(?:\s+(?:point|incision))?|Foley(?:'s)?(?:\s+catheter)?|Ryle(?:'s)?(?:\s+tube)?|"
+    r"Murray\s+score|Weil(?:'s)?\s+disease|Child[\- ]Pugh|Mallampati|Killip|Gleason|Breslow|Clark(?:'s)?\s+level)"
+    r"(?![A-Za-z])")
+# government schemes and programmes named after people or ordinary words
+_RE_SCHEME = re.compile(
+    r"(?<![A-Za-z])(?:(?:[A-Z][a-z]+[ \t]+){0,3}(?:Yojana|Yojna|Abhiyan|Abhiyaan)|Mission[ \t]+[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?|"
+    r"Ayushman[ \t]+Bharat(?:[ \t]+[A-Z][A-Za-z\-]+)?|Janani[ \t]+Suraksha|Nikshay(?:[ \t]+Poshan)?)(?![A-Za-z])"
+    r"|(?:[ऀ-ॿ]+[ \t]+){0,3}(?:योजना|अभियान)(?![ऀ-ॿ])|(?:आयुष्मान[ \t]+भारत|निक्षय|महात्मा[ \t]+फुले)(?:[ \t]+[ऀ-ॿ]+){0,3}")
 _RE_ASHA = re.compile(
     r"(?<![A-Za-z])ASHA(?:\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji|kendra))?(?![A-Za-z])"
     r"(?!\s+[A-Z][a-z])|(?<![A-Za-z])asha\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji)(?![A-Za-z])"
@@ -574,6 +629,9 @@ def protected_spans(text: str) -> List[Span]:
             c.append((1, m.start(), m.end(), "DOCTOR", ""))
     for m in _RE_EPONYM.finditer(t):
         c.append((2, m.start(), m.end(), "EPONYM", ""))
+    for rx in (_RE_EPONYM2, _RE_SCHEME):
+        for m in rx.finditer(t):
+            c.append((2, m.start(), m.end(), "EPONYM", ""))
     for m in _RE_ASHA.finditer(t):
         c.append((2, m.start(), m.end(), "ASHA", ""))
     for m in _RE_WARD.finditer(t):
