@@ -1104,6 +1104,9 @@ _DOC_VALUE = {
 _HIRED_VEHICLE = re.compile(r"(?<![a-z])(?:delivery|courier|rider|agent|auto|autorickshaw|rickshaw|e-?rickshaw|toto|"
                             r"taxi|cab|bus|truck|lorry|tractor|tipper|dumper|jeep|van|ola|uber|rapido|swiggy|zomato|"
                             r"pharmacy|chemist|medical\s*store|shop|vendor|ambulance|108|102|police|pcr)(?![a-z])")
+# the patient's own vehicle named next to the plate: "rider's motorcycle", "parking slip ... tractor no."
+_OWN_PLATE = re.compile(r"(?<![a-z])(?:(?:his|her|own|patient'?s|rider'?s)[ \t]+(?:[a-z]+[ \t]+)?(?:motorcycle|motor[ \t]*cycle|"
+                        r"motorbike|bike|scooter|scooty|moped|car|vehicle)|parking)(?![a-z])")
 # a road-traffic / medico-legal context: a plate anywhere in it is a vehicle of the people involved
 _RTA_CONTEXT = re.compile(r"(?<![a-z])(?:rta|mlc|accident|collision|hit\s+by|knocked|run\s+over|road\s+traffic|"
                           r"दुर्घटना|टक्कर|एक्सीडेंट)(?![a-z])")
@@ -1178,12 +1181,14 @@ def find_personal_docs(text: str) -> List[Span]:
             lb = _line_before(tl, lm.start(), 30)
             if kind != "vehicle" and _DOC_VETO.search(lb + tl[lm.start():lm.end()]):
                 continue
-            if kind == "vehicle" and _HIRED_VEHICLE.search(_line_before(tl, vm.start(), 60)):
+            if kind == "vehicle" and _HIRED_VEHICLE.search(_line_before(tl, vm.start(), 60)) and \
+                    not _OWN_PLATE.search(_line_before(tl, vm.start(), 60)):
                 continue                       # the delivery rider's / taxi's plate is not the patient's
             c.append((0, vm.start(), vm.end(), "REF_ID", ""))
     if _RTA_CONTEXT.search(tl):
         for m in _RE_PLATE_SPACED.finditer(t):
-            if m.group(1) in _STATE_CODES and not _HIRED_VEHICLE.search(_line_before(tl, m.start(), 60)):
+            lb = _line_before(tl, m.start(), 60)
+            if m.group(1) in _STATE_CODES and (not _HIRED_VEHICLE.search(lb) or _OWN_PLATE.search(lb[-30:])):
                 c.append((1, m.start(), m.end(), "REF_ID", ""))
     # a mobile masked by a gateway: "81XXXXXX19", "98****3210"
     for m in _RE_PHONE_MASKED.finditer(t):
