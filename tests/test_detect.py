@@ -327,3 +327,16 @@ class PatientAnchorAndAnatomyTest(unittest.TestCase):
     def test_anatomy_is_not_a_person(self):
         for s in ("Lesion near Optic Disc noted.", "Mitral Valve prolapse, Carotid Bruit absent."):
             self.assertEqual(self._names(s), [], s)
+
+
+class TextFactsRolesTest(unittest.TestCase):
+    def test_visitor_is_not_a_second_patient(self):
+        from raksha import detect
+        f = detect.text_facts("Lakshmi Pillai ji ka BP 132/78 tha.\nVisitor Zubeida Fernandes ne file chhodi.\n")
+        self.assertEqual(f.names, ["Lakshmi Pillai"])
+
+    def test_kinship_word_makes_a_relative(self):
+        from raksha import detect
+        f = detect.text_facts("Lakshmi Pillai ji ka BP 132/78 tha. Unke husband Venkatesh ji ne bataya.")
+        self.assertEqual(f.names, ["Lakshmi Pillai"])
+        self.assertIn(("husband", "Venkatesh"), f.relatives)

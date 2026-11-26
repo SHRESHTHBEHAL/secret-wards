@@ -2564,6 +2564,15 @@ _ID_PREFIX = {"PHONE": "phone", "AADHAAR": "aadhaar", "AADHAAR_MASKED": "aadhaar
               "ABHA_ADDRESS": "abhaaddr", "EMAIL": "email", "PAN": "pan", "INSURANCE_ID": "ins"}
 
 
+# a name right after one of these is somebody else in the patient's story: redacted, never linked as the patient
+_THIRD_PARTY_BEFORE = re.compile(
+    r"(?:visitor|visitors|caller|witness|attendant|attender|informant|escort|companion|neighbou?r|bystander|"
+    r"driver|staff|ward\s*boy|guard)\b[ \t]*[:\-]?[ \t]*(?:(?:mr|mrs|ms|smt|shri|sri)\.?[ \t]+)?$", re.I)
+_KIN_BEFORE = re.compile(
+    r"(?<![A-Za-z])(husband|wife|father|mother|son|daughter|brother|sister|beta|beti|bhai|pati|patni|pita|mata)"
+    r"(?:'s)?[ \t]*[:\-]?[ \t]*(?:(?:mr|mrs|smt|shri|sri)\.?[ \t]+)?$", re.I)
+
+
 def text_facts(text: str, order: str = "dmy") -> Facts:
     spans, enc = _run(text, None, order)
     f = Facts()
@@ -2574,6 +2583,16 @@ def text_facts(text: str, order: str = "dmy") -> Facts:
         surf = text[sp.start:sp.end]
         k = sp.kind
         if k == "PATIENT_NAME":
+            before = text[max(0, sp.start - 40):sp.start]
+            if _THIRD_PARTY_BEFORE.search(before):
+                continue                       # "Visitor Zubeida Fernandes": a third party, not this patient
+            km = _KIN_BEFORE.search(before)
+            if km:                             # "Unke husband Venkatesh ji": the patient's relative
+                key2 = (km.group(1).lower(), " ".join(name_tokens(surf)))
+                if key2[1] and key2 not in seen_rel:
+                    seen_rel.add(key2)
+                    f.relatives.append((km.group(1).lower(), surf))
+                continue
             key = " ".join(name_tokens(surf))
             if key and key not in seen_names:
                 seen_names.add(key)
