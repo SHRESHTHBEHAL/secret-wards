@@ -74,6 +74,9 @@ bukhar bukhaar dard pet sir sar ulti ultee kamzori kamjori khansi khaansi zukam 
 saans sans dhadkan jalan khujli sujan soojan neend bhook pyaas peshab pishab latrine kabz thakan
 ghabrahat pasina kaanpna thand kamar ghutna jodon chhati seene gala galey naak kaan aankh daant
 dawai dawa dawaai goli tikka injection pani khoon bp sugar
+ghutna ghutne ghutnon kamar pairon haath haathon peeth pith kandha kandhe gardan aankhon kaanon daant pindli edi
+ediyon talwe ungli ungliyon jod jodo kalai kohni koolha kulha jangh jaangh pet pesab peshaab baar taraf dono
+sujan soojan sunnapan jhunjhuni akdan akadan kamjori bechaini hichki
 """
 
 _HINDI = """
@@ -81,6 +84,7 @@ _HINDI = """
 नींद भूख पेशाब कब्ज थकान घबराहट पसीना छाती सीना गला दवा दवाई गोली इंजेक्शन खून शुगर मधुमेह
 रक्तचाप निमोनिया मलेरिया टाइफाइड डेंगू टीबी क्षय पीलिया दमा निदान इलाज उपचार मरीज़ मरीज रोगी
 अस्पताल वार्ड बिस्तर डॉक्टर नर्स जांच जाँच रिपोर्ट भर्ती छुट्टी सलाह आहार परहेज
+बच्चेदानी गर्भाशय ऑपरेशन आपरेशन शल्य हीमोग्लोबिन रक्त खून ब्लड ग्रुप पॉजिटिव नेगेटिव ग्राम एल डी
 """
 
 # anatomy and examination findings: capitalised in notes ("Optic Disc normal"), never a person
@@ -92,6 +96,8 @@ stomach duodenum jejunum ileum colon rectum pancreas gallbladder thyroid adrenal
 cerebellum spinal cord nerve nerves muscle muscles tendon ligament femur tibia fibula humerus ulna pelvis spine
 vertebra vertebrae skull rib ribs sternum knee hip shoulder elbow wrist ankle abdomen chest thorax scalp neck
 lymph node nodes axilla groin umbilicus sinus sinuses mitral tricuspid aortic pulmonary carotid femoral radial
+left right bilateral mca aca pca ica lad lcx rca svc ivc lv rv la ra infarct infarction hemiparesis hemiplegia
+paraparesis quadriparesis aphasia dysarthria ataxia spasticity
 """
 
 CLINICAL_WORDS = frozenset(
@@ -133,6 +139,12 @@ mahine saal ghanta ghante neend li lena dena khana peena chalna jana aana
 सूचना पत्र कार्ड पर्ची पर्चा सारांश रेफरल प्रमाण सहमति घोषणा महोदय महोदया सेवा प्रभारी अधीक्षक चिकित्सा
 विषाक्तता कीटनाशक जहर सांप साँप बिच्छू कुत्ता काटने वर्षीय वर्षीया पुत्र पुत्री भतीजा भतीजी भांजा भांजी
 """))
+
+# oblique infinitives and light verbs that open a procedure phrase ("<organ> निकालने का ऑपरेशन")
+HINDI_COMMON_WORDS = HINDI_COMMON_WORDS | _words("""
+निकालने निकालना करवाने करवाना कराने कराना लगवाने लगाने चढ़ाने चढाने चढ़वाने देने लेने करने होने जाने आने रखने
+बदलने बंद खोलने सिलने जोड़ने काटने
+""")
 
 KINSHIP_MARKERS = (
     "s/o", "d/o", "w/o", "h/o", "c/o", "f/o", "m/o", "b/o", "so", "do", "wo",
