@@ -153,7 +153,8 @@ _S = {
     "health": ("health",),
     "pan": ("pan", "pancard", "panno"),
     "insurance": ("pmjay", "pmjy", "ayushman", "policy", "insurance", "insurer", "tpa", "bima", "cghs",
-                  "esic", "echs", "mediclaim", "beema"),
+                  "esic", "echs", "mediclaim", "beema", "karunya", "kasp", "mjpjay", "aarogyasri", "arogyasri",
+                  "cmchis", "bsky", "rgjay"),
     "email": ("email", "mail", "emel", "imel", "emailid", "gmail"),
     "phone": ("sampark", "samprk", "sampark_no", "durbhash", "durabhash", "dural", "mobno", "mb", "phno", "cont", "cntct", "contct", "whtsapp", "mobileno", "fon", "cel", "mobno", "mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
               "callback", "whatsapp", "cell", "fone", "phon", "fon", "mno", "landline", "cellphone"),
@@ -166,7 +167,7 @@ _S = {
                  "pada", "chawl", "wada", "khangpa", "pickup"),
     "govid": ("voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
               "kyc", "idproof"),
-    "village": ("mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
+    "village": ("hamlet", "mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
                 "kasba", "qasba", "shahar", "nagar", "gramm"),
     "tehsil": ("tahasil", "tehesil", "taluq", "thaluk", "pargana", "upazila", "upzila", "mandalam", "tahsel", "tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
                "subdistrict", "tehsel"),
@@ -851,6 +852,8 @@ def _owner_impl(keys: Sequence[str]) -> str:
         toks = _tokens(str(k))
         if not toks:
             continue
+        if any(t in ("emergency", "ice") for t in toks) and not _has(toks, "patient"):
+            return RELATIVE   # an emergency contact is someone else than the patient
         if _has(toks, "relative") or (_has(toks, "phone") and not _has(toks, "patient")):
             # 'contact' as a container of a name is a private person (relative/caller)
             return RELATIVE if _has(toks, "relative") else "PRIVATE"
