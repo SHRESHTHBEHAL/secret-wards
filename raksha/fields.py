@@ -145,7 +145,7 @@ _S = {
                  "reagent", "kit", "consignment", "dispatch",
                  # blood-bank / lab / stores objects: a bag, issue or slide number is not the patient's
                  "bag", "issue", "segment", "crossmatch", "component", "cartridge", "slide",
-                 "requisition", "indent", "challan"),
+                 "requisition", "indent", "challan", "tid", "gaadi", "gadi", "vahan", "vahana"),
     "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
                "kramank", "kod", "key", "sandarbh", "sandarbha"),
     "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
@@ -325,6 +325,20 @@ def _label_type_impl(toks: Tuple[str, ...]) -> str:
     return t
 
 
+_CALLER_WORDS = frozenset({"caller", "informant", "informer", "witness", "attendant", "attender", "escort",
+                           "bystander"})
+
+
+def _caller_column(label: str, lt: str) -> bool:
+    """A table column naming the person who called / informed / witnessed ("Caller (Naam)"): the
+    row's patient is someone else, so its names are a relative's."""
+    if lt not in (NAME, OTHER):
+        return False
+    toks = _tokens(str(label or ""))
+    return any(t in _CALLER_WORDS for t in toks) and not any(
+        _has(toks, g) for g in ("idword", "phone", "patient", "email", "address", "date", "village"))
+
+
 def _label_type1(toks: Tuple[str, ...]) -> str:
     if not toks:
         return OTHER
@@ -355,6 +369,12 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
         if any(t in _BY_PRIVATE for t in toks):
             return NAME
         return FREE_TEXT
+    # the head of the household on a scheme / ration register is a relative of the row's patient
+    if "head" in toks and "family" in toks and not is_id:
+        return RELATIVE
+    # a scheme / family card number is household-level: an insurance id
+    if ("scheme" in toks or "family" in toks) and "card" in toks and not h("name"):
+        return INSURANCE
     if is_id and any(t in ("lab", "labs", "laboratory", "path", "pathology", "radiology") for t in toks) and not (
             h("uhid") or h("patient") or h("idhost")):
         return OTHER_ID        # "Lab Ref", "Lab No": the laboratory's own reference, not the patient's id
@@ -859,6 +879,8 @@ def classify_column(label: str, values: Sequence[Any]) -> str:
         except Exception:  # noqa: BLE001
             pass
     vt = classify_values(values)
+    if _caller_column(label, lt) and _combine(lt, vt) == NAME:
+        return RELATIVE
     if vt in (PHONE, AADHAAR) and lt in (OTHER_ID, ENC_ID, PATIENT_ID, INSURANCE):
         # a 10 / 12 digit number under a label that names a document, admission or registration number
         # (barcode, bill no, IP no) is that number, not a mobile or an Aadhaar
@@ -986,8 +1008,24 @@ _NOT_FOR_QTY = frozenset({VILLAGE, LOCALITY, TEHSIL, DISTRICT, STATE, HOUSE, ADD
                           LOCAL_NAME, RELATIVE})
 
 
+_MEMO_JKT = {}  # type: Dict[Any, str]
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
-    """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
+    """Type of a JSON leaf from its key path (array indexes skipped) and its value. Memoised for
+    string / None values (pure in the key path and the value)."""
+    if value is None or type(value) is str:
+        key = (tuple(path_keys), value)
+        hit = _MEMO_JKT.get(key)
+        if hit is None:
+            if len(_MEMO_JKT) > 100000:
+                _MEMO_JKT.clear()
+            hit = _MEMO_JKT[key] = _json_key_type_impl(path_keys, value)
+        return hit
+    return _json_key_type_impl(path_keys, value)
+
+
+def _json_key_type_impl(path_keys: Sequence[str], value: Any = None) -> str:
     t = _json_key_type(path_keys, value)
     # a quantity with a unit ("100 mg", "0.4 g/kg") is a dose or a measurement, never a place or a person
     if t in _NOT_FOR_QTY and isinstance(value, str) and _RE_QTY_UNIT.match(value):
