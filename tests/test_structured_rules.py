@@ -233,12 +233,13 @@ class MetadataAndHeaders(unittest.TestCase):
         self.assertEqual(F.json_key_type(["cbc", "tlc"], "TLC 13400 /cumm"), F.CLINICAL)
         self.assertEqual(F.json_key_type(["pt", "n"], "Dolma C. Tsherpa"), F.NAME)
 
-    def test_header_sentence_makes_rows_one_patient(self):
+    def test_header_sentence_does_not_attribute_bare_rows(self):
+        # organisers' convention: a chart row with no identity evidence of its own has no patient
         recs = harvest.harvest_file(_csv(["Chart: Mr Velu Parkar (IP 26/7781-QX) Ph 9000 888 777", "BP"],
                                          [["01-Jan-2026", "120/80"], ["02-Jan-2026", "118/76"]]))
         m, _ = link(recs)
-        self.assertIsNotNone(m[("x/a.csv", "row:0")])
-        self.assertEqual(m[("x/a.csv", "row:0")], m[("x/a.csv", "row:1")])
+        self.assertIsNone(m[("x/a.csv", "row:0")])
+        self.assertIsNone(m[("x/a.csv", "row:1")])
 
     def test_file_name_person_is_not_content_evidence(self):
         data = {"pt": {"n": "Dolma C. Tsherpa", "m": "90000-12345", "age": 40}, "cbc": {"hb": "Hb 10.9 g/dL"}}
@@ -330,3 +331,59 @@ class HeaderlessDetectionTest(unittest.TestCase):
     def test_document_number_keys_keep_locators(self):
         self.assertEqual(harvest.key_kind("LAB-2025-000123"), "doc")
         self.assertEqual(harvest.keyed_record_id("/LAB-2025-000123"), "")
+
+
+class RoundFresh2Rules(unittest.TestCase):
+    """Invented data: pipe files, title-line charts, reference columns, address cells."""
+
+    def test_psv_is_pipe_delimited(self):
+        import tempfile
+        from pathlib import Path
+        from raksha import ingest
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "chart.psv"
+            p.write_text("Time|Temp|Pulse\n06:00|98.6|72\n10:00|99.1|80\n", encoding="utf-8")
+            pf = ingest.load(p, Path(d))
+        self.assertEqual(pf.kind, KIND_CSV)
+        self.assertEqual(pf.delimiter, "|")
+        self.assertEqual(len(pf.rows), 2)
+
+    def test_title_patient_only_on_rows_with_own_evidence(self):
+        pf = _csv(["Time", "Temp", "BP", "Remarks", "Chart for patient - Ovrin Talpade QRH/2031/004417"],
+                  [["06:00", "98.6", "120/80", "stable", ""],
+                   ["10:00", "99.1", "118/76", "NOK Mitul Talpade 9123456780", ""]])
+        recs = harvest.harvest_file(pf)
+        self.assertEqual(recs[0].facts.ids, [])
+        self.assertTrue(set(recs[0].facts.names) <= set(getattr(recs[0].facts, "link_skip", [])))
+        self.assertIsNone(link(recs)[0][("x/a.csv", "row:0")])
+        f1 = recs[1].facts
+        self.assertTrue(any(t.startswith("phone:") for t in f1.ids))
+        self.assertTrue(any(t.startswith("uhid:") for t in f1.ids))
+
+    def test_reference_object_columns(self):
+        vals = ["QX-31-4471", "QX-31-4502", "QX-31-4518"]
+        for label in ("Bag No", "Issue No", "Slide No", "Requisition No", "Indent No", "Challan No",
+                      "Segment No", "Cartridge No"):
+            self.assertEqual(F.classify_column(label, vals), F.OTHER_ID, label)
+        self.assertEqual(F.classify_column("Hosp No", vals), F.PATIENT_ID)
+
+    def test_address_cell_drops_pin_and_door_number(self):
+        import csv as _csv_mod
+        import io
+        from raksha.policy import DEFAULTS
+        from raksha.pseudo import Keys
+        from raksha.sanitize import Env, sanitize_file
+        from raksha.types import Patient
+        pf = ParsedFile(rel="r/reg.csv", sha256="c" * 64, kind=KIND_CSV, delimiter=",",
+                        header=["Reg No", "Pt Name", "Address"],
+                        rows=[["QRH-2077123", "Ovrin Talpade", "71-4-903/2, Kesarbagh Lane, Hyderabad 509871"]])
+        facts = harvest.harvest_file(pf)[0].facts
+        env = Env(keys=Keys(b"unit-secret"), assign={(pf.rel, "row:0"): "k1"},
+                  book={"k1": Patient(key="k1", records=[(pf.rel, "row:0")], facts=[facts])},
+                  policy=dict(DEFAULTS), pseudonyms={"k1": "PSN-TESTAAAAAA"},
+                  records={pf.rel: [Record(rel=pf.rel, loc="row:0", facts=facts)]})
+        out = sanitize_file(pf, env).content
+        cell = list(_csv_mod.reader(io.StringIO(out)))[1][2]
+        self.assertNotIn("509871", cell)
+        self.assertNotIn("71-4-903", cell)
+        self.assertNotIn("Kesarbagh", cell)
