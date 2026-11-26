@@ -874,3 +874,65 @@ class SchemaColumnarJson(unittest.TestCase):
     def test_self_named_case_number_under_visit_key(self):
         self.assertEqual(F.json_key_type(["data", "visit_no"], "CASE#40917"), F.PATIENT_ID)
         self.assertEqual(F.json_key_type(["visit_no"], "V-1234"), F.OTHER_ID)
+
+
+def _sanitize_csv(pf, other=None):
+    """Sanitize one CSV with every harvested record its own patient; `other` adds a patient file."""
+    from raksha.policy import DEFAULTS
+    from raksha.pseudo import Keys
+    from raksha.sanitize import Env, sanitize_file
+    from raksha.types import Patient
+    assign, book, psn, records = {}, {}, {}, {}
+    for f in [pf] + ([other] if other is not None else []):
+        recs = harvest.harvest_file(f)
+        records[f.rel] = recs
+        for i, r in enumerate(recs):
+            k = "k%s%d" % (f.rel, i)
+            assign[(f.rel, r.loc)] = k
+            book[k] = Patient(key=k, records=[(f.rel, r.loc)], facts=[r.facts])
+            psn[k] = "PSN-TEST%06d" % len(psn)
+    env = Env(keys=Keys(b"unit-secret"), assign=assign, book=book, policy=dict(DEFAULTS),
+              pseudonyms=psn, records=records)
+    import csv as _csv_mod
+    import io
+    return list(_csv_mod.reader(io.StringIO(sanitize_file(pf, env).content)))
+
+
+class ComplaintColumns(unittest.TestCase):
+    def test_complaints_label_is_clinical_not_care_of(self):
+        self.assertEqual(F.classify_label("C/O (complaints)"), F.CLINICAL)
+        self.assertEqual(F.classify_label("Shikayat"), F.CLINICAL)
+        self.assertEqual(F.classify_label("C/O"), F.RELATIVE)        # bare "c/o" is still "care of"
+
+    def test_complaint_cell_survives_in_register(self):
+        pf = _csv(["Regn No", "Name", "C/O (complaints)", "Ph"],
+                  [["QOR-71203", "Tamvir Oskade", "pain abdomen after meals", "97123 40567"]], rel="o/reg.csv")
+        out = _sanitize_csv(pf)
+        self.assertEqual(out[1][2], "pain abdomen after meals")
+        self.assertNotIn("Oskade", out[1][1])
+
+
+class InstitutionalTables(unittest.TestCase):
+    STOCK = ["Item", "Batch", "Qty", "Supplier", "Supplier_Helpline"]
+
+    def test_stock_labels_make_an_institutional_table(self):
+        self.assertIsNotNone(F.institutional_table(self.STOCK))
+        self.assertIsNone(F.institutional_table(self.STOCK + ["Patient Name"]))
+        self.assertIsNone(F.institutional_table(self.STOCK + ["Mobile"]))
+        self.assertIsNone(F.institutional_table(["Item", "Qty"]))             # one stock word only
+        self.assertIsNone(F.institutional_table(["Item", "Batch", ""]))       # unlabelled column
+
+    def test_stock_table_values_kept_and_no_patient_harvested(self):
+        pf = _csv(self.STOCK, [["Tab Zorvex 40", "ZQ7712", "300", "Velmora Pharma Agency", "01443-288190"]],
+                  rel="s/stock.csv")
+        self.assertTrue(all(not r.facts.names for r in harvest.harvest_file(pf)))
+        out = _sanitize_csv(pf)
+        self.assertEqual(out[1], ["Tab Zorvex 40", "ZQ7712", "300", "Velmora Pharma Agency", "01443-288190"])
+
+    def test_known_patient_phone_still_removed_from_stock_table(self):
+        reg = _csv(["Reg No", "Pt Name", "Mobile"], [["QRH-2077123", "Ovrin Talpade", "9876104321"]], rel="r/reg.csv")
+        pf = _csv(self.STOCK, [["Tab Zorvex 40", "ZQ7712", "300", "Velmora Pharma Agency", "9876104321"]],
+                  rel="s/stock.csv")
+        out = _sanitize_csv(pf, other=reg)
+        self.assertNotIn("9876104321", out[1][4])
+        self.assertEqual(out[1][3], "Velmora Pharma Agency")
