@@ -71,7 +71,14 @@ def _norm_token(tok: str) -> Optional[str]:
 
 
 def _place_key(s: str) -> str:
-    return " ".join(name_key(t) for t in re.split(r"[^\w]+", (s or "").lower()) if t)
+    """Script-independent village key: phonetic key per word with inner vowels dropped
+    (Devanagari vowel signs are kept inside words so the transliteration sees them)."""
+    out = []
+    for t in re.split(r"[^\w\u0900-\u0963\u0971-\u097F]+", (s or "").lower()):
+        k = name_key(t) if t else ""
+        if k:
+            out.append(k[0] + re.sub(r"[aeiou]", "", k[1:]))
+    return " ".join(out)
 
 
 class _Rec:
@@ -364,7 +371,20 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
 
     k5 = lambda r: [(n, r.dob) for n in name_keys(r)] if r.dob is not None else []
     k6 = lambda r: [(n, rf) for n in name_keys(r) for rf in r.relfirst]
-    k7 = lambda r: [("n:" + n, r.village) for n in r.fullkeys] if r.village else []
+    # Village + birth-year (or age) buckets; names are compared in _match7 so that a
+    # Devanagari and a Latin spelling of the same name still meet in one block.
+    # The first-name consonant skeleton keeps blocks small and survives transliteration.
+    def k7(r: _Rec) -> list:
+        if not r.village or not r.firstkeys:
+            return []
+        sk = sorted({(k[0] + re.sub(r"[aeiouy]", "", k[1:]))[:3] for k in r.firstkeys})
+        out = []
+        for s3 in sk:
+            if r.byear is not None:
+                out += [(r.village, s3, "y", r.byear + d) for d in (-1, 0, 1)]
+            if r.age is not None:
+                out += [(r.village, s3, "a", r.age + d) for d in (-1, 0, 1)]
+        return out
     k8 = lambda r: [(fk, rf) for fk in r.firstkeys for rf in r.relfirst]
 
     _soft_rule(lk, recs, build(k5), k5, _match5)
