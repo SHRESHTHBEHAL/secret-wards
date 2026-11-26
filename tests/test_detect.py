@@ -366,3 +366,60 @@ class FastPaths(unittest.TestCase):
         self.assertEqual(dates.find_ages("aged and frail"), [])
         self.assertEqual(patterns.find_identifiers("mail qz.test@example.org"), [patterns.find_identifiers("mail qz.test@example.org")[0]])
         self.assertEqual(len(dates.find_dates("seen on March 5, 2026")), 1)
+
+
+def _kinds(t, known=None):
+    return [(t[s.start:s.end], s.kind) for s in detect(t, known)]
+
+
+def _own(*toks):
+    return Known(own_keys=frozenset(name_key(x) for x in toks), full_names=(tuple(toks),))
+
+
+class LateRulesTest(unittest.TestCase):
+    # all names, places and numbers below are invented
+
+    def test_devanagari_title_is_whole_token(self):
+        for nm in ("मोहम्मद श्रीकांत", "मोहम्मद श्रीजा", "मोहम्मद श्रीनिवास"):
+            t = "नाम/Name: %s   आयु: 34 वर्ष\nजांच: बुखार\n%s को 3 दिन से बुखार है।" % (nm, nm)
+            for kn in (None, _own(*nm.split())):
+                got = _kinds(t, kn)
+                self.assertEqual(sum(1 for s, k in got if s == nm and k == "PATIENT_NAME"), 2, got)
+
+    def test_title_with_space_still_strips(self):
+        self.assertIn(("रामलाल", "PERSON"), _kinds("श्री रामलाल को बुखार है।"))
+
+    def test_rule_out_is_clinical(self):
+        self.assertEqual(_kinds("r/o malaria, r/o typhoid."), [])
+        self.assertEqual(_kinds("Impression: fever ? r/o enteric fever, r/o UTI"), [])
+        self.assertTrue(any(k in ("VILLAGE", "ADDRESS") for _, k in _kinds("Ramesh, 45 M, r/o Kesarpur village")))
+
+    def test_born_janm_is_dob(self):
+        self.assertIn(("12/03/1988", "DOB"), _kinds("Born: 12/03/1988 at home."))
+        self.assertIn(("5 March 1990", "DOB"), _kinds("Janm: 5 March 1990"))
+        self.assertEqual(_kinds("Baby born at term, weight 2.8 kg."), [])
+
+    def test_glued_country_code_is_phone(self):
+        self.assertEqual(_kinds("Tel: +9198-7654-3210"), [("+9198-7654-3210", "PHONE")])
+        self.assertIn(("9198 7654 3210", "AADHAAR"), _kinds("Aadhaar 9198 7654 3210"))
+
+    def test_known_phone_with_separators(self):
+        k = Known(id_values=frozenset({"9876543210"}))
+        self.assertIn(("98.76.54.32.10", "PHONE"), _kinds("or 98.76.54.32.10 please", k))
+        self.assertIn(("(98) 7654 3210", "PHONE"), _kinds("call (98) 7654 3210 now", k))
+
+    def test_street_in_residence_frame(self):
+        self.assertIn(("Gandhi Street", "LOCALITY"), _kinds("She resides on Gandhi Street, ward 4."))
+        self.assertEqual(_kinds("Lab: City Diagnostics, MG Road branch, report attached."), [])
+
+    def test_pet_form_of_own_name(self):
+        self.assertIn(("Sunitu", "PATIENT_NAME"), _kinds("Sunitu ko dawai di.", _own("Sunitaben", "Patel")))
+        self.assertIn(("Remruati", "PATIENT_NAME"),
+                      _kinds("Mama: Remruati kal school gayi thi.", _own("Lalremruatpuii", "Sailo")))
+        self.assertNotIn(("Sunday", "PATIENT_NAME"), _kinds("Sunday ko aana.", _own("Sunitaben", "Patel")))
+
+    def test_place_after_age_sex(self):
+        self.assertIn(("Vadakaram", "VILLAGE"), _kinds("Referred: K. Selvi, 34/F, of Vadakaram, with anaemia."))
+
+    def test_thousands_commas_are_counts(self):
+        self.assertEqual(_kinds("Hb 11.2, platelets 1,50,000, WBC 11,200 /cumm."), [])
