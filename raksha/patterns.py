@@ -5,9 +5,10 @@ to ASCII one character for one character, so offsets are preserved.
 """
 from __future__ import annotations
 
+import bisect
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from . import lexicon, scripts
 from .types import Span
@@ -17,6 +18,8 @@ from .types import Span
 
 def _to_ascii_digits(s: str) -> str:
     """Map every Unicode decimal digit to ASCII, keeping length (private fallback)."""
+    if not s or max(s) < "\u0660":  # nothing to map (the loop below keeps every such character)
+        return s
     out = []
     for ch in s:
         if "0" <= ch <= "9" or ch < "\u0660":
@@ -87,15 +90,50 @@ def verhoeff_ok(digits: str) -> bool:
     return c == 0
 
 
+class Intervals:
+    """Overlap test against a fixed set of [start, end) intervals in O(log n): sorted starts plus a
+    running maximum of ends. hits(s, e) == any(a < e and s < b for a, b in intervals)."""
+
+    def __init__(self, iv: Iterable[Tuple[int, int]]) -> None:
+        ivs = sorted((a, b) for a, b in iv)
+        self.starts = [a for a, _ in ivs]
+        self.pmax = []  # type: List[int]
+        m = None  # type: Optional[int]
+        for _, b in ivs:
+            m = b if m is None or b > m else m
+            self.pmax.append(m)
+
+    def hits(self, s: int, e: int) -> bool:
+        i = bisect.bisect_left(self.starts, e)
+        return i > 0 and self.pmax[i - 1] > s
+
+    def __bool__(self) -> bool:
+        return bool(self.starts)
+
+
 def _resolve(cands: List[Tuple[int, int, int, str, str]]) -> List[Span]:
     """cands: (priority, start, end, kind, value). Lower priority wins, then longer."""
     cands = sorted(cands, key=lambda c: (c[0], -(c[2] - c[1]), c[1]))
-    taken: List[Tuple[int, int]] = []
     out: List[Span] = []
+    if any(c[2] <= c[1] for c in cands):  # empty candidates: keep the plain scan (never seen in practice)
+        taken: List[Tuple[int, int]] = []
+        for _p, s, e, k, v in cands:
+            if any(s < te and ts < e for ts, te in taken):
+                continue
+            taken.append((s, e))
+            out.append(Span(s, e, k, v))
+        out.sort(key=lambda sp: (sp.start, sp.end))
+        return out
+    # taken intervals never overlap: sorted by start their ends increase, so the neighbours of the
+    # insertion point decide a clash
+    starts: List[int] = []
+    ends: List[int] = []
     for _p, s, e, k, v in cands:
-        if any(s < te and ts < e for ts, te in taken):
+        i = bisect.bisect_left(starts, s)
+        if (i > 0 and ends[i - 1] > s) or (i < len(starts) and starts[i] < e):
             continue
-        taken.append((s, e))
+        starts.insert(i, s)
+        ends.insert(i, e)
         out.append(Span(s, e, k, v))
     out.sort(key=lambda sp: (sp.start, sp.end))
     return out
@@ -131,6 +169,9 @@ _RE_PHONE = re.compile(
     r"[6-9](?:" + _SEP + r"?[0-9]){9}(?![0-9A-Za-z])"
 )
 _RE_PHONE_PLUS = re.compile(r"\+91[0-9]{10}(?![0-9])")
+# "+91 (98765) 43210", "(98765) 43210", "0091 (98765)-43210"
+_RE_PHONE_PAREN = re.compile(r"(?<![0-9A-Za-z+])(?:(?:\+|00)[ \t]?91[ \t.\-]*)?\([ \t]?[6-9][0-9]{4}[ \t]?\)"
+                             r"[ \t.\-]?[0-9]{5}(?![0-9A-Za-z])")
 _RE_AADHAAR_SPACED = re.compile(_NB + r"[2-9][0-9]{3}([ \-.])[0-9]{4}\1[0-9]{4}" + _NA)
 _RE_AADHAAR_SOLID = re.compile(r"(?<![0-9A-Za-z+])[2-9][0-9]{11}" + _NA)
 _RE_AADHAAR_MASK = re.compile(
@@ -204,7 +245,7 @@ def find_identifiers(text: str) -> List[Span]:
         c.append((5, m.start(), m.end(), "AADHAAR", g))
     for m in _RE_PAN.finditer(t):
         c.append((6, m.start(), m.end(), "PAN", m.group().upper()))
-    for rx in (_RE_PHONE_PLUS, _RE_PHONE):
+    for rx in (_RE_PHONE_PLUS, _RE_PHONE, _RE_PHONE_PAREN):
         for m in rx.finditer(t):
             p = norm_phone(m.group())
             if p:
@@ -288,6 +329,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
                 pos += len(piece) + 1
             continue
         toks.append((m.start(), m.end(), tok))
+    blob_iv = Intervals(blobs)
     for ms, me, tok in toks:
         ext = _RE_FILE_EXT.search(tok)
         if ext:                                   # "P.00454.txt": the extension is not part of the id
@@ -295,7 +337,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
             me = ms + len(tok)
         if len(_digits(tok)) < 5:
             continue
-        if any(bs < me and ms < be for bs, be in blobs):
+        if blob_iv.hits(ms, me):
             continue
         lead = re.match(r"[A-Za-z]+", tok).group()
         if len(lead) < 2 and not (len(tok) > 2 and tok[1] in ".-/#" and tok[2].isdigit()):
