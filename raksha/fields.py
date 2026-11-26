@@ -115,7 +115,7 @@ def _tokens(label: str) -> Tuple[str, ...]:
 # ---------------------------------------------------------------- stems
 # Each stem is compared after _squash. Stems of length >= 5 tolerate small typos.
 _S = {
-    "name": ("naav", "nav", "peyar", "per", "naw", "nam", "name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
+    "name": ("nm", "naav", "nav", "peyar", "per", "naw", "nam", "name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
              "labharthi", "nme", "naem", "nmae", "alias", "aka"),
     "patient": ("rogi", "mariz", "mareez", "ptnt", "pts", "patnt", "patient", "pt", "pat", "pnt", "patiant"),
     "first": ("fn", "pratham", "pehla", "fst", "frst", "first", "fname", "given", "forename", "firstname"),
@@ -156,19 +156,19 @@ _S = {
     "insurance": ("pmjay", "pmjy", "ayushman", "policy", "insurance", "insurer", "tpa", "bima", "cghs",
                   "esic", "echs", "mediclaim", "beema", "karunya", "kasp", "mjpjay", "aarogyasri", "arogyasri",
                   "cmchis", "bsky", "rgjay"),
-    "email": ("email", "mail", "emel", "imel", "emailid", "gmail"),
-    "phone": ("sampark", "samprk", "sampark_no", "durbhash", "durabhash", "dural", "mobno", "mb", "phno", "cont", "cntct", "contct", "whtsapp", "mobileno", "fon", "cel", "mobno", "mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
+    "email": ("eml", "email", "mail", "emel", "imel", "emailid", "gmail"),
+    "phone": ("mob1", "mob2", "mobile1", "mobile2", "sampark", "samprk", "sampark_no", "durbhash", "durabhash", "dural", "mobno", "mb", "phno", "cont", "cntct", "contct", "whtsapp", "mobileno", "fon", "cel", "mobno", "mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
               "callback", "whatsapp", "cell", "fone", "phon", "fon", "mno", "landline", "cellphone"),
     "address": ("niwas", "nivas", "niwasi", "nivasi", "patta", "vilasam", "thikana", "thikaana", "residance", "addrs", "adrs", "address", "addr", "adress", "addres", "pata", "street", "residence", "resi",
                 "residential", "adres", "pta", "mugavari", "mugavaree", "thikano"),
     "line": ("line", "line1", "line2"),
-    "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
+    "house": ("house", "hno", "hsno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
     "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
                  "sector", "ward_no", "galli", "gali", "lane", "para", "leikai", "tola", "veng", "patti",
                  "pada", "chawl", "wada", "khangpa", "pickup"),
-    "govid": ("voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
+    "govid": ("ppt", "voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
               "kyc", "idproof"),
-    "village": ("hamlet", "mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
+    "village": ("vpo", "hamlet", "mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
                 "kasba", "qasba", "shahar", "nagar", "gramm"),
     "tehsil": ("tahasil", "tehesil", "taluq", "thaluk", "pargana", "upazila", "upzila", "mandalam", "tahsel", "tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
                "subdistrict", "tehsel"),
@@ -1025,11 +1025,17 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     return _json_key_type_impl(path_keys, value)
 
 
+_RE_SELF_NAMED_ID = re.compile(r"^(?:case|uhid|mrn|mrd)\s*(?:no\.?)?\s*[#:/\-.]?\s*[0-9]{5,}$", re.I)
+
+
 def _json_key_type_impl(path_keys: Sequence[str], value: Any = None) -> str:
     t = _json_key_type(path_keys, value)
     # a quantity with a unit ("100 mg", "0.4 g/kg") is a dose or a measurement, never a place or a person
     if t in _NOT_FOR_QTY and isinstance(value, str) and _RE_QTY_UNIT.match(value):
         return CLINICAL
+    # a visit-number key whose value names itself a case / registration number ("CASE#82201")
+    if t == OTHER_ID and isinstance(value, str) and _RE_SELF_NAMED_ID.match(value.strip()):
+        return PATIENT_ID
     # "vid" is a visit id as often as an Aadhaar virtual id (16 digits)
     if t == PAN and path_keys and _tokens(str(path_keys[-1])) == ("vid",) \
             and len(_digits(str(value))) != 16:
@@ -1043,6 +1049,12 @@ def _json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
         return _combine(OTHER, _value_hint(value) or OTHER)
     last = keys[-1]
     parents = keys[:-1]
+    # short address-part codes under an address group ("res": {"vpo": .., "hs": .., "pc": ..})
+    if parents and value is not None and not isinstance(value, (dict, list)) \
+            and _squash(str(parents[-1]).strip().lower()) in _ADDR_GROUP_CODES:
+        part = _ADDR_PART_CODES.get(str(last).strip().lower())
+        if part:
+            return part
     toks = _tokens(last)
     lt = _label_type(toks)
     vh = _value_hint(value)
@@ -1170,3 +1182,62 @@ def _json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     if lt == OTHER:
         return vh if vh in _STRONG else OTHER
     return _combine(lt, vh if vh in (_STRONG | {DATE, DOCTOR, AGE_SEX, HOSPITAL}) else "")
+
+
+# ---------------------------------------------------------------- attribute / value facts
+# {"a": "pt_nm", "v": ...}, {"attr": "mob", "value": ...}: one attribute-code member, one value member.
+_AV_CODE_KEYS = frozenset({"a", "attr", "attribute", "key", "name", "code", "field"})
+_AV_VALUE_KEYS = frozenset({"v", "val", "value"})
+_RE_AV_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]{0,23}$")
+# an attribute code whose value is a group of address parts
+_ADDR_GROUP_CODES = frozenset({"res", "resi", "residence", "addr", "adrs", "address", "pata", "patta"})
+# address-part codes, trusted only directly under an address group
+_ADDR_PART_CODES = {"vpo": VILLAGE, "vill": VILLAGE, "vil": VILLAGE, "gaon": VILLAGE, "gram": VILLAGE,
+                    "po": VILLAGE, "ps": VILLAGE, "moh": LOCALITY, "mohalla": LOCALITY, "loc": LOCALITY,
+                    "hs": HOUSE, "hno": HOUSE, "house": HOUSE, "pc": PIN, "pin": PIN, "pincode": PIN}
+
+
+def av_pair(node: Any) -> Optional[Tuple[str, str, str]]:
+    """(code key, value key, code) of an attribute/value fact object whose code is a recognised
+    field label, else None. Unrecognised codes (complaint, lab or drug codes) are not re-keyed."""
+    if not isinstance(node, dict) or len(node) != 2:
+        return None
+    ck = vk = None
+    for k in node:
+        lk = str(k).strip().lower()
+        if lk in _AV_CODE_KEYS and ck is None:
+            ck = k
+        elif lk in _AV_VALUE_KEYS and vk is None:
+            vk = k
+    if ck is None or vk is None:
+        return None
+    code = node[ck]
+    if not isinstance(code, str) or not _RE_AV_CODE.match(code.strip()):
+        return None
+    code = code.strip()
+    v = node[vk]
+    if isinstance(v, (dict, list)):
+        # only an address group is re-keyed: its parts are typed under it
+        return (str(ck), str(vk), code) if code.lower() in _ADDR_GROUP_CODES else None
+    try:
+        if json_key_type([code], None) == OTHER:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return str(ck), str(vk), code
+
+
+def av_list(node: Any) -> bool:
+    """A list of attribute/value fact objects: >= 80% of its items are two-member objects with an
+    identifier-like code member and a value member."""
+    if not isinstance(node, list) or not node or len(node) > 5000:
+        return False
+    n = 0
+    for e in node:
+        if isinstance(e, dict) and len(e) == 2:
+            ks = {str(k).strip().lower() for k in e}
+            if ks & _AV_CODE_KEYS and ks & _AV_VALUE_KEYS:
+                c = [e[k] for k in e if str(k).strip().lower() in _AV_CODE_KEYS]
+                if c and isinstance(c[0], str) and _RE_AV_CODE.match(c[0].strip()):
+                    n += 1
+    return n * 5 >= len(node) * 4
