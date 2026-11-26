@@ -209,7 +209,9 @@ class _Linker:
             ga.bmax = gb.bmax if ga.bmax is None else max(ga.bmax, gb.bmax)
         ga.names = sorted(set(ga.names) | set(gb.names))
         ga.anchored = ga.anchored or gb.anchored
-        ga.members = sorted(ga.members + gb.members)
+        if len(gb.members) > len(ga.members):   # extend the shorter into the longer (sorted when read)
+            ga.members, gb.members = gb.members, ga.members
+        ga.members.extend(gb.members)
         ga.nonfrag = ga.nonfrag or gb.nonfrag
         del self.groups[ry]
         return True
@@ -276,6 +278,20 @@ def _soft_rule(lk: _Linker, recs: List[_Rec], blocks: Dict[tuple, List[int]],
     """Rules 5-8: link a record only when the evidence points to exactly one group."""
     found: List[Tuple[int, int, Dict[int, int]]] = []
     blocked: Set[int] = set()
+    # unions are applied only after the scan, so group roots are fixed while it runs: each block is
+    # split once into its groups (members in block order) and a record skips whole groups that are
+    # its own or already matched, instead of walking every member (a big patient's block).
+    by_root: Dict[tuple, List[Tuple[int, List[int]]]] = {}
+
+    def groups_of(bk: tuple) -> List[Tuple[int, List[int]]]:
+        hit = by_root.get(bk)
+        if hit is None:
+            od: Dict[int, List[int]] = {}
+            for j in blocks.get(bk, ()):
+                od.setdefault(lk.find(j), []).append(j)
+            hit = by_root[bk] = list(od.items())
+        return hit
+
     for r in recs:
         if fragment_rule and not r.fragment:
             continue
@@ -283,15 +299,18 @@ def _soft_rule(lk: _Linker, recs: List[_Rec], blocks: Dict[tuple, List[int]],
         cand: Dict[int, int] = {}
         seen: Set[int] = set()
         for bk in keys_of(r):
-            for j in blocks.get(bk, ()):
-                if j == r.i or j in seen:
-                    continue
-                seen.add(j)
-                rj = lk.find(j)
+            if bk not in blocks:
+                continue
+            for rj, members in groups_of(bk):
                 if rj == own or rj in cand:
                     continue
-                if match(r, recs[j]):
-                    cand[rj] = j
+                for j in members:
+                    if j == r.i or j in seen:
+                        continue
+                    seen.add(j)
+                    if match(r, recs[j]):
+                        cand[rj] = j
+                        break
         if not cand:
             continue
         if fragment_rule:
@@ -396,7 +415,7 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
     candidates: List[Tuple[str, Key, _Group]] = []
     for root in sorted(lk.groups):
         g = lk.groups[root]
-        members = [recs[i] for i in g.members]
+        members = [recs[i] for i in sorted(g.members)]
         toks = sorted({t for m in members for t in m.ids})
         if len(members) == 1:
             if not any(t.split(":", 1)[0] in _STRONG_OWN for t in toks):
