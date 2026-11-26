@@ -239,17 +239,50 @@ _RE_BLOB = re.compile(
 _RE_DIGIT_TOKEN = re.compile(r"(?<![0-9A-Za-z/.\-])[0-9]{5,14}(?![0-9A-Za-z]|[/.\-][0-9])")
 
 
+_UNDERSCORE_WORDS = frozenset("""
+report reports visit visits opd ipd export exports result results summary summaries note notes bundle bundles
+claim claims forward forwarded file files page pages month year data dump backup list sheet log logs scan scans
+copy draft final batch upload download index records record discharge lab labs bill bills
+""".split())
+_RE_UNDERSCORE_ID = re.compile(r"[A-Za-z]{2,10}_[0-9][0-9A-Za-z\-/]*|[A-Za-z]{2,10}_[A-Za-z]{1,4}[0-9]{4,}")
+
+
+def _underscore_id(tok: str) -> bool:
+    """'_' joins a letter prefix and digits of one identifier ("UHID_010610"), not ordinary words."""
+    if not _RE_UNDERSCORE_ID.fullmatch(tok):
+        return False
+    lead = tok.split("_", 1)[0].lower()
+    return lead not in _UNDERSCORE_WORDS
+
+
 def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
     """Hospital / registration / admission numbers (kind MRN), value = norm_id."""
     t = _to_ascii_digits(text)
     tl = t.lower()
     out: List[Tuple[int, int, int, str, str]] = []
     blobs = [(u.start(), u.end()) for u in _RE_BLOB.finditer(t)]
+    toks: List[Tuple[int, int, str]] = []
     for m in _RE_CODE.finditer(t):
         tok = m.group()
+        if "_" in tok and not _underscore_id(tok):
+            # file-name-like run ("report_00005", "visits_2026_02"): judge each piece alone
+            pos = m.start()
+            prev = ""
+            for piece in tok.split("_"):
+                if piece and _RE_CODE.fullmatch(piece):
+                    toks.append((pos, pos + len(piece), piece))
+                elif (re.fullmatch(r"[0-9]{5,14}", piece) and re.fullmatch(r"[A-Za-z]{2,}", prev)
+                      and prev.lower() not in _UNDERSCORE_WORDS and not _looks_like_date(piece)):
+                    # "<Name>_<digits>" folder of an export: the digits are the patient's number
+                    out.append((1, pos, pos + len(piece), "MRN", piece))
+                prev = piece
+                pos += len(piece) + 1
+            continue
+        toks.append((m.start(), m.end(), tok))
+    for ms, me, tok in toks:
         if len(_digits(tok)) < 5:
             continue
-        if any(bs < m.end() and m.start() < be for bs, be in blobs):
+        if any(bs < me and ms < be for bs, be in blobs):
             continue
         lead = re.match(r"[A-Za-z]+", tok).group()
         if len(lead) < 2:
@@ -261,7 +294,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
             continue
         if _RE_HEXISH.search(tok) or (len(tok) > 24 and not re.search(r"[\-/._]", tok)):
             continue                                                 # uuid / hash / base64 run
-        seg = _segment_before(tl, m.start(), 40)
+        seg = _segment_before(tl, ms, 40)
         if _RE_NON_PATIENT_LABEL.search(seg):
             continue
         if re.match(r"(?:mob|mobile|ph|phone|tel|cell|call|contact)$", lead, re.I):
@@ -270,7 +303,7 @@ def find_patient_ids(text: str, after_label_only: bool = False) -> List[Span]:
             re.match(r"(?:uhid|mrn|reg|ipd|ip|adm|crno|hosp)", lead, re.I))
         if after_label_only and not labelled:
             continue
-        out.append((0, m.start(), m.end(), "MRN", norm_id(tok)))
+        out.append((0, ms, me, "MRN", norm_id(tok)))
     # bare digit numbers right after an explicit patient-id label
     for m in _RE_DIGIT_TOKEN.finditer(t):
         seg = _segment_before(tl, m.start(), 40)
@@ -408,8 +441,8 @@ _RE_EPONYM = re.compile(
     re.I,
 )
 _RE_ASHA = re.compile(
-    r"(?<![A-Za-z])ASHA(?:\s+(?:worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|kendra))?(?![A-Za-z])"
-    r"(?!\s+[A-Z][a-z])|(?<![A-Za-z])asha\s+(?:worker|didi|sahayogini|sahyogini|karyakarta|facilitator)(?![A-Za-z])"
+    r"(?<![A-Za-z])ASHA(?:\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji|kendra))?(?![A-Za-z])"
+    r"(?!\s+[A-Z][a-z])|(?<![A-Za-z])asha\s+(?:workers|worker|didi|sahayogini|sahyogini|karyakarta|facilitator|bahu|behenji)(?![A-Za-z])"
     r"|आशा\s+(?:कार्यकर्ता|दीदी|बहू|सहयोगिनी)",
     re.I,
 )

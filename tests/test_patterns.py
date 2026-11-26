@@ -212,3 +212,18 @@ class TestLexicon(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnderscoreIds(unittest.TestCase):
+    def test_file_names_not_mrn(self):
+        for t in ("report_00005", "arogya_opd_2026_05", "visits_2026_02.json", "export_123456",
+                  "summary_page_00012", "claims_forward_2026_03"):
+            self.assertEqual(P.find_patient_ids(t), [], t)
+
+    def test_underscore_id_kept(self):
+        sp = P.find_patient_ids("UHID_010610")
+        self.assertEqual([(s.start, s.end) for s in sp], [(0, 11)])
+
+    def test_id_inside_file_name(self):
+        t = "report_QRH2077123_final"
+        self.assertEqual([t[s.start:s.end] for s in P.find_patient_ids(t)], ["QRH2077123"])
