@@ -1,4 +1,8 @@
-# Your privacy rules. main.py reads simple "key: value" lines.
-age_band_years: 5          # ages become bands like 45-49 (the band must contain the true age)
-date_shift_max_days: 180   # every date of one patient moves by the same secret offset
-min_group_size: 5          # TODO: suppress or widen quasi-identifier combos rarer than this (k-anonymity)
+# Privacy rules for raksha. Simple "key: value" lines; anything after # is a comment.
+age_band_years: 5          # ages become bands like 45-49 (the band always contains the true age)
+age_top: 85                # ages at or above this collapse into one top band "85+"
+date_shift_max_days: 180   # every date of one patient moves by the same keyed offset, at most this many days
+date_shift_min_days: 30    # ... and at least this many days (never 0)
+rare_k: 3                  # a quasi-identifier combination seen fewer than k times counts as rare
+rare_cap_pct: 8            # never generalise more than this percentage of records for rarity
+rare_rule: on              # on / off: generalise rare combinations
