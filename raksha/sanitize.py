@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from . import dates, fields
+from . import dates, fields, privacy
 from .detect import ID_KINDS, NAME_KINDS, Known, detect
 from .harvest import harvest_file
 from .ingest import dump_csv, dump_json
@@ -93,7 +93,8 @@ class _Ctx:
 
     def __init__(self, known: Known, psn: Optional[str], shift: int, order: str, default_year: Optional[int],
                  own_ids: frozenset, all_ids: frozenset, full_set: frozenset, policy: Dict[str, Any],
-                 do_shift: bool) -> None:
+                 do_shift: bool, pol: Optional[privacy.Policy] = None,
+                 dec: Optional[privacy.Decision] = None) -> None:
         self.known = known
         self.psn = psn
         self.shift = shift
@@ -102,8 +103,10 @@ class _Ctx:
         self.own_ids = own_ids
         self.all_ids = all_ids
         self.full_set = full_set
-        self.width = _int(policy.get("age_band_years"), 5)
-        self.top = _int(policy.get("age_top"), 85)
+        self.pol = pol if pol is not None else privacy.Policy(policy)
+        self.dec = dec if dec is not None else privacy.Decision(suppress_geo=self.pol.min_cell > 0)
+        self.width = self.pol.width
+        self.top = self.pol.top
         self.do_shift = do_shift
         self.has_pid = False          # the record has a patient-id slot (the pseudonym goes there)
         self.psn_placed = False
@@ -115,7 +118,7 @@ class _Ctx:
         name = _COUNT_NAME.get(kind, kind)
         if name != "identifiers":
             self.counts[name] = self.counts.get(name, 0) + n
-        if name in ("DOB", "PIN"):
+        if name in ("DOB", "PIN", "DISTRICT"):
             return
         self.counts["identifiers"] = self.counts.get("identifiers", 0) + n
 
@@ -199,6 +202,19 @@ def _global(env: Env) -> Tuple[Tuple[Tuple[str, ...], ...], frozenset, frozenset
     return res
 
 
+def _privacy(env: Env) -> Tuple[privacy.Policy, Dict[str, privacy.Decision]]:
+    """Per-patient age band and geography decisions, built once per Env."""
+    cached = getattr(env, "_raksha_privacy", None)
+    if cached is not None:
+        return cached
+    res = privacy.build(env.book or {}, env.policy or {})
+    try:
+        setattr(env, "_raksha_privacy", res)
+    except Exception:  # noqa: BLE001
+        pass
+    return res
+
+
 def _own(facts: Sequence[Facts]) -> Tuple[frozenset, frozenset]:
     keys = set()  # type: Set[str]
     ids = set()  # type: Set[str]
@@ -220,6 +236,7 @@ class _File:
         self.env = env
         self.recs = recs
         self.full_names, self.all_ids, self.full_set, self.all_keys = _global(env)
+        self.pol, self.decisions = _privacy(env)
         pol = env.policy or {}
         self.smax = _int(pol.get("date_shift_max_days"), 180)
         self.smin = _int(pol.get("date_shift_min_days"), 30)
@@ -235,7 +252,8 @@ class _File:
             file_keys |= k
             file_ids |= i
         self.file_ctx = self._ctx_for(frozenset(file_keys), frozenset(file_ids), None,
-                                      self._shift("rec:%s:@file" % pf.sha256), order, default_year)
+                                      self._shift("rec:%s:@file" % pf.sha256), order, default_year,
+                                      privacy.unlinked([r.facts for r in recs], self.pol))
         # headers, keys and file names: every known name token of the dataset
         self.label_ctx = self._ctx_for(self.all_keys, frozenset(), None, 0, order, default_year)
         self.label_ctx.do_shift = False
@@ -247,10 +265,10 @@ class _File:
             return self.smin
 
     def _ctx_for(self, own_keys: frozenset, own_ids: frozenset, psn: Optional[str], shift: int, order: str,
-                 default_year: Optional[int]) -> _Ctx:
+                 default_year: Optional[int], dec: Optional[privacy.Decision] = None) -> _Ctx:
         known = Known(own_keys=own_keys, full_names=self.full_names, id_values=self.all_ids)
         return _Ctx(known, psn, shift, order, default_year, own_ids, self.all_ids, self.full_set,
-                    self.env.policy or {}, not self.clean)
+                    self.env.policy or {}, not self.clean, self.pol, dec)
 
     def _make(self, r: Record, order: str, default_year: Optional[int]) -> _Ctx:
         key = self.env.assign.get((self.pf.rel, r.loc)) if self.env.assign else None
@@ -260,13 +278,15 @@ class _File:
             facts = list(pat.facts) if pat is not None and pat.facts else []
             facts.append(r.facts)
             shift = self._shift(key)
+            dec = self.decisions.get(key) or privacy.unlinked(facts, self.pol)
         else:
             psn = None
             facts = [r.facts]
             shift = self._shift("rec:%s:%s" % (self.pf.sha256, r.loc))
+            dec = privacy.unlinked(facts, self.pol)
         own_keys, own_ids = _own(facts)
         self.psns[r.loc] = psn
-        return self._ctx_for(own_keys, own_ids, psn, shift, order, default_year)
+        return self._ctx_for(own_keys, own_ids, psn, shift, order, default_year, dec)
 
     def ctx_for_ptr(self, ptr: str) -> _Ctx:
         if ptr in self.ctx:
@@ -293,6 +313,26 @@ class _File:
 
 
 # ----------------------------------------------------------------------------- text scrub
+
+_HOSP_LINE = re.compile(r"hospital|hosp\b|sadan|clinic|nursing|medical|charitable|multispecial|labs?\b|"
+                        r"pathology|diagnostic|अस्पताल|चिकित्सालय", re.I)
+
+
+def _suppress_district(surface: str, ctx: _Ctx, text: str = "", start: int = 0, end: int = 0) -> bool:
+    """True when this district mention belongs to a patient whose geography is suppressed: the
+    patient's own district anywhere, any other address-context district unless it sits on a
+    hospital / lab line (letterheads keep the hospital's town)."""
+    if not ctx.dec.suppress_geo:
+        return False
+    if not ctx.dec.districts or privacy.place_key(surface) in ctx.dec.districts:
+        return True
+    if not text:
+        return True
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    line = text[ls:le if le >= 0 else len(text)]
+    return not _HOSP_LINE.search(line)
+
 
 def _detect(text: str, ctx: _Ctx) -> list:
     try:
@@ -368,30 +408,72 @@ def _own_token_spans(text: str, ctx: _Ctx, spans: list) -> list:
     return out
 
 
-def _pin_mask(s: str) -> str:
+def _pin_mask(s: str, ctx: Optional[_Ctx] = None) -> str:
+    if ctx is not None and ctx.dec.suppress_geo:
+        return "[PIN]"
     d = "".join(_DIGITS.findall(to_ascii_digits(str(s))))
     if len(d) >= 3:
         return d[:3] + "XXX"
     return "[PIN]"
 
 
+def _age_band(age: int, ctx: _Ctx) -> str:
+    return ctx.pol.band_for(int(age), ctx.dec)
+
+
+def _band_text(text: str, ctx: _Ctx) -> str:
+    """dates.band_age_text with the patient's band: every age form of a patient gets one band."""
+    ages = dates.find_ages(text)
+    if not ages:
+        return text
+    parts = []
+    pos = 0
+    for s, e, age in ages:
+        parts.append(text[pos:s])
+        band = _age_band(age, ctx)
+        parts.append(dates._deva(band) if dates._has_deva_digit(text[s:e]) else band)
+        pos = e
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
 def _band(surface: str, value: str, ctx: _Ctx) -> str:
     try:
-        out = dates.band_age_text(surface, ctx.width, ctx.top)
+        out = _band_text(surface, ctx)
         if out != surface:
             return out
         a = to_ascii_digits(surface)
         m = _DIGITS.search(a)
         if m is None:
             if value and str(value).isdigit():
-                return dates.age_band(int(value), ctx.width, ctx.top)
+                return _age_band(int(value), ctx)
             return surface
         if int(m.group()) > 120:
             return surface
-        band = dates.age_band(int(m.group()), ctx.width, ctx.top)
+        band = _age_band(int(m.group()), ctx)
         return a[:m.start()] + band + a[m.end():]
     except Exception:  # noqa: BLE001
         return surface
+
+
+def _dob(surface: str, ctx: _Ctx) -> str:
+    """A date of birth under the policy's dob_mode: remove (default) / year / shift."""
+    mode = ctx.pol.dob_mode
+    if mode == "remove":
+        return "[DOB]"
+    if mode == "year":
+        try:
+            d = dates.parse_one(surface, ctx.order)
+            if d is None:
+                hits = dates.find_dates(surface, ctx.order)
+                d = hits[0].date if hits else None
+            if d is not None:
+                return str(d.year)
+            m = re.search(r"(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])", to_ascii_digits(surface))
+            return m.group() if m else "[DOB]"
+        except Exception:  # noqa: BLE001
+            return "[DOB]"
+    return _shift_dob(surface, ctx)
 
 
 def _shift_dob(surface: str, ctx: _Ctx) -> str:
@@ -429,7 +511,7 @@ def _gap(text: str, ctx: _Ctx, dates_on: bool, ages_on: bool) -> str:
             pass
     if ages_on and ctx.do_shift:
         try:
-            out = dates.band_age_text(out, ctx.width, ctx.top)
+            out = _band_text(out, ctx)
         except Exception:  # noqa: BLE001
             pass
     if out != text:
@@ -490,10 +572,15 @@ def scrub_text(text: str, ctx: _Ctx, mode: str = "full", dates_on: bool = True, 
             r = "[ADDRESS]"
             ctx.generalized = True
         elif k == "PIN":
-            r = _pin_mask(surf)
+            r = _pin_mask(surf, ctx)
             ctx.generalized = True
         elif k == "DOB":
-            r = _shift_dob(surf, ctx)
+            r = _dob(surf, ctx)
+            ctx.generalized = True
+        elif k == "DISTRICT":
+            if mode != "full" or not _suppress_district(surf, ctx, text, sp.start, sp.end):
+                continue
+            r = "[DISTRICT]"
             ctx.generalized = True
         elif k == "AGE":
             if not ages_on and mode != "full":
@@ -573,7 +660,11 @@ def _address(v: str, ctx: _Ctx) -> str:
         ctx.count("ADDRESS")
         ctx.generalized = True
         if dist:
-            return "[ADDRESS], " + v[dist[0].start:dist[0].end]
+            d = v[dist[0].start:dist[0].end]
+            if _suppress_district(d, ctx):
+                ctx.count("DISTRICT")
+                return "[ADDRESS], [DISTRICT]"
+            return "[ADDRESS], " + d
         return "[ADDRESS]"
     return out
 
@@ -639,14 +730,20 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
         ctx.generalized = True
         if num:
             s = str(int(v))
+            if ctx.dec.suppress_geo:
+                return 0
             return int(s[:3] + "0" * (len(s) - 3)) if len(s) > 3 else 0
-        return _pin_mask(v)
+        return _pin_mask(v, ctx)
     if ftype == fields.DOB:
         if num:
+            if ctx.pol.dob_mode == "remove":
+                ctx.count("DOB")
+                ctx.generalized = True
+                return "[DOB]"
             return v
         ctx.count("DOB")
         ctx.generalized = True
-        return _shift_dob(v, ctx)
+        return _dob(v, ctx)
     if ftype == fields.DATE:
         if num:
             return v
@@ -662,7 +759,7 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
             if isinstance(v, float) and v != int(v):
                 return v
             ctx.generalized = True
-            return dates.age_band(int(v), ctx.width, ctx.top)
+            return _age_band(int(v), ctx)
         r = _band(v, "", ctx)
         if r != v:
             ctx.generalized = True
@@ -672,6 +769,10 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
             ctx.count("identifiers")
             return 0
         return v
+    if ftype == fields.DISTRICT and ctx.dec.suppress_geo:
+        ctx.count("DISTRICT")
+        ctx.generalized = True
+        return "[DISTRICT]"
     if ftype in (fields.DISTRICT, fields.STATE, fields.GENDER, fields.RELATION, fields.DOCTOR, fields.HOSPITAL):
         return scrub_text(v, ctx, "ids", dates_on=False, ages_on=False)
     if ftype in (fields.CLINICAL, fields.OTHER_ID):
@@ -923,8 +1024,11 @@ class _Fhir:
                 out[k] = "[ADDRESS]" if isinstance(v, str) and v.strip() else v
                 self.ctx.count("ADDRESS")
             elif k == "postalCode":
-                out[k] = _pin_mask(v) if isinstance(v, str) and v.strip() else v
+                out[k] = _pin_mask(v, self.ctx) if isinstance(v, str) and v.strip() else v
                 self.ctx.count("PIN")
+            elif k == "district" and isinstance(v, str) and v.strip() and self.ctx.dec.suppress_geo:
+                out[k] = "[DISTRICT]"
+                self.ctx.count("DISTRICT")
             elif k in ("district", "state", "country", "use", "type", "period"):
                 out[k] = v
             else:
@@ -995,11 +1099,22 @@ class _Fhir:
             elif k == "address":
                 out[k] = self._address(v)
             elif k == "birthDate" and isinstance(v, str):
-                nv = dates.shift_text(v, self.ctx.shift, "dmy") if v.strip() else v
-                out[k] = nv
-                if nv != v:
-                    self.ctx.count("DOB")
-                    self.ctx.generalized = True
+                mode = self.ctx.pol.dob_mode
+                if not v.strip():
+                    out[k] = v
+                    continue
+                self.ctx.count("DOB")
+                self.ctx.generalized = True
+                if mode == "remove":
+                    continue  # a FHIR date cannot hold a placeholder: drop the element
+                if mode == "year":
+                    m = re.match(r"\s*([0-9]{4})", v)
+                    if m:
+                        out[k] = m.group(1)
+                    continue
+                out[k] = dates.shift_text(v, self.ctx.shift, "dmy")
+            elif k == "_birthDate" and self.ctx.pol.dob_mode != "shift":
+                continue
             elif k == "contact" and isinstance(v, list):
                 out[k] = [self._contact(c) for c in v]
             elif k == "text" and isinstance(v, dict):

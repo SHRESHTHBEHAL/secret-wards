@@ -43,9 +43,8 @@ class CsvTest(unittest.TestCase):
         self.assertEqual(row[0], PSN)
         self.assertEqual(row[1], "[NAME]")
         self.assertEqual(row[2], "[PHONE]")
-        self.assertNotEqual(row[3], "14/03/1979")
-        self.assertRegex(row[3], r"^\d\d/\d\d/\d{4}$")
-        self.assertEqual(row[6], "Sitapur")
+        self.assertEqual(row[3], "[DOB]")
+        self.assertEqual(row[6], "[DISTRICT]")   # a release of one patient: cell smaller than geo_min_cell
         self.assertEqual(row[7], "Type 2 diabetes mellitus")
         a = dt.datetime.strptime(row[4], "%d/%m/%Y")
         b = dt.datetime.strptime(row[5], "%d/%m/%Y")
@@ -78,7 +77,7 @@ class JsonTest(unittest.TestCase):
         v = out["visits"][0]
         self.assertEqual(list(v), list(data["visits"][0]))
         self.assertEqual(v["patient_ref"], PSN)
-        self.assertEqual(v["age"], "50-54")
+        self.assertEqual(v["age"], "50-59")
         self.assertEqual(v["guardian"], "S/O [RELATIVE]")
         self.assertNotIn("Ilavar", v["notes"])
         self.assertNotIn("9123456780", v["notes"])
@@ -111,7 +110,7 @@ class TextTest(unittest.TestCase):
         for bad in ("Ilavar", "Pendse", "9123456780", "Mitul"):
             self.assertNotIn(bad, res.content)
         self.assertIn("Ramipril 5 mg 1-0-1", res.content)
-        self.assertIn("45-49", res.content)
+        self.assertIn("40-49", res.content)
         self.assertTrue(res.out_rel.startswith("ds/Discharge_Summary_"))
         self.assertTrue(res.out_rel.endswith(".txt"))
         self.assertNotIn("Pendse", res.out_rel)
@@ -151,10 +150,10 @@ class FhirTest(unittest.TestCase):
         self.assertEqual(p["identifier"][0]["value"], PSN)
         self.assertEqual(p["name"][0]["given"], ["[NAME]"])
         self.assertEqual(p["telecom"][0]["value"], "[PHONE]")
-        self.assertEqual(p["address"][0]["district"], "Sitapur")
-        self.assertEqual(p["address"][0]["postalCode"], "261XXX")
-        self.assertRegex(p["birthDate"], r"^\d{4}-\d\d-\d\d$")
-        self.assertNotEqual(p["birthDate"], "1979-03-14")
+        self.assertEqual(p["address"][0]["district"], "[DISTRICT]")
+        self.assertEqual(p["address"][0]["postalCode"], "[PIN]")
+        self.assertNotIn("birthDate", p)
+        self.assertNotIn("1979", res.content)
         self.assertEqual(e["identifier"][0]["value"], "[ENC-ID]")
         self.assertEqual(e["subject"], {"reference": "urn:uuid:p1", "display": "[NAME]"})
         self.assertRegex(e["period"]["start"], r"^\d{4}-\d\d-\d\dT10:00:00\+05:30$")
@@ -163,6 +162,135 @@ class FhirTest(unittest.TestCase):
         self.assertEqual((t - s).days, 7)
         self.assertEqual([x["fullUrl"] for x in out["entry"]], ["urn:uuid:p1", "urn:uuid:e1"])
         self.assertNotIn("Pendse", res.content)
+
+
+def _facts(age, district="Sitapur", gender="M", name="Ilavar Pendse", ref=None):
+    return Facts(names=[name], ids=[], raw_ids=[], age=age, gender=gender, district=district, ref_date=ref)
+
+
+def multi_env(rel, patients, policy=None):
+    """patients: list of (key, psn, loc, [Facts of the patient]); the record facts are the first fact."""
+    assign, book, psns, recs = {}, {}, {}, []
+    for key, psn, loc, facts in patients:
+        assign[(rel, loc)] = key
+        book[key] = Patient(key=key, records=[(rel, loc)], facts=list(facts))
+        psns[key] = psn
+        recs.append(Record(rel=rel, loc=loc, facts=facts[0]))
+    pol = dict(DEFAULTS)
+    pol.update(policy or {})
+    return Env(keys=Keys(b"unit-secret"), assign=assign, book=book, policy=pol, pseudonyms=psns,
+               records={rel: recs})
+
+
+class PrivacyPolicyTest(unittest.TestCase):
+    HEADER = ["uhid", "name", "age", "dob", "district", "pin", "address", "diagnosis"]
+
+    def _pf(self, rows):
+        return ParsedFile(rel="reg/p.csv", sha256="9" * 64, kind=KIND_CSV, delimiter=",",
+                          header=list(self.HEADER), rows=rows)
+
+    def _row(self, uhid, name, age, district="Sitapur"):
+        return [uhid, name, str(age), "14/03/1979", district, "261001",
+                "H.No. 4, Kotharpur, Distt. %s" % district, "Fever"]
+
+    def test_dob_removed_in_fields_and_text(self):
+        text = "Name: Ilavar Pendse\nDOB: 14/03/1979\nAge: 47 Yrs/M\n"
+        pf = ParsedFile(rel="t/a.txt", sha256="1" * 64, kind=KIND_TEXT, text=text)
+        res = sanitize_file(pf, env_for(pf.rel, ["doc"]))
+        self.assertIn("[DOB]", res.content)
+        self.assertNotIn("1979", res.content)
+        self.assertEqual(res.records[0][2], "generalized")
+
+    def test_dob_modes(self):
+        pf = self._pf([self._row("QRH-2077123", "Ilavar Pendse", 47)])
+        for mode, want in (("year", "1979"), ("remove", "[DOB]")):
+            env = env_for(pf.rel, ["row:0"])
+            env.policy["dob_mode"] = mode
+            row = list(csv.reader(io.StringIO(sanitize_file(pf, env).content)))[1]
+            self.assertEqual(row[3], want)
+        env = env_for(pf.rel, ["row:0"])
+        env.policy["dob_mode"] = "shift"
+        row = list(csv.reader(io.StringIO(sanitize_file(pf, env).content)))[1]
+        self.assertRegex(row[3], r"^\d\d/\d\d/\d{4}$")
+        self.assertNotEqual(row[3], "14/03/1979")
+
+    def test_band_consistent_per_patient(self):
+        # visits years apart: stated ages 48 and 51 straddle two 10-year bands
+        facts = [_facts(48), _facts(51)]
+        text = "Name: Ilavar Pendse  Age/Sex: 48 Yrs/M\nPatient is a 48 year old man.\n"
+        pf = ParsedFile(rel="t/b.txt", sha256="2" * 64, kind=KIND_TEXT, text=text)
+        res = sanitize_file(pf, multi_env(pf.rel, [("k1", PSN, "doc", facts)]))
+        self.assertEqual(res.content.count("40-59"), 2)
+        self.assertNotIn("48", res.content)
+        # same patient, single band: every form gets that band
+        pf2 = ParsedFile(rel="t/c.txt", sha256="3" * 64, kind=KIND_TEXT, text=text)
+        res2 = sanitize_file(pf2, multi_env(pf2.rel, [("k1", PSN, "doc", [_facts(48), _facts(46)])]))
+        self.assertEqual(res2.content.count("40-49"), 2)
+
+    def test_band_never_excludes_stated_age(self):
+        # the record says 62 although the rest of the patient book says 48: the band must hold 62
+        pf = self._pf([self._row("QRH-2077123", "Ilavar Pendse", 62)])
+        env = multi_env(pf.rel, [("k1", PSN, "row:0", [_facts(48), _facts(49)])])
+        row = list(csv.reader(io.StringIO(sanitize_file(pf, env).content)))[1]
+        self.assertEqual(row[2], "60-69")
+
+    def test_district_suppressed_in_small_cell(self):
+        pf = self._pf([self._row("QRH-2077123", "Ilavar Pendse", 47)])
+        res = sanitize_file(pf, env_for(pf.rel, ["row:0"]))
+        row = list(csv.reader(io.StringIO(res.content)))[1]
+        self.assertEqual(row[4], "[DISTRICT]")
+        self.assertEqual(row[5], "[PIN]")
+        self.assertNotIn("Sitapur", res.content)
+        self.assertNotIn("261", res.content)
+        self.assertEqual(row[7], "Fever")
+
+    def test_district_kept_in_large_cell(self):
+        names = ["Ilavar Pendse", "Mitul Rangra", "Oshan Telvi"]
+        rows = [self._row("QRH-207712%d" % i, n, 41 + i) for i, n in enumerate(names)]
+        pats = [("k%d" % i, "PSN-TESTAAAAA%d" % i, "row:%d" % i, [_facts(41 + i, name=n)])
+                for i, n in enumerate(names)]
+        pf = self._pf(rows)
+        res = sanitize_file(pf, multi_env(pf.rel, pats))
+        out = list(csv.reader(io.StringIO(res.content)))[1:]
+        for row in out:
+            self.assertEqual(row[2], "40-49")
+            self.assertEqual(row[4], "Sitapur")
+            self.assertEqual(row[5], "261XXX")
+        # a fourth patient of another district stays alone in its cell -> suppressed
+        rows.append(self._row("QRH-2077129", "Revan Kotiya", 44, "Hardoi"))
+        pats.append(("k9", "PSN-TESTAAAAA9", "row:3", [_facts(44, district="Hardoi", name="Revan Kotiya")]))
+        pf = self._pf(rows)
+        out = list(csv.reader(io.StringIO(sanitize_file(pf, multi_env(pf.rel, pats)).content)))[1:]
+        self.assertEqual(out[0][4], "Sitapur")
+        self.assertEqual(out[3][4], "[DISTRICT]")
+        self.assertNotIn("Hardoi", out[3][6])
+        # geo_min_cell 0 disables suppression
+        out = list(csv.reader(io.StringIO(sanitize_file(
+            pf, multi_env(pf.rel, pats, {"geo_min_cell": 0})).content)))[1:]
+        self.assertEqual(out[3][4], "Hardoi")
+        self.assertEqual(out[3][5], "261XXX")
+
+    def test_fhir_birthdate_removed_references_intact(self):
+        data = {"resourceType": "Bundle", "id": "b2", "type": "collection", "entry": [
+            {"fullUrl": "urn:uuid:p9", "resource": {
+                "resourceType": "Patient", "id": "p9", "gender": "male", "birthDate": "1979-03-14",
+                "name": [{"text": "Ilavar Pendse"}],
+                "text": {"status": "generated", "div": "<div>Ilavar Pendse, 47 yrs, male, DOB 14/03/1979</div>"}}},
+            {"fullUrl": "urn:uuid:o9", "resource": {
+                "resourceType": "Observation", "id": "o9", "status": "final",
+                "subject": {"reference": "urn:uuid:p9"}, "effectiveDateTime": "2026-05-02",
+                "valueQuantity": {"value": 7.1, "unit": "%"}}}]}
+        pf = ParsedFile(rel="fhir/c.json", sha256="4" * 64, kind=KIND_FHIR, data=data)
+        out = json.loads(sanitize_file(pf, env_for(pf.rel, ["doc"])).content)
+        p = out["entry"][0]["resource"]
+        o = out["entry"][1]["resource"]
+        self.assertNotIn("birthDate", p)
+        self.assertEqual(p["resourceType"], "Patient")
+        self.assertEqual(p["id"], "p9")
+        self.assertEqual(o["subject"], {"reference": "urn:uuid:p9"})
+        self.assertEqual(o["valueQuantity"], {"value": 7.1, "unit": "%"})
+        self.assertIn("40-49", p["text"]["div"])
+        self.assertNotIn("1979", json.dumps(out))
 
 
 if __name__ == "__main__":
