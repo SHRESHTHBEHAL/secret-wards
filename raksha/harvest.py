@@ -446,10 +446,49 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
             if isinstance(e, (dict, list)):
                 _record_arrays(e, "%s/%d" % (ptr, i), keys, out, depth + 1)
     elif isinstance(node, dict):
+        if _keyed_collection(node, keys):
+            for k in list(node.keys()):
+                out.append(("%s/%s" % (ptr, _ptr(str(k))), keys, node[k]))
+            return
         for k in list(node.keys()):
             v = node[k]
             if isinstance(v, (dict, list)):
                 _record_arrays(v, "%s/%s" % (ptr, _ptr(str(k))), keys + [str(k)], out, depth + 1)
+
+
+_ID_KEY = re.compile(r"^(?=[^0-9]*(?:[0-9][^0-9]*){4})[A-Za-z0-9][A-Za-z0-9/_.\-]{3,40}$")
+_NOT_ID_KEY = re.compile(r"^(?:[A-Za-z]-?[0-9]{1,4}|[0-9]{4}[-/.][0-9]{1,2}(?:[-/.][0-9]{1,2})?.*|[0-9]{1,4})$")
+
+
+def id_shaped_key(k: str) -> bool:
+    """A JSON object key that is itself a hospital / patient number ("HN-771204", "MRD/2026/0042")."""
+    k = str(k)
+    return bool(_ID_KEY.match(k)) and not _NOT_ID_KEY.match(k)
+
+
+def _keyed_collection(node: dict, keys: List[Any]) -> bool:
+    """An object whose keys are all id-shaped and whose values are record objects: a record collection
+    keyed by patient id ({"patients": {"<id>": {...}, "<id>": {...}}})."""
+    if not node or len(node) > 100000:
+        return False
+    ks = list(node.keys())
+    if not all(isinstance(node[k], dict) for k in ks) or not all(id_shaped_key(k) for k in ks):
+        return False
+    sig = _RECORD_SIGNAL | {F.NAME, F.PHONE, F.FIRST_NAME, F.LAST_NAME}
+    for k in ks[:50]:
+        for n, (lk, v) in enumerate(_leaves(node[k], list(keys))):
+            if n > 200:
+                break
+            if _s(v) and _ktype(lk, v) in sig:
+                return True
+    return False
+
+
+def keyed_record_id(loc: str) -> str:
+    """The id key of a keyed-collection record locator ("/patients/HN-1" -> "HN-1"), else ''."""
+    seg = loc.rsplit("/", 1)[-1] if loc.startswith("/") else ""
+    seg = seg.replace("~1", "/").replace("~0", "~")
+    return seg if seg and not seg.isdigit() and id_shaped_key(seg) else ""
 
 
 def _single_record(d: dict) -> bool:
@@ -558,6 +597,9 @@ def _json_records(pf: ParsedFile) -> List[Record]:
         for loc, keys, elem in units:
             fb = _FB()
             _harvest_tree(fb, elem, keys, orders, _override(pf))
+            kid = keyed_record_id(loc)
+            if kid:
+                put(fb, F.PATIENT_ID, kid)
             f = fb.finish()
             f.is_patient = fb.signal or _has_patient_facts(f)
             out.append(Record(rel=pf.rel, loc=loc, facts=f))
