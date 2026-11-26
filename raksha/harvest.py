@@ -429,8 +429,31 @@ def _is_record(elem: Any, prefix: List[Any]) -> bool:
     return False
 
 
+_PERSON_LEAF = frozenset({F.NAME, F.FIRST_NAME, F.LAST_NAME, F.PHONE, F.EMAIL, F.PATIENT_ID})
+
+
+def _homogeneous(node: list, keys: List[Any]) -> bool:
+    """Two or more objects of one shape (shared keys) of which some carry a person leaf."""
+    if len(node) < 2 or not all(isinstance(e, dict) and e for e in node):
+        return False
+    common = set(node[0].keys())
+    union = set(node[0].keys())
+    for e in node[1:]:
+        common &= set(e.keys())
+        union |= set(e.keys())
+    if len(common) < 2 or len(common) * 2 < len(union):
+        return False
+    for e in node[:50]:
+        for n, (lk, v) in enumerate(_leaves(e, list(keys))):
+            if n > 200:
+                break
+            if _s(v) and _ktype(lk, v) in _PERSON_LEAF:
+                return True
+    return False
+
+
 def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, List[Any], Any]],
-                   depth: int = 0) -> None:
+                   depth: int = 0, homog: bool = False) -> None:
     """Find lists of record objects; arrays nested inside a record are not split."""
     if depth > MAX_DEPTH:
         return
@@ -438,13 +461,14 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
         named = bool(keys) and not isinstance(keys[-1], int) and \
             _RECORD_KEY.search(str(keys[-1]).lower()) is not None
         if node and (any(_is_record(e, keys) for e in node[:50])
+                     or (homog and _homogeneous(node, keys))
                      or ((named or (depth == 0 and not ptr)) and all(isinstance(e, dict) for e in node))):
             for i, e in enumerate(node):
                 out.append(("%s/%d" % (ptr, i), keys, e))
             return
         for i, e in enumerate(node):
             if isinstance(e, (dict, list)):
-                _record_arrays(e, "%s/%d" % (ptr, i), keys, out, depth + 1)
+                _record_arrays(e, "%s/%d" % (ptr, i), keys, out, depth + 1, homog)
     elif isinstance(node, dict):
         if _keyed_collection(node, keys):
             for k in list(node.keys()):
@@ -453,7 +477,7 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
         for k in list(node.keys()):
             v = node[k]
             if isinstance(v, (dict, list)):
-                _record_arrays(v, "%s/%s" % (ptr, _ptr(str(k))), keys + [str(k)], out, depth + 1)
+                _record_arrays(v, "%s/%s" % (ptr, _ptr(str(k))), keys + [str(k)], out, depth + 1, homog)
 
 
 _ID_KEY = re.compile(r"^(?=[^0-9]*(?:[0-9][^0-9]*){4})[A-Za-z0-9][A-Za-z0-9/_.\-]{3,40}$")
@@ -466,14 +490,49 @@ def id_shaped_key(k: str) -> bool:
     return bool(_ID_KEY.match(k)) and not _NOT_ID_KEY.match(k)
 
 
+_PHONE_KEY = re.compile(r"^\+?[0-9][0-9 ().\-]{8,18}$")
+_NAME_KEY = re.compile(r"^(?:[A-Z][A-Za-z'.]*(?:[ \t]+[A-Z][A-Za-z'.]*){1,4}|[\u0900-\u097F]+(?:[ \t]+[\u0900-\u097F]+){1,3})$")
+_NAME_PARENT = re.compile(r"name|naam|nm$|patient|mareez|person|^pts?$", re.I)
+_ID_PARENT = re.compile(r"^by.?(?:id|uhid|mrn|reg|hosp|no)|patients?$|uhid|mrn|regist", re.I)
+_INSTITUTION = re.compile(r"(?:^|\s)(?:ward|wing|block|hospital|college|centre|center|clinic|lab|"
+                          r"laboratory|unit|dept|department|memorial|trust|mission|icu|ot|opd|ipd)(?:\s|$)", re.I)
+
+
+def key_kind(k: str) -> str:
+    """What a JSON object key itself is: "phone", "id", "name" or ""."""
+    k = str(k).strip()
+    d = re.sub(r"[^0-9]", "", to_ascii_digits(k))
+    if _PHONE_KEY.match(to_ascii_digits(k)) and (
+            (len(d) == 10 and d[0] in "6789") or (len(d) == 12 and d.startswith("91") and d[2] in "6789")
+            or (len(d) == 11 and d[0] == "0")):
+        return "phone"
+    if id_shaped_key(k):
+        return "id"
+    if _NAME_KEY.match(k) and not _INSTITUTION.search(k):
+        return "name"
+    return ""
+
+
 def _keyed_collection(node: dict, keys: List[Any]) -> bool:
-    """An object whose keys are all id-shaped and whose values are record objects: a record collection
-    keyed by patient id ({"patients": {"<id>": {...}, "<id>": {...}}})."""
+    """An object whose keys are all of one identifier kind and whose values are record objects: a
+    record collection keyed by patient id, by mobile number or by patient name
+    ({"patients": {"<id>": {...}}}, {"byMobile": {"<phone>": {...}}}, {"byName": {"<name>": {...}}})."""
     if not node or len(node) > 100000:
         return False
     ks = list(node.keys())
-    if not all(isinstance(node[k], dict) for k in ks) or not all(id_shaped_key(k) for k in ks):
+    if not all(isinstance(node[k], dict) for k in ks):
         return False
+    kinds = {key_kind(k) for k in ks}
+    if len(kinds) != 1 or "" in kinds:
+        return False
+    kind = kinds.pop()
+    parent = str(keys[-1]) if keys and not isinstance(keys[-1], int) else ""
+    if kind == "phone":
+        return True
+    if kind == "name":
+        return bool(parent) and _NAME_PARENT.search(parent) is not None
+    if parent and _ID_PARENT.search(parent) and len(ks) >= 2:
+        return True
     sig = _RECORD_SIGNAL | {F.NAME, F.PHONE, F.FIRST_NAME, F.LAST_NAME}
     for k in ks[:50]:
         for n, (lk, v) in enumerate(_leaves(node[k], list(keys))):
@@ -484,11 +543,21 @@ def _keyed_collection(node: dict, keys: List[Any]) -> bool:
     return False
 
 
-def keyed_record_id(loc: str) -> str:
-    """The id key of a keyed-collection record locator ("/patients/HN-1" -> "HN-1"), else ''."""
+def keyed_record_key(loc: str) -> Tuple[str, str]:
+    """(kind, key) of a keyed-collection record locator ("/byMobile/98..." -> ("phone", "98...")),
+    else ("", "")."""
     seg = loc.rsplit("/", 1)[-1] if loc.startswith("/") else ""
     seg = seg.replace("~1", "/").replace("~0", "~")
-    return seg if seg and not seg.isdigit() and id_shaped_key(seg) else ""
+    if not seg or seg.isdigit() and key_kind(seg) != "phone":
+        return "", ""
+    kind = key_kind(seg)
+    return (kind, seg) if kind else ("", "")
+
+
+def keyed_record_id(loc: str) -> str:
+    """The id key of a keyed-collection record locator ("/patients/HN-1" -> "HN-1"), else ''."""
+    kind, seg = keyed_record_key(loc)
+    return seg if kind == "id" else ""
 
 
 def _single_record(d: dict) -> bool:
@@ -505,15 +574,29 @@ def _single_record(d: dict) -> bool:
     return False
 
 
+def _root_person(d: dict) -> bool:
+    for keys, x in _leaves(d, []):
+        if any(isinstance(p, int) for p in keys):
+            continue
+        if _s(x) and _ktype(keys, x) in _PERSON_LEAF:
+            return True
+    return False
+
+
 def _json_units(pf: ParsedFile) -> List[Tuple[str, List[Any], Any]]:
     data = pf.data
     if pf.kind != KIND_JSON or not isinstance(data, (dict, list)):
         return []
     try:
-        if isinstance(data, dict) and _single_record(data):
+        if isinstance(data, dict) and _single_record(data) and not any(
+                isinstance(v, dict) and _keyed_collection(v, [str(k)]) for k, v in data.items()):
             return []
         out: List[Tuple[str, List[Any], Any]] = []
         _record_arrays(data, "", [], out)
+        if not out and isinstance(data, dict) and not _root_person(data):
+            # no id-bearing records and nobody named outside the arrays: a list of same-shaped
+            # objects that carry names / phones (tickets, messages, slips) is the record list
+            _record_arrays(data, "", [], out, homog=True)
         return out
     except Exception:  # noqa: BLE001
         return []
@@ -524,18 +607,74 @@ def record_locs(pf: ParsedFile) -> List[str]:
     if pf.kind == KIND_QUARANTINE:
         return []
     if pf.kind == KIND_CSV:
-        return ["row:%d" % i for i in range(len(pf.rows))]
+        return ["row:%d" % i for i in range(len(csv_view(pf)[1]))]
     units = _json_units(pf)
     if units:
         return [u[0] for u in units]
     return ["doc"]
 
 
+# ---------------------------------------------------------------- CSV layout
+
+_VAL_CELL = re.compile(r"[0-9]{4,}|^\s*[0-9]{1,3}\s*/\s*[MFmf]\s*$|^\s*[MFmf]\s*/\s*[0-9]{1,3}\s*$|@")
+
+
+def _value_cell(c: Any) -> bool:
+    """A cell whose shape never occurs in a column label: a long digit run, an age/sex pair, an e-mail."""
+    s = to_ascii_digits(_s(c))
+    return bool(s) and bool(_VAL_CELL.search(s.replace(" ", "").replace("-", "")) or _VAL_CELL.search(s))
+
+
+def _shape_sig(c: Any) -> str:
+    s = to_ascii_digits(_s(c))
+    s = re.sub(r"[A-Za-z\u0900-\u097F]+", "a", s)
+    s = re.sub(r"[0-9]+", lambda m: "9" if len(m.group(0)) < 4 else "9999", s)
+    return re.sub(r"\s+", " ", s)
+
+
+def _digit_free(row: Sequence[Any]) -> bool:
+    return not any(re.search(r"[0-9]{2,}", to_ascii_digits(_s(c))) for c in row)
+
+
+def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
+    """(column labels, data rows, header line count) of a parsed CSV.
+
+    Header line count is 1 for a normal file, 0 for a headerless file (line 1 is data: two or more
+    cells with value shapes no label has) and 2 for a sparse group row above the real header. Data
+    row i always has the locator row:i."""
+    header = list(pf.header or [])
+    rows = [list(r or []) for r in (pf.rows or [])]
+    filled = [c for c in header if _s(c)]
+    vals = 0
+    for c, h in enumerate(header):
+        if not _value_cell(h):
+            continue
+        col = [_shape_sig(r[c]) for r in rows[:50] if c < len(r) and _s(r[c])]
+        if col and col.count(_shape_sig(h)) * 2 >= len(col):
+            vals += 1     # shaped like the data under it: line 1 is itself a data line
+    if filled and vals >= 2 and vals * 4 >= len(filled):
+        return [""] * len(header), [header] + rows, 0
+    if rows and len(rows) >= 2 and header:
+        sub = rows[0]
+        sub_filled = [c for c in sub if _s(c)]
+        if (len(filled) * 10 <= len(header) * 6 and len(sub_filled) > len(filled)
+                and _digit_free(header) and _digit_free(sub) and not _digit_free(rows[1])):
+            labels: List[str] = []
+            group = ""
+            width = max(len(header), len(sub))
+            for c in range(width):
+                g = _s(header[c]) if c < len(header) else ""
+                group = g or group
+                lb = _s(sub[c]) if c < len(sub) else ""
+                labels.append(lb or (group if g else ""))
+            return labels, rows[1:], 2
+    return header, rows, 1
+
+
 # ---------------------------------------------------------------- per kind
 
 def _csv_records(pf: ParsedFile) -> List[Record]:
-    header = list(pf.header or [])
-    rows = pf.rows or []
+    header, rows, _hl = csv_view(pf)
     width = max([len(header)] + [len(r or []) for r in rows])
     types: List[str] = []
     orders: List[str] = []
@@ -597,11 +736,15 @@ def _json_records(pf: ParsedFile) -> List[Record]:
         for loc, keys, elem in units:
             fb = _FB()
             _harvest_tree(fb, elem, keys, orders, _override(pf))
-            kid = keyed_record_id(loc)
-            if kid:
+            kkind, kid = keyed_record_key(loc)
+            if kkind == "id":
                 put(fb, F.PATIENT_ID, kid)
+            elif kkind == "phone":
+                put(fb, F.PHONE, kid)
+            elif kkind == "name":
+                put(fb, F.NAME, kid)
             f = fb.finish()
-            f.is_patient = fb.signal or _has_patient_facts(f)
+            f.is_patient = fb.signal or _has_patient_facts(f) or bool(kkind)
             out.append(Record(rel=pf.rel, loc=loc, facts=f))
         return out
     fb = _FB()
@@ -653,7 +796,52 @@ def _text_records(pf: ParsedFile) -> List[Record]:
     _file_name_facts(fb, pf.rel)
     f = fb.finish()
     f.is_patient = _looks_patient(f)
+    if _multi_patient_text(text, f):
+        # a census / register extract / roster: scrub every id and name, link to nobody
+        for t in f.ids:
+            raw = t.split(":", 1)[-1]
+            if raw and raw not in f.raw_ids:
+                f.raw_ids.append(raw)
+        f.ids = []
+        f.is_patient = False
     return [Record(rel=pf.rel, loc="doc", facts=f)]
+
+
+_TABLE_SEP = re.compile(r"\||\t")
+_LONG_RUN = re.compile(r"[0-9]{5,}")
+
+
+def _multi_patient_text(text: str, f: Facts) -> bool:
+    """A text that lists several people: a table with two or more rows that carry different contact
+    numbers / ids, two unrelated full names, or two different relatives of one kind (two wives)."""
+    rows = [ln for ln in text.splitlines()[:5000] if len(_TABLE_SEP.findall(ln)) >= 2]
+    if len(rows) >= 3:
+        runs = set()
+        hits = 0
+        for ln in rows[1:]:
+            got = set(_LONG_RUN.findall(re.sub(r"(?<=[0-9])[ \-](?=[0-9])", "", to_ascii_digits(ln))))
+            if got and not got <= runs:
+                hits += 1
+            runs |= got
+        if hits >= 2:
+            return True
+    full = [n for n in f.names if len(n.split()) >= 2]   # a document may carry several own ids
+    for i in range(len(full)):
+        for j in range(i + 1, len(full)):
+            if not _same_name(full[i], full[j]):
+                return True
+    by_rel: Dict[str, List[str]] = {}
+    for r in f.relatives:
+        if r and len(r) > 1 and r[0] and r[1]:
+            by_rel.setdefault(str(r[0]).lower().strip(". "), []).append(r[1])
+    for k in sorted(by_rel):
+        if k in ("wife", "husband", "patni", "pati", "w/o", "h/o", "पत्नी", "पति"):
+            ns = by_rel[k]
+            for i in range(len(ns)):
+                for j in range(i + 1, len(ns)):
+                    if not _same_name(ns[i], ns[j]):
+                        return True
+    return False
 
 
 # ---------------------------------------------------------------- FHIR
@@ -739,9 +927,68 @@ def _fhir_patient(fb: _FB, r: dict) -> None:
             fb.f.pin = pc
 
 
+def _fhir_ref_keys(e: dict, r: dict) -> List[str]:
+    out = []
+    if _s(e.get("fullUrl")):
+        out.append(_s(e.get("fullUrl")))
+    if _s(r.get("id")):
+        out.append("Patient/" + _s(r.get("id")))
+        out.append(_s(r.get("id")))
+    return out
+
+
+def _fhir_subject(r: dict) -> str:
+    for k in ("subject", "patient", "beneficiary", "for"):
+        v = r.get(k)
+        if isinstance(v, dict) and _s(v.get("reference")):
+            return _s(v.get("reference"))
+    return ""
+
+
+def _fhir_entry_records(pf: ParsedFile, entries: List[Any]) -> List[Record]:
+    """A collection / batch bundle of several patients: one record per entry, each resource tied to
+    the Patient its subject reference resolves to (unresolved resources belong to nobody)."""
+    facts: Dict[str, Facts] = {}
+    for e in entries:
+        r = e.get("resource") if isinstance(e, dict) else None
+        if isinstance(r, dict) and _s(r.get("resourceType")) == "Patient":
+            fb = _FB()
+            _fhir_patient(fb, r)
+            f = fb.finish()
+            f.is_patient = True
+            for k in _fhir_ref_keys(e, r):
+                facts.setdefault(k, f)
+    out: List[Record] = []
+    for i, e in enumerate(entries):
+        r = e.get("resource") if isinstance(e, dict) else None
+        f = None
+        if isinstance(r, dict):
+            if _s(r.get("resourceType")) == "Patient":
+                keys = _fhir_ref_keys(e, r)
+                f = facts.get(keys[0]) if keys else None
+                if f is None:
+                    fb = _FB()
+                    _fhir_patient(fb, r)
+                    f = fb.finish()
+                    f.is_patient = True
+            else:
+                ref = _fhir_subject(r)
+                f = facts.get(ref) or facts.get(ref.rsplit("/", 1)[-1]) if ref else None
+        if f is None:
+            f = Facts()
+            f.is_patient = False
+        out.append(Record(rel=pf.rel, loc="/entry/%d" % i, facts=f))
+    return out
+
+
 def _fhir_records(pf: ParsedFile) -> List[Record]:
     fb = _FB()
     data = pf.data if isinstance(pf.data, dict) else {}
+    entries = _lst(data.get("entry"))
+    n_pat = sum(1 for e in entries if isinstance(e, dict) and isinstance(e.get("resource"), dict)
+                and _s(e["resource"].get("resourceType")) == "Patient")
+    if n_pat >= 2 and _s(data.get("type")).lower() != "document":
+        return _fhir_entry_records(pf, entries)
     res = [e.get("resource") for e in _lst(data.get("entry"))
            if isinstance(e, dict) and isinstance(e.get("resource"), dict)]
     texts: List[str] = []
@@ -847,8 +1094,7 @@ def _slots(pf: ParsedFile) -> Dict[Any, Tuple[str, List[str]]]:
     """slot (CSV column index / JSON key signature) -> (current type, string values)."""
     out: Dict[Any, Tuple[str, List[str]]] = {}
     if pf.kind == KIND_CSV:
-        header = list(pf.header or [])
-        rows = pf.rows or []
+        header, rows, _hl = csv_view(pf)
         width = max([len(header)] + [len(r or []) for r in rows])
         for c in range(width):
             col = [r[c] for r in rows if r and c < len(r) and r[c] is not None]

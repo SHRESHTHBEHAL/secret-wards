@@ -250,14 +250,12 @@ class IndexJsonTests(unittest.TestCase):
         return ParsedFile(rel="idx/patient_index.json", sha256="c" * 64, kind=KIND_JSON, data=self.DATA)
 
     def test_index_not_linked(self):
+        # the id-keyed part is a record collection: one record per key, each with its own id
         recs = harvest.harvest_file(self._pf())
-        self.assertEqual(len(recs), 1)
-        f = recs[0].facts
-        self.assertFalse(f.is_patient)
-        self.assertEqual(f.ids, [])
-        self.assertIn("QRH2077123", f.raw_ids)
-        self.assertIn("QRH2077456", f.raw_ids)
-        self.assertIn("Sumedha Karve", f.names)
+        self.assertEqual([r.loc for r in recs], ["/by_uhid/QRH2077123", "/by_uhid/QRH2077456"])
+        self.assertEqual(recs[0].facts.ids, ["uhid:QRH2077123"])
+        self.assertEqual(recs[1].facts.ids, ["uhid:QRH2077456"])
+        self.assertIn("Sumedha Karve", recs[1].facts.names)
 
     def test_index_scrubbed(self):
         from raksha.policy import DEFAULTS
