@@ -146,7 +146,7 @@ _S = {
                  "bag", "issue", "segment", "crossmatch", "component", "cartridge", "slide",
                  "requisition", "indent", "challan"),
     "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
-               "kramank", "kod", "key"),
+               "kramank", "kod", "key", "sandarbh", "sandarbha"),
     "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
                 "adhar"),
     "abha": ("abha", "abhaid", "healthid", "ndhm", "abdm", "pmjayid_abha"),
@@ -200,7 +200,7 @@ _S = {
                  "allergy", "allergies", "qty", "quantity", "price", "total", "paid", "balance",
                  "dosha", "outcome", "triage", "severity", "specimen_type", "method", "flag", "score",
                  "scores", "scale", "access", "rent", "estimate", "mrp", "tariff", "deposit", "discount",
-                 "copay", "km"),
+                 "copay", "km", "matra", "maatra", "khurak", "khuraak"),
 }
 
 _VOCAB = frozenset(_squash(w) for ws in _S.values() for w in ws) | frozenset({"of", "ka", "ki", "ke", "s"})
@@ -252,7 +252,7 @@ _SQ = {k: tuple(sorted(set(_squash(w) for w in v))) for k, v in _S.items()}
 # Stems that must match exactly (too short or too confusable for fuzzy matching).
 _EXACT_GROUPS = frozenset({"dateverb", "relation"})
 _EXACT_ONLY = frozenset({"fullname", "firstname", "lastname", "forename", "patientid", "registrationno", "hospid", "uhidno", "regdno", "mrdno", "hospno", "nextofkin", "drname", "fhname", "filename", "freetext", "card", "file", "case", "chart", "record", "member",
-                         "place", "jela", "paal", "varsha", "cont", "seen", "joined", "booked", "batch", "serial",
+                         "place", "majra", "jela", "paal", "varsha", "cont", "seen", "joined", "booked", "batch", "serial",
                          "index", "version", "pati", "pita", "mata", "pata", "pin", "pan", "state", "on", "at", "line",
                          "form", "test", "rate", "inpatient", "apartment", "temp", "case", "note", "text", "file", "fee", "flag",
                          "exp", "odo", "auth", "kit", "rent", "km", "scale", "access", "score"})
@@ -519,7 +519,11 @@ def _value_shape(v: str) -> str:
 _INST_SUFFIX = (r"Hospitals?|Hosp\.?|Nursing\s+Home|Clinics?|Polyclinic|Medical\s+College|Institute|Memorial|Trust|"
                 r"Mission|Centre|Center|Diagnostics|Pathology|Labs?|Laborator(?:y|ies)|TPA|Insurance|Assurance|"
                 r"Ward|Wing|Block|Unit|OPD|ICU|Dispensary|Sanatorium|Foundation|Society|Health\s+Services|"
-                r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|नर्सिंग\s+होम|मेडिकल\s+कॉलेज|ट्रस्ट|संस्थान|वार्ड|औषधालय")
+                r"अस्पताल|चिकित्सालय|हॉस्पिटल|क्लिनिक|नर्सिंग\s+होम|मेडिकल\s+कॉलेज|ट्रस्ट|संस्थान|वार्ड|औषधालय|"
+                # transliterated Hindi / Marathi institution and unit words
+                r"Rugnalaya|Rugnalay|Chikitsalaya|Chikitsalay|Aspatal|Arogya\s+Kendra|Swasthya\s+Kendra|"
+                r"Vibhag|Ikai|Kaksh|Bay|Step-?down|HDU|SICU|MICU|NICU|PICU|CCU|Stores?|"
+                r"RUGNALAYA|CHIKITSALAYA|ASPATAL|HOSPITAL|VIBHAG")
 _INST_WORD = r"(?:[A-Z][A-Za-z.'&\-]*|[ऀ-ॿ]+|of|and|&|the|for|de|St\.?)"
 # A capitalised (or Devanagari) run ending in an institution word, optionally followed by a short
 # department name ("... Block Microbiology"): an institution, even when named after a person.
@@ -917,7 +921,9 @@ _RE_META_PERSON = re.compile(r"(?:^|\s)[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}")
 _RE_NAMEISH = re.compile(r"^[A-Z][a-z]+(?:\s+(?:[A-Z]\.?|[A-Z][a-z]+)){1,3}$")
 
 
-_JOB_WORDS = frozenset({"occupation", "profession", "job", "designation", "employment", "vyavsay", "pesha"})
+_JOB_WORDS = frozenset({"occupation", "profession", "job", "designation", "employment", "vyavsay", "pesha",
+                        # the exporting software / system is not a person
+                        "application", "app", "software", "platform", "appname", "softwarename"})
 _COMPANION_WORDS = frozenset({"companion", "attendant", "escort", "bystander", "caretaker", "caregiver"})
 
 
@@ -925,8 +931,27 @@ _KIN_KEY_WORDS = frozenset({"father", "mother", "husband", "wife", "guardian", "
                             "relation", "kin", "nok", "spouse", "parent", "pita", "pati", "patni", "mata"})
 
 
+_RE_QTY_UNIT = re.compile(r"^\s*[0-9]+(?:[.,][0-9]+)?\s*(?:-\s*[0-9]+(?:[.,][0-9]+)?\s*)?"
+                          r"(?:mg|g|gm|gms|kg|mcg|µg|ug|ng|ml|l|iu|u|units?|meq|mmol|%|tab|tabs|cap|caps|drops?|puffs?)"
+                          r"(?:\s*/\s*(?:kg|day|dose|hr|h|ml|l|dl|m2))?\.?\s*$", re.I)
+_NOT_FOR_QTY = frozenset({VILLAGE, LOCALITY, TEHSIL, DISTRICT, STATE, HOUSE, ADDRESS, NAME, FIRST_NAME, LAST_NAME,
+                          LOCAL_NAME, RELATIVE})
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
+    t = _json_key_type(path_keys, value)
+    # a quantity with a unit ("100 mg", "0.4 g/kg") is a dose or a measurement, never a place or a person
+    if t in _NOT_FOR_QTY and isinstance(value, str) and _RE_QTY_UNIT.match(value):
+        return CLINICAL
+    # "vid" is a visit id as often as an Aadhaar virtual id (16 digits)
+    if t == PAN and path_keys and _tokens(str(path_keys[-1])) == ("vid",) \
+            and len(_digits(str(value))) != 16:
+        return OTHER_ID
+    return t
+
+
+def _json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     keys = [str(k) for k in path_keys if not isinstance(k, int)]
     if not keys:
         return _combine(OTHER, _value_hint(value) or OTHER)
