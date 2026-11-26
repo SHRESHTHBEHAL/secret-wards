@@ -1,0 +1,681 @@
+"""Decide what a structured slot (CSV column, JSON key path, text label) holds.
+
+Works from keyword stems (English, Hinglish, Hindi in Devanagari), tolerant of
+misspelling, plus a shape vote over sample values. Never relies on exact header names.
+Pure functions, deterministic, standard library only, Python 3.9+.
+"""
+from __future__ import annotations
+
+import re
+import unicodedata
+from functools import lru_cache
+from typing import Any, List, Optional, Sequence, Tuple
+
+from .dates import parse_one
+from .lexicon import CLINICAL_WORDS
+from .normalize import to_ascii_digits
+from .translit import deva_to_latin, is_deva
+
+# ---------------------------------------------------------------- type constants
+NAME = "name"
+FIRST_NAME = "first_name"
+LAST_NAME = "last_name"
+LOCAL_NAME = "local_name"
+RELATIVE = "relative"
+RELATION = "relation"
+PATIENT_ID = "patient_id"
+ENC_ID = "enc_id"
+PHONE = "phone"
+AADHAAR = "aadhaar"
+ABHA = "abha"
+ABHA_ADDR = "abha_addr"
+PAN = "pan"
+INSURANCE = "insurance"
+EMAIL = "email"
+ADDRESS = "address"
+HOUSE = "house"
+LOCALITY = "locality"
+VILLAGE = "village"
+TEHSIL = "tehsil"
+DISTRICT = "district"
+STATE = "state"
+PIN = "pin"
+DOB = "dob"
+AGE = "age"
+AGE_SEX = "age_sex"
+GENDER = "gender"
+DATE = "date"
+DOCTOR = "doctor"
+HOSPITAL = "hospital"
+CLINICAL = "clinical"
+FREE_TEXT = "free_text"
+OTHER_ID = "other_id"
+OTHER = "other"
+
+_PII = frozenset({
+    NAME, FIRST_NAME, LAST_NAME, LOCAL_NAME, RELATIVE, PATIENT_ID, ENC_ID, PHONE, AADHAAR,
+    ABHA, ABHA_ADDR, PAN, INSURANCE, EMAIL, ADDRESS, HOUSE, LOCALITY, VILLAGE, TEHSIL, PIN,
+    DOB, AGE, AGE_SEX,
+})
+
+
+def is_pii_type(t: str) -> bool:
+    """True for types whose values must be removed, replaced or generalised.
+
+    DATE (shifted), GENDER, DISTRICT, STATE, RELATION, DOCTOR, HOSPITAL, CLINICAL,
+    FREE_TEXT (scrubbed as text), OTHER_ID and OTHER are not PII slots.
+    """
+    return t in _PII
+
+
+# ---------------------------------------------------------------- label normalising
+def _squash(t: str) -> str:
+    """Collapse transliteration vowel doubling so Devanagari and Hinglish spellings meet."""
+    t = t.replace("aa", "a").replace("ee", "i").replace("ii", "i").replace("oo", "u").replace("uu", "u")
+    return t
+
+
+_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_NON_WORD = re.compile(r"[^a-z0-9]+")
+
+
+@lru_cache(maxsize=4096)
+def _tokens(label: str) -> Tuple[str, ...]:
+    s = unicodedata.normalize("NFKC", str(label or ""))
+    s = to_ascii_digits(s)
+    if is_deva(s):
+        s = deva_to_latin(s)
+    s = _CAMEL.sub(" ", s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"(?<![a-z])([sdwch])\s*/\s*o(?![a-z])", r" \1o ", s)  # s/o, w/o ... -> so, wo
+    s = s.replace("#", " no ")
+    raw = [t for t in _NON_WORD.split(s) if t]
+    merged: List[str] = []
+    i = 0
+    while i < len(raw):                      # "d o b" -> "dob", "h no" stays
+        j = i
+        while j < len(raw) and len(raw[j]) == 1 and raw[j].isalpha():
+            j += 1
+        if j - i >= 2:
+            merged.append("".join(raw[i:j]))
+            i = j
+        else:
+            merged.append(raw[i])
+            i += 1
+    out: List[str] = []
+    for t in merged:
+        out.extend(_segment(_squash(t)))
+    return tuple(out)
+
+
+# ---------------------------------------------------------------- stems
+# Each stem is compared after _squash. Stems of length >= 5 tolerate small typos.
+_S = {
+    "name": ("name", "naam", "nam", "fullname", "mareez", "mariz", "marij", "rogi", "beneficiary",
+             "labharthi", "nme", "naem", "nmae"),
+    "patient": ("patient", "pt", "pat", "pnt", "patiant"),
+    "first": ("first", "fname", "given", "forename", "firstname"),
+    "last": ("last", "lname", "surname", "family", "lastname", "upnam", "upnaam"),
+    "local": ("local", "hindi", "devanagari", "regional", "vernacular"),
+    "relative": ("father", "husband", "guardian", "relative", "attendant", "kin", "pita", "pati",
+                 "mata", "mother", "spouse", "wife", "parent", "nok", "so", "do", "wo", "co", "ho",
+                 "caretaker", "informant", "escort", "bystander", "pitaji", "abhibhavak", "vali", "wali",
+                 "guardain", "gaurdian", "son", "daughter", "putra", "putri", "patni", "beta", "beti"),
+    "relation": ("relation", "relationship", "rishta", "rishtaa", "sambandh", "rel"),
+    "doctor": ("doctor", "dr", "doc", "consultant", "physician", "surgeon", "practitioner", "doktar",
+               "chikitsak", "referred", "referring", "reviewed", "treating", "clinician", "consultan",
+               "examined"),
+    "uhid": ("uhid", "mrn", "mr", "crno", "cr", "regn", "reg", "registration", "panjikran", "panjikaran",
+             "pid", "uid_hosp"),
+    "enc": ("ipd", "ip", "adm", "admission", "admit", "encounter", "inpatient", "aipidi", "bharti",
+            "ipno", "ipdno"),
+    "other_id": ("bill", "invoice", "receipt", "sample", "specimen", "trip", "ticket", "order",
+                 "accession", "barcode", "visit", "voucher", "token", "txn", "transaction", "claim",
+                 "request", "booking", "case"),
+    "idword": ("id", "no", "num", "number", "nbr", "ref", "code", "identifier", "san", "sankhya",
+               "kramank", "kod", "key"),
+    "aadhaar": ("aadhaar", "aadhar", "adhar", "adhaar", "aadhr", "uidai", "uid", "aadhaarno", "aadharno",
+                "adhar"),
+    "abha": ("abha", "abhaid", "healthid", "ndhm", "abdm", "pmjayid_abha"),
+    "health": ("health",),
+    "pan": ("pan", "pancard", "panno"),
+    "insurance": ("pmjay", "pmjy", "ayushman", "policy", "insurance", "insurer", "tpa", "bima", "cghs",
+                  "esic", "echs", "mediclaim", "beema"),
+    "email": ("email", "mail", "emel", "imel", "emailid", "gmail"),
+    "phone": ("mob", "mobile", "mobil", "mobail", "phone", "ph", "phn", "tel", "telephone", "contact",
+              "callback", "whatsapp", "cell", "fone", "phon", "fon", "mno", "landline", "cellphone"),
+    "address": ("address", "addr", "adress", "addres", "pata", "street", "residence", "resi",
+                "residential", "adres", "pta"),
+    "line": ("line", "line1", "line2"),
+    "house": ("house", "hno", "flat", "makan", "ghar", "plot", "door", "building", "apartment"),
+    "locality": ("mohalla", "muhalla", "mohala", "locality", "colony", "landmark", "area", "basti",
+                 "sector", "ward_no", "galli", "gali", "lane"),
+    "village": ("village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
+                "kasba", "qasba", "shahar", "nagar", "gramm"),
+    "tehsil": ("tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
+               "subdistrict", "tehsel"),
+    "district": ("district", "distt", "dist", "jila", "zila", "zilla", "jilla", "distric"),
+    "state": ("state", "rajy", "rajya", "pradesh", "province"),
+    "pin": ("pin", "pincode", "zip", "zipcode", "postal", "postcode", "pinkod"),
+    "dob": ("dob", "birth", "birthdate", "janm", "janam", "born", "bday", "birthday", "dateofbirth"),
+    "age": ("age", "umar", "umr", "umra", "ayu", "aayu", "yrs", "years", "vay", "agee"),
+    "gender": ("sex", "gender", "ling", "gendr", "jinsi", "mf", "gendar"),
+    "date": ("date", "dt", "dated", "tithi", "tarikh", "tarik", "dinank", "datetime", "timestamp",
+             "dte"),
+    "dateverb": ("registered", "collected", "reported", "admitted", "discharged", "generated",
+                 "exported", "created", "updated", "visited", "received", "issued", "printed",
+                 "discharge", "on", "at", "when"),
+    "hospital": ("hospital", "facility", "clinic", "lab", "laboratory", "centre", "center",
+                 "institution", "organization", "organisation", "org", "aspatal", "chikitsalay",
+                 "nursing_home", "dispensary", "phc", "chc", "provider"),
+    "free": ("note", "notes", "remark", "remarks", "comment", "comments", "observation",
+             "observations", "narrative", "tippani", "tipni", "summary", "description", "freetext",
+             "message", "msg", "text", "path", "filename", "file", "source", "body"),
+    "clinical": ("diagnosis", "diagnoses", "dx", "icd", "complaint", "complaints", "history", "hx",
+                 "rx", "drug", "medicine", "medication", "dawa", "dava", "strength", "dose", "dosage",
+                 "frequency", "freq", "duration", "route", "form", "category", "schedule", "test",
+                 "investigation", "result", "results", "value", "unit", "units", "range", "reference",
+                 "loinc", "vitals", "vital", "bp", "pulse", "spo2", "temp", "temperature", "weight",
+                 "height", "bmi", "procedure", "package", "surgery", "operation", "ward", "bed", "beds",
+                 "department", "dept", "speciality", "specialty", "status", "amount", "inr", "cost",
+                 "charges", "charge", "fee", "panel", "panels", "nidan", "shikayat", "jaanch", "janch",
+                 "parinam", "vibhag", "vard", "display", "occupied", "cases", "rate", "rr", "hr",
+                 "symptom", "symptoms", "treatment", "advice", "findings", "impression", "condition",
+                 "allergy", "allergies", "qty", "quantity", "price", "total", "paid", "balance",
+                 "dosha", "outcome", "triage", "severity", "specimen_type", "method", "flag"),
+}
+
+_VOCAB = frozenset(_squash(w) for ws in _S.values() for w in ws) | frozenset({"of", "ka", "ki", "ke", "s"})
+
+
+@lru_cache(maxsize=4096)
+def _segment(t: str) -> Tuple[str, ...]:
+    """Split glued words ('patientname', 'dateofbirth', 'aadharno') into known vocabulary."""
+    if len(t) < 5 or t in _VOCAB or any(c.isdigit() for c in t):
+        return (t,)
+    n = len(t)
+    best: List[Optional[Tuple[str, ...]]] = [None] * (n + 1)
+    best[0] = ()
+    for i in range(1, n + 1):
+        for j in range(max(0, i - 14), i):
+            if best[j] is not None and t[j:i] in _VOCAB and (i - j >= 2 or t[j:i] == "s"):
+                cand = best[j] + (t[j:i],)
+                if best[i] is None or len(cand) < len(best[i]):
+                    best[i] = cand
+    return best[n] if best[n] is not None and len(best[n]) > 1 else (t,)
+
+
+def _osa(a: str, b: str, cap: int) -> int:
+    """Optimal string alignment distance (transposition counts 1), capped."""
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev2: List[int] = []
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+_SQ = {k: tuple(sorted(set(_squash(w) for w in v))) for k, v in _S.items()}
+# Stems that must match exactly (too short or too confusable for fuzzy matching).
+_EXACT_GROUPS = frozenset({"dateverb", "relation"})
+_EXACT_ONLY = frozenset({"pati", "pita", "mata", "pata", "pin", "pan", "state", "on", "at", "line",
+                         "form", "test", "rate", "inpatient", "apartment", "temp", "case", "note", "text", "file", "fee", "flag"})
+
+
+@lru_cache(maxsize=65536)
+def _tok_is(tok: str, group: str) -> bool:
+    if _tok_is1(tok, group):
+        return True
+    if len(tok) > 3 and tok.endswith("s"):
+        return _tok_is1(tok[:-1], group)
+    return False
+
+
+def _tok_is1(tok: str, group: str) -> bool:
+    exact = group in _EXACT_GROUPS
+    for st in _SQ[group]:
+        if tok == st:
+            return True
+        if exact or st in _EXACT_ONLY or len(st) < 5 or len(tok) < 5 or tok[0] != st[0]:
+            continue
+        cap = 2 if len(st) >= 8 else 1
+        if _osa(tok, st, cap) <= cap:
+            return True
+    return False
+
+
+def _has(toks: Sequence[str], group: str) -> bool:
+    return any(_tok_is(t, group) for t in toks if not t.isdigit())
+
+
+# ---------------------------------------------------------------- label vote
+_BY_DOCTOR = frozenset({"reviewed", "referred", "examined", "treated", "attended", "signed", "verified",
+                        "approved", "prescribed", "consulted", "seen", "checked", "operated", "reported",
+                        "authorised", "authorized", "dictated"})
+_BY_RELATIVE = frozenset({"accompanied", "brought", "escorted"})
+_BY_PRIVATE = frozenset({"raised", "requested", "submitted", "called", "complained", "booked", "filed",
+                         "lodged"})
+
+def _label_type(toks: Tuple[str, ...]) -> str:
+    t = _label_type1(toks)
+    if t == OTHER and len(toks) > 1 and not any(c.isdigit() for c in "".join(toks)):
+        t = _label_type1(("".join(toks),))      # "Whats App" -> "whatsapp"
+    return t
+
+
+def _label_type1(toks: Tuple[str, ...]) -> str:
+    if not toks:
+        return OTHER
+    h = lambda g: _has(toks, g)  # noqa: E731
+    is_id = h("idword")
+
+    if "by" in toks[1:]:
+        if h("doctor") or any(t in _BY_DOCTOR for t in toks):
+            return DOCTOR
+        if any(t in _BY_RELATIVE for t in toks):
+            return RELATIVE
+        if any(t in _BY_PRIVATE for t in toks):
+            return NAME
+        return FREE_TEXT
+    if h("free") and not (h("name") or h("phone") or h("address")):
+        return FREE_TEXT
+    if h("relation") and not h("name"):
+        return RELATION
+    # ABHA before address ("ABHA address") and before email.
+    if h("abha") or (h("health") and is_id):
+        if h("address") or "phr" in toks or h("email"):
+            return ABHA_ADDR
+        return ABHA
+    if h("aadhaar"):
+        return AADHAAR
+    if h("pan") and not h("pin"):
+        return PAN
+    if h("insurance"):
+        return INSURANCE
+    if h("email"):
+        return EMAIL
+    # Dates (before ids: "Reg Date", "admission_date", "visit_date").
+    if h("dob"):
+        return DOB
+    if h("age") and h("gender"):
+        return AGE_SEX
+    datey = h("date") or (h("dateverb") and not is_id and not h("name") and not h("phone"))
+    if datey and not (h("doctor") and not h("date")):
+        if h("relative") and h("name"):
+            return RELATIVE
+        if not (is_id and not h("date")):
+            return DATE
+    if h("doctor") and not h("patient"):
+        return DOCTOR
+    if h("relative") and not (h("phone") and not h("name")):
+        return RELATIVE
+    if h("phone"):
+        if h("name") and not is_id:      # "contact person name", "emergency contact name"
+            return RELATIVE
+        return PHONE
+    if h("pin"):
+        return PIN
+    # Identifiers.
+    if h("enc") and not h("name"):
+        return ENC_ID
+    if h("other_id") and (is_id or len(toks) == 1) and not h("name"):
+        return OTHER_ID
+    if h("uhid") or (h("patient") and is_id):
+        return PATIENT_ID
+    if h("hospital") and is_id:
+        return PATIENT_ID   # "hospital_uhid", "hospital no"
+    if h("age"):
+        return AGE
+    if h("gender"):
+        return GENDER
+    if h("house"):
+        return HOUSE
+    if h("village"):
+        return VILLAGE
+    if h("locality"):
+        return LOCALITY
+    if h("tehsil"):
+        return TEHSIL
+    if h("district"):
+        return DISTRICT
+    if h("state"):
+        return STATE
+    if h("address") or (h("line") and len(toks) > 1 and any(_tok_is(t, "address") for t in toks)):
+        return ADDRESS
+    if h("hospital"):
+        return HOSPITAL
+    if h("local") and h("name"):
+        return LOCAL_NAME
+    if h("first") and (h("name") or len(toks) == 1 and toks[0] != "first"):
+        return FIRST_NAME
+    if h("last") and (h("name") or len(toks) == 1 and toks[0] not in ("last", "family")):
+        return LAST_NAME
+    if h("clinical"):
+        if any(t in ("code", "id", "no", "number", "num") for t in toks) and not any(
+                t in ("diagnosis", "dx", "icd", "loinc", "nidan") for t in toks):
+            return OTHER_ID     # package_code, test code, drug id: kept as-is
+        return CLINICAL
+    if h("name") or h("patient"):
+        return NAME
+    if is_id and len(toks) == 1:
+        return OTHER_ID
+    return OTHER
+
+
+def classify_label(label: str) -> str:
+    """Type of a slot from its label alone. OTHER when unsure."""
+    return _label_type(_tokens(str(label or "")))
+
+
+# ---------------------------------------------------------------- value vote
+_RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$")
+_RE_ABHA_ADDR = re.compile(r"^[A-Za-z0-9._\-]{3,}@[A-Za-z]{2,10}$")
+_RE_PAN = re.compile(r"^[A-Za-z]{5}[0-9]{4}[A-Za-z]$")
+_RE_AADHAAR_MASK = re.compile(r"^(?:[xX*]{4}[ \-]?){2}[0-9]{4}$")
+_RE_PHONE_CHARS = re.compile(r"^[+0-9 ()\-.]+$")
+_RE_PIN = re.compile(r"^[1-9][0-9]{5}$")
+_RE_DOCTOR = re.compile(r"^(?:dr\b\.?|डॉ|डा\.)", re.IGNORECASE)
+_RE_AGE = re.compile(r"^[0-9]{1,3}\s*(?:y|yr|yrs|years?|yo|वर्ष|साल|saal|sal|baras|m|mo|months?|d|days?)\.?$",
+                     re.IGNORECASE)
+_RE_AGE_SEX = re.compile(r"^[0-9]{1,3}\s*(?:y|yr|yrs|years?)?\.?\s*[/,\- ]\s*(?:m|f|t|o|male|female|पु|म|स्त्री|महिला|पुरुष)\.?$",
+                         re.IGNORECASE)
+_RE_SEX_AGE = re.compile(r"^(?:m|f|male|female)\s*[/,\- ]\s*[0-9]{1,3}\s*(?:y|yr|yrs|years?)?$", re.IGNORECASE)
+_RE_RELATION = re.compile(r"^(?:[sdwch]\s*/\s*o|son of|wife of|daughter of|husband of|father|mother|"
+                          r"husband|wife|son|daughter|पुत्र|पत्नी|पुत्री|पति|पिता|माता)\.?$", re.IGNORECASE)
+_GENDER_WORDS = frozenset({"m", "f", "o", "t", "male", "female", "other", "trans", "transgender", "man",
+                           "woman", "पुरुष", "महिला", "स्त्री", "पु", "म", "mahila", "purush", "stri",
+                           "ladka", "ladki", "boy", "girl", "unknown", "u"})
+_NAME_TOKEN = re.compile(r"^(?:[A-Za-z][A-Za-z'.\-]*|[ऀ-ॿ]+\.?)$")
+
+
+def _digits(s: str) -> str:
+    return "".join(c for c in to_ascii_digits(s) if c.isdigit())
+
+
+def _value_shape(v: str) -> str:
+    s = v.strip()
+    if not s:
+        return ""
+    low = s.casefold()
+    if _RE_EMAIL.match(s):
+        return EMAIL
+    if _RE_ABHA_ADDR.match(s):
+        return ABHA_ADDR
+    if _RE_PAN.match(s):
+        return PAN
+    if _RE_AADHAAR_MASK.match(s):
+        return AADHAAR
+    if _RE_PHONE_CHARS.match(to_ascii_digits(s)):
+        d = _digits(s)
+        if len(d) == 12 and d[0] in "23456789" and not s.lstrip().startswith("+") and not d.startswith("91"):
+            return AADHAAR
+        if len(d) == 12 and d.startswith("91") and d[2] in "6789" and (" " not in s.strip() or s.startswith("+")):
+            return PHONE
+        if len(d) == 12 and d[0] in "23456789":
+            return AADHAAR
+        if len(d) == 14 and re.match(r"^[0-9]{2}[ \-]?[0-9]{4}[ \-]?[0-9]{4}[ \-]?[0-9]{4}$", s):
+            return ABHA
+        nd = d
+        if len(nd) == 13 and nd.startswith("091"):
+            nd = nd[3:]
+        elif len(nd) == 12 and nd.startswith("91"):
+            nd = nd[2:]
+        elif len(nd) == 11 and nd.startswith("0"):
+            nd = nd[1:]
+        if len(nd) == 10 and nd[0] in "6789":
+            return PHONE
+        if _RE_PIN.match(to_ascii_digits(s)):
+            return PIN
+    if _RE_DOCTOR.match(s):
+        return DOCTOR
+    if low in _GENDER_WORDS:
+        return GENDER
+    if _RE_AGE_SEX.match(s) or _RE_SEX_AGE.match(s):
+        return AGE_SEX
+    if _RE_AGE.match(s):
+        return AGE
+    if _RE_RELATION.match(s):
+        return RELATION
+    if any(c.isdigit() for c in to_ascii_digits(s)):
+        try:
+            if parse_one(s) is not None:
+                return DATE
+        except Exception:  # noqa: BLE001 - shape vote must never raise
+            return ""
+        return ""
+    toks = s.split()
+    if 2 <= len(toks) <= 4 and len(s) <= 48 and all(_NAME_TOKEN.match(t) for t in toks):
+        words = [t.strip(".'-").casefold() for t in toks]
+        cased = all(t[0].isupper() or is_deva(t) for t in toks) or s.islower() and len(toks) <= 3
+        if cased and not any(w in CLINICAL_WORDS for w in words) and sum(1 for w in words if len(w) >= 2) >= 2:
+            return NAME
+    return ""
+
+
+def _shares(values: Sequence[Any]) -> Tuple[int, dict]:
+    counts: dict = {}
+    n = 0
+    for v in values:
+        if v is None or isinstance(v, (dict, list, bool)):
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        n += 1
+        t = _value_shape(s)
+        if t:
+            counts[t] = counts.get(t, 0) + 1
+    return n, counts
+
+
+_VALUE_ORDER = (EMAIL, ABHA_ADDR, PAN, AADHAAR, ABHA, PHONE, PIN, DATE, AGE_SEX, AGE, GENDER,
+                RELATION, DOCTOR, NAME)
+
+
+def classify_values(values: Sequence[Any], threshold: float = 0.6) -> str:
+    """Shape vote over non-empty values. OTHER when no shape reaches `threshold`."""
+    n, counts = _shares(values)
+    if n == 0:
+        return OTHER
+    best = OTHER
+    best_n = 0
+    for t in _VALUE_ORDER:
+        c = counts.get(t, 0)
+        if t == AGE:
+            c += counts.get(AGE_SEX, 0) * 0  # kept separate on purpose
+        if c > best_n:
+            best, best_n = t, c
+    return best if best_n >= threshold * n else OTHER
+
+
+# ---------------------------------------------------------------- combine
+_STRONG = frozenset({PHONE, AADHAAR, ABHA, ABHA_ADDR, PAN, EMAIL, PIN})
+_PROTECTED = frozenset({CLINICAL, DOCTOR, HOSPITAL, FREE_TEXT})
+_IDS = frozenset({PATIENT_ID, ENC_ID, OTHER_ID, INSURANCE})
+
+
+def _combine(lt: str, vt: str) -> str:
+    if vt in _STRONG:
+        if vt == PIN and (lt in _PROTECTED or lt in _IDS or lt in (DATE, DOB, AGE, AGE_SEX, OTHER)):
+            return lt if lt != OTHER else PIN
+        if lt == FREE_TEXT or lt == HOSPITAL:
+            return lt
+        return vt
+    if vt == DATE:
+        if lt in (DOB, DATE, CLINICAL, FREE_TEXT, AGE):
+            return lt
+        return DATE
+    if lt == OTHER:
+        return vt
+    if lt in (NAME, FIRST_NAME, LAST_NAME) and vt == DOCTOR:
+        return DOCTOR
+    if lt in (AGE, GENDER) and vt == AGE_SEX:
+        return AGE_SEX
+    return lt
+
+
+def classify_column(label: str, values: Sequence[Any]) -> str:
+    """Type of a column from its label and sample values."""
+    return _combine(classify_label(label), classify_values(values))
+
+
+# ---------------------------------------------------------------- JSON paths
+_OWNER_RELATIVE = ("relative",)
+_ACTOR_PRIVATE = ("raised", "caller", "requester", "reporter", "submitted", "applicant", "complainant",
+                  "visitor", "user", "customer", "member", "subject", "person", "patient", "beneficiary")
+_NAME_PART_FIRST = ("first", "given", "fname", "forename", "middle")
+_NAME_PART_LAST = ("last", "family", "surname", "lname")
+_NAME_PART_LOCAL = ("local", "hindi", "devanagari", "regional", "vernacular")
+
+
+def _owner(keys: Sequence[str]) -> str:
+    """Who a name/ID under these ancestor keys belongs to: RELATIVE, DOCTOR, HOSPITAL, CLINICAL,
+    PATIENT or '' (unknown). Nearest ancestor wins."""
+    for k in reversed(list(keys)):
+        toks = _tokens(str(k))
+        if not toks:
+            continue
+        if _has(toks, "relative") or (_has(toks, "phone") and not _has(toks, "patient")):
+            # 'contact' as a container of a name is a private person (relative/caller)
+            return RELATIVE if _has(toks, "relative") else "PRIVATE"
+        if _has(toks, "doctor") or any(t in ("author", "performer", "reviewer", "prescriber", "staff",
+                                             "consultant", "practitioner", "physician") for t in toks):
+            return DOCTOR
+        if _has(toks, "hospital"):
+            return HOSPITAL
+        if any(t.startswith(a) for t in toks for a in _ACTOR_PRIVATE) or _has(toks, "patient"):
+            return "PRIVATE"
+        if _has(toks, "clinical") or any(t in ("medication", "item", "service", "panel", "drug")
+                                         for t in toks):
+            return CLINICAL
+        if _has(toks, "address"):
+            return ADDRESS
+        if _has(toks, "other_id"):
+            return OTHER_ID
+        if _has(toks, "enc"):
+            return ENC_ID
+        if _has(toks, "insurance"):
+            return INSURANCE
+    return ""
+
+
+def _is_bare_name(toks: Tuple[str, ...]) -> bool:
+    return bool(toks) and all(_tok_is(t, "name") or t in ("full", "display", "s") for t in toks)
+
+
+def _is_bare_id(toks: Tuple[str, ...]) -> bool:
+    return bool(toks) and all(_tok_is(t, "idword") or t in ("value", "s") for t in toks)
+
+
+def _value_hint(value: Any) -> str:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return ""
+    if isinstance(value, float):
+        return ""
+    return _value_shape(str(value))
+
+
+def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
+    """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
+    keys = [str(k) for k in path_keys if not isinstance(k, int)]
+    if not keys:
+        return _combine(OTHER, _value_hint(value) or OTHER)
+    last = keys[-1]
+    parents = keys[:-1]
+    toks = _tokens(last)
+    lt = _label_type(toks)
+    vh = _value_hint(value)
+    owner = _owner(parents)
+
+    # Name parts: patients/name/first, guardian/name/given, ...
+    if parents and _is_bare_name(_tokens(parents[-1])) and lt in (OTHER, FIRST_NAME, LAST_NAME, LOCAL_NAME,
+                                                                      NAME, CLINICAL):
+        up = _owner(parents[:-1])
+        if up == DOCTOR:
+            return DOCTOR
+        if up == HOSPITAL:
+            return HOSPITAL
+        if up == CLINICAL:
+            return CLINICAL
+        if up == RELATIVE:
+            return RELATIVE
+        if any(t in _NAME_PART_FIRST for t in toks):
+            return FIRST_NAME
+        if any(t in _NAME_PART_LAST for t in toks):
+            return LAST_NAME
+        if any(t in _NAME_PART_LOCAL for t in toks) or (isinstance(value, str) and is_deva(value)):
+            return LOCAL_NAME
+        return NAME
+
+    # Bare "name" leaf: owner decides.
+    if _is_bare_name(toks) or (lt == NAME and len(toks) == 1):
+        if owner == RELATIVE:
+            return RELATIVE
+        if owner == DOCTOR:
+            return DOCTOR
+        if owner == HOSPITAL:
+            return HOSPITAL
+        if owner == CLINICAL:
+            return CLINICAL
+        if vh == DOCTOR:
+            return DOCTOR
+        if isinstance(value, str) and is_deva(value) and _has(toks, "local"):
+            return LOCAL_NAME
+        return NAME
+
+    # Bare id/ref/no/code leaf: owner decides, value breaks ties.
+    if _is_bare_id(toks) or lt == OTHER_ID and len(toks) == 1 and _has(toks, "idword"):
+        if vh in (AADHAAR, PHONE, ABHA, PAN, EMAIL):
+            return vh
+        if owner == "PRIVATE":
+            return PATIENT_ID
+        if owner in (CLINICAL, DOCTOR, HOSPITAL):
+            return owner
+        if owner in (ENC_ID, INSURANCE, OTHER_ID):
+            return owner
+        if owner == RELATIVE:
+            return OTHER_ID
+        if any(_has(_tokens(p), "uhid") for p in parents):
+            return PATIENT_ID
+        return OTHER_ID
+
+    # Address parts: address/line, address/text, address/street1.
+    if owner == ADDRESS and lt in (OTHER, CLINICAL, FREE_TEXT) and not isinstance(value, (int, float)):
+        return ADDRESS
+
+    # Under a clinical container everything that is not strongly shaped stays clinical.
+    if owner == CLINICAL and lt in (OTHER, FREE_TEXT, CLINICAL):
+        if vh in (PHONE, AADHAAR, EMAIL, PAN):
+            return vh
+        return CLINICAL
+
+    # Values under a relative container: guardian/mobile stays PHONE (lt), guardian/relation RELATION.
+    if owner == RELATIVE and lt == OTHER and vh == NAME:
+        return RELATIVE
+
+    if lt in (OTHER, OTHER_ID, PATIENT_ID) and vh in (AADHAAR, PHONE) and isinstance(value, (int, str)):
+        if lt == OTHER or vh == AADHAAR and len(_digits(str(value))) == 12:
+            return vh
+    if lt == OTHER and isinstance(value, str):
+        if vh in (_STRONG | {DOCTOR, NAME, DATE}):
+            return vh
+        try:
+            from .patterns import find_patient_ids
+            sp = find_patient_ids(value)
+            if len(sp) == 1 and sp[0].start == 0 and sp[0].end == len(value):
+                return PATIENT_ID
+        except Exception:  # noqa: BLE001
+            pass
+        return OTHER
+    if lt == OTHER:
+        return vh if vh in _STRONG else OTHER
+    return _combine(lt, vh if vh in (_STRONG | {DATE, DOCTOR, AGE_SEX}) else "")
