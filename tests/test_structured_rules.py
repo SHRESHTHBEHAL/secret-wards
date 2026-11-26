@@ -556,3 +556,218 @@ class LinkRecallRules(unittest.TestCase):
                      "visit 5 March then " + filler + " on 2023-01-09", filler[:4090] + "12/11/2021" + filler]:
             full = next((h.date.year for h in dates.find_dates(text[:200000], "dmy") if h.has_year), None)
             self.assertEqual(sanitize._default_year(text, "dmy"), full)
+
+
+class RoundFresh4Layouts(unittest.TestCase):
+    """Invented data: record level of nested JSON, CSV preambles / footers and text tables."""
+
+    def _text(self, text, rel="x/a.txt"):
+        return ParsedFile(rel=rel, sha256="c" * 64, kind=KIND_TEXT, text=text)
+
+    def test_batches_of_visits_split_per_visit(self):
+        visit = lambda n, name, ph: {"visit": {"no": "V-%d" % n}, "pt": {
+            "ident": {"primary": {"sys": "UHID", "val": "QZ/26/%06d" % n}},
+            "demog": {"nm": {"given": name, "family": "Qorvat"}, "contact": ph, "dob": "1980-02-0%d" % (n % 9 + 1)}}}
+        data = {"export": {"meta": {"source": "HMIS"}, "batches": [
+            {"batchId": "B1", "visits": [visit(1, "Ilvan", "9111122223"), visit(2, "Morra", "9222233334")]},
+            {"batchId": "B2", "visits": [visit(3, "Tesk", "9333344445"), visit(4, "Yorin", "9444455556")]}]}}
+        locs = harvest.record_locs(_json(data))
+        self.assertEqual(locs, ["/export/batches/0/visits/0", "/export/batches/0/visits/1",
+                                "/export/batches/1/visits/0", "/export/batches/1/visits/1"])
+        recs = harvest.harvest_file(_json(data))
+        assign = link(recs)[0]
+        self.assertEqual(len({assign[(r.rel, r.loc)] for r in recs}), 4)
+
+    def test_patient_list_with_inner_visits_stays_patient_level(self):
+        data = {"patients": [
+            {"uhid": "QZ/26/000101", "name": "Ilvan Qorvat", "visits": [{"date": "2026-01-02"}, {"date": "2026-01-09"}]},
+            {"uhid": "QZ/26/000102", "name": "Morra Qorvat", "visits": [{"date": "2026-01-03"}, {"date": "2026-01-04"}]}]}
+        self.assertEqual(harvest.record_locs(_json(data)), ["/patients/0", "/patients/1"])
+
+    def test_comment_line_above_pipe_header(self):
+        pf = _csv(["#QZ-HMIS", "export=OPD", "site=Qorvat Hospital", "rows=2", "helpdesk=0612-2345678"],
+                  [["UHID", "PATIENT NAME", "REL", "GUARDIAN", "MOBILE"],
+                   ["QZ/26/000201", "Ilvan Qorvat", "S/O", "Darro Qorvat", "9111122223"],
+                   ["QZ/26/000202", "Morra Tesk", "D/O", "Yalen Tesk", "9222233334"]])
+        labels, rows, hl = harvest.csv_view(pf)
+        self.assertEqual((labels[0], len(rows), hl), ("UHID", 2, 2))
+        recs = harvest.harvest_file(pf)
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1"])
+        self.assertIn("Ilvan Qorvat", recs[0].facts.names)
+        self.assertNotIn("Darro Qorvat", recs[0].facts.names)
+
+    def test_title_preamble_and_footer_are_not_records(self):
+        pf = _csv(["Qorvat Seva Hospital", "", "", "", ""],
+                  [["LIS RESULT EXPORT", "", "", "", ""],
+                   ["Run date: 02-01-2026", "", "", "Operator: lab_07", ""],
+                   ["", "", "", "", ""],
+                   ["LabNo", "UHID", "Patient", "Test", "Result"],
+                   ["LB26-0000101", "QZ/26/000301", "Ilvan Qorvat", "Hb", "11.2"],
+                   ["LB26-0000102", "QZ/26/000302", "Morra Tesk", "TSH", "3.1"],
+                   ["", "", "", "", ""],
+                   ["End of report. Rows: 2", "", "", "", ""]])
+        labels, rows, hl = harvest.csv_view(pf)
+        self.assertEqual((labels[1], len(rows), hl), ("UHID", 2, 5))
+        self.assertEqual([r.loc for r in harvest.harvest_file(pf)], ["row:0", "row:1"])
+
+    def test_sparse_last_data_row_is_kept(self):
+        pf = _csv(["UHID", "Name", "Phone"], [["QZ/26/000401", "Ilvan Qorvat", "9111122223"],
+                                             ["QZ/26/000402", "", ""]])
+        self.assertEqual(len(harvest.csv_view(pf)[1]), 2)
+
+    def test_key_value_log_lines_one_record_per_line(self):
+        text = ("# Qorvat OPD log  site=QZ\n"
+                '2026-01-02T09:10 uhid=QZ/26/000501 name="Ilvan Qorvat" age=41 sex=M ph=9111122223 dr="Dr Pell"\n'
+                '2026-01-02T09:30 uhid=QZ/26/000502 name="Morra Tesk" age=36 sex=F ph=9222233334 dr="Dr Pell"\n'
+                '2026-01-02T09:50 uhid=QZ/26/000503 name="Yorin Daal" age=58 sex=M ph=9333344445 dr="Dr Pell"\n'
+                "# end rows=3\n")
+        recs = harvest.harvest_file(self._text(text))
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1", "row:2"])
+        self.assertIn("Morra Tesk", recs[1].facts.names)
+        assign = link(recs)[0]
+        self.assertEqual(len({assign[(r.rel, r.loc)] for r in recs}), 3)
+
+    def test_repeated_label_blocks(self):
+        blk = "Name: %s\nUHID: %s\nMobile: %s\nComplaint: fever\n"
+        text = "QORVAT OPD SLIPS\n\n" + "\n----\n".join(
+            blk % x for x in [("Ilvan Qorvat", "QZ/26/000601", "9111122223"),
+                              ("Morra Tesk", "QZ/26/000602", "9222233334"),
+                              ("Yorin Daal", "QZ/26/000603", "9333344445")])
+        recs = harvest.harvest_file(self._text(text))
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1", "row:2"])
+
+    def test_fixed_width_table(self):
+        text = ("QORVAT DAY BOOK\n\n"
+                "TKN  UHID           NAME               PHONE\n"
+                "---- -------------- ------------------ ------------\n"
+                "001  QZ-OP-000701   ILVAN QORVAT       9111122223\n"
+                "002  QZ-OP-000702   MORRA TESK         9222233334\n"
+                "\nTOTAL TOKENS: 2\n")
+        recs = harvest.harvest_file(self._text(text))
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1"])
+        self.assertTrue(any(t.startswith("phone:") for t in recs[1].facts.ids))
+
+    def test_repeated_test_blocks_without_person_stay_one_document(self):
+        text = "Patient: Ilvan Qorvat  UHID QZ/26/000801\n\n" + "\n\n".join(
+            "Test: %s\nResult: %s\nUnit: %s\n" % x for x in [("Hb", "11", "g/dl"), ("TSH", "3", "mIU/L"),
+                                                              ("Na", "139", "mmol/L")])
+        self.assertEqual([r.loc for r in harvest.harvest_file(self._text(text))], ["doc"])
+
+    def test_text_table_end_to_end_scrubs_every_row(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from raksha import pipeline
+        text = ('2026-01-02T09:10 uhid=QZ/26/000901 name="Ilvan Qorvat" age=41 sex=M ph=9111122223\n'
+                '2026-01-02T09:30 uhid=QZ/26/000902 name="Morra Tesk" age=36 sex=F ph=9222233334\n'
+                '2026-01-02T09:50 uhid=QZ/26/000903 name="Yorin Daal" age=58 sex=M ph=9333344445\n')
+        with tempfile.TemporaryDirectory() as d:
+            inp, out = Path(d) / "in", Path(d) / "out"
+            (inp / "opd").mkdir(parents=True)
+            (inp / "opd" / "log.txt").write_text(text, encoding="utf-8")
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                pipeline.run(inp, out, b"unit-secret", {})
+            body = (out / "sanitized" / "opd" / "log.txt").read_text(encoding="utf-8")
+            recs = [json.loads(x) for x in (out / "records.jsonl").read_text(encoding="utf-8").splitlines()]
+        for v in ("Ilvan", "Morra Tesk", "Yorin", "9111122223", "000902", "9333344445"):
+            self.assertNotIn(v, body)
+        self.assertEqual(sorted(r["loc"] for r in recs), ["row:0", "row:1", "row:2"])
+        self.assertEqual(len({r["patient"] for r in recs}), 3)
+
+
+class RoundFresh4NotPatientIds(unittest.TestCase):
+    """Invented data: values filed as a hospital number that are not one never join patients."""
+
+    def _apart(self, a, b):
+        recs = [_R("x/a.csv", "row:0", **a), _R("x/b.csv", "row:0", **b)]
+        m = link(recs)[0]
+        return m[("x/a.csv", "row:0")] is None or m[("x/a.csv", "row:0")] != m[("x/b.csv", "row:0")]
+
+    def test_ifsc_and_event_numbers_never_link(self):
+        for tok in ("uhid:QZBN0001234", "uhid:QZLAB2026000117", "uhid:LB26-0000101", "uhid:CLM-26-000412",
+                    "uhid:UTR998877665544", "uhid:IMG20260102WA0007", "uhid:BATCH-2026-0042"):
+            self.assertTrue(self._apart({"names": ["Ilvan Qorvat"], "ids": [tok]},
+                                        {"names": ["Morra Tesk"], "ids": [tok]}), tok)
+            self.assertTrue(self._apart({"names": ["Ilvan Qorvat"], "ids": [tok]}, {"ids": [tok]}), tok)
+
+    def test_scheme_card_links_only_with_compatible_names(self):
+        card = "uhid:BSKY-26-1234-56789"
+        self.assertTrue(self._apart({"names": ["Ilvan Qorvat"], "ids": [card]},
+                                    {"names": ["Morra Qorvat"], "ids": [card]}))
+        self.assertTrue(self._apart({"names": ["Ilvan Qorvat"], "ids": [card]}, {"ids": [card]}))
+        self.assertTrue(self._apart({"names": ["Ilvan Qorvat"], "ids": ["uhid:RC220011223344"]},
+                                    {"ids": ["uhid:RC220011223344"]}))
+        self.assertFalse(self._apart({"names": ["Ilvan Qorvat"], "ids": [card]},
+                                     {"names": ["Ilvan Qorvat"], "ids": ["ins:BSKY2612345678 9"]}))
+
+    def test_hospital_number_still_links(self):
+        self.assertFalse(self._apart({"names": ["Ilvan Qorvat"], "ids": ["uhid:QZH/26/004512"]},
+                                     {"ids": ["uhid:QZH-26-004512"]}))
+
+    def test_combined_id_proof_cell_typed_by_its_word(self):
+        a = {"names": ["Ilvan Qorvat"], "ids": ["pan:AADHAAR 2345-6789-0123"]}
+        self.assertFalse(self._apart(a, {"names": ["Ilvan Qorvat"], "ids": ["aadhaar:234567890123"]}))
+        masked = {"names": ["Ilvan Qorvat"], "ids": ["pan:AADHAAR XXXXXXXX0123"]}
+        self.assertTrue(self._apart(masked, {"names": ["Morra Tesk"], "ids": ["pan:AADHAAR XXXXXXXX0123"]}))
+        self.assertTrue(self._apart(masked, {"ids": ["pan:AADHAAR XXXXXXXX0123"]}))
+
+
+class RoundFresh4Columnar(unittest.TestCase):
+    """Invented data: column-oriented JSON (a columns list + an array of row arrays)."""
+
+    def test_columns_and_data_arrays_one_record_per_row(self):
+        data = {"sheet": "front desk", "columns": ["uhid", "full_name", "nok", "phone"],
+                "data": [["QZ#26-0101", "Ilvan Qorvat", "D/o Darro Qorvat", "+91 91111 22223"],
+                         ["QZ#26-0102", "Morra Tesk", "W/o Yalen Tesk", "+91 92222 33334"]],
+                "rowCount": 2}
+        pf = _json(data)
+        self.assertEqual(harvest.record_locs(pf), ["/data/0", "/data/1"])
+        recs = harvest.harvest_file(pf)
+        self.assertIn("Morra Tesk", recs[1].facts.names)
+        self.assertTrue(any(t.startswith("phone:") for t in recs[0].facts.ids))
+        assign = link(recs)[0]
+        self.assertNotEqual(assign[("x/a.json", "/data/0")], assign[("x/a.json", "/data/1")])
+
+    def test_columnar_cells_are_scrubbed(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+        from raksha import pipeline
+        data = {"columns": ["uhid", "full_name", "phone"],
+                "data": [["QZ/26/000111", "Ilvan Qorvat", "9111122223"], ["QZ/26/000112", "Morra Tesk", "9222233334"]]}
+        with tempfile.TemporaryDirectory() as d:
+            inp, out = Path(d) / "in", Path(d) / "out"
+            inp.mkdir()
+            (inp / "desk.json").write_text(json.dumps(data), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                pipeline.run(inp, out, b"unit-secret", {})
+            body = (out / "sanitized" / "desk.json").read_text(encoding="utf-8")
+        for v in ("Ilvan", "Morra", "9111122223", "000112"):
+            self.assertNotIn(v, body)
+        self.assertEqual(len(json.loads(body)["data"][1]), 3)
+
+    def test_list_of_label_strings_without_rows_is_not_columnar(self):
+        self.assertIsNone(harvest.columnar_rows({"columns": ["a", "b"], "notes": ["x", "y"]}))
+
+
+class RoundFresh4MessageRows(unittest.TestCase):
+    """Invented data: a message export whose body names a hospital number."""
+
+    def test_message_row_with_hospital_number_links(self):
+        sms = _csv(["msg_id", "sent_at", "to", "status", "body"],
+                   [["SM-0001", "2026-01-02 09:00", "+91 91111 22223", "DELIVERED",
+                     "Report ready for UHID QZH/26/004512. Collect from lab."],
+                    ["SM-0002", "2026-01-02 09:05", "", "DELIVERED", "Camp on Sunday, all welcome."]],
+                   rel="x/sms.csv")
+        reg = _csv(["UHID", "Name", "Mobile"], [["QZH/26/004512", "Ilvan Qorvat", "9111122223"]], rel="x/reg.csv")
+        recs = harvest.harvest_file(sms) + harvest.harvest_file(reg)
+        self.assertTrue(recs[0].facts.is_patient)
+        self.assertFalse(recs[1].facts.is_patient)
+        m = link(recs)[0]
+        self.assertIsNotNone(m[("x/sms.csv", "row:0")])
+        self.assertEqual(m[("x/sms.csv", "row:0")], m[("x/reg.csv", "row:0")])
+        self.assertIsNone(m[("x/sms.csv", "row:1")])
