@@ -227,3 +227,89 @@ class RobustnessSweepTest(unittest.TestCase):
         st = {r["file"]: r["status"] for r in recs}
         self.assertFalse(any("broken.ndjson" in f for f in st), st)    # quarantined, never passed through
         self.assertEqual(sum(1 for f in st if f.endswith("same.csv")), 2)
+
+
+class FreezeRoundFormats(unittest.TestCase):
+    """Invented data: one test per rule of the last rule round."""
+
+    def _pf(self, rel, text):
+        from raksha.types import ParsedFile
+        from raksha import ingest
+        import dataclasses
+        kind = "csv" if rel.endswith(".csv") else "text"
+        pf = ParsedFile(rel=rel, sha256="x" + rel, kind=kind, text=text)
+        if kind == "csv":
+            rows = ingest._parse_csv(text, ",")
+            pf = dataclasses.replace(pf, delimiter=",", header=rows[0], rows=rows[1:])
+        return pf
+
+    def test_fixed_width_one_rule_rows(self):
+        from raksha import harvest as H
+        text = ("CITY HOSPITAL      INDEX PRINT\r\n"
+                "REGNO        NAME                 SX DOB      MOBILE       PIN\r\n"
+                "-----------------------------------------------------------------\r\n"
+                "AB12-1234567 SHARMA ANIL KUMAR    M  01021980 98100 11111  110001\r\n"
+                "AB12-7654321 VERMA SUNITA         F  05061990 98100 22222  110002\r\n"
+                "             RAJU                 M\r\n"
+                "*** END OF REPORT ***\r\n")
+        recs = H._text_records(self._pf("reg/print.txt", text))
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1", "row:2"])
+        self.assertTrue(recs[0].facts.is_patient and recs[1].facts.is_patient)
+        self.assertFalse(recs[2].facts.is_patient)        # a bare first name: nobody's record
+
+    def test_sql_dump_one_record_per_insert(self):
+        from raksha import harvest as H
+        text = ("CREATE TABLE `pmast` (\n  `pid` int NOT NULL, `regno` varchar(16), `pt_nm` varchar(80),"
+                " `dob` date,\n  PRIMARY KEY (`pid`)\n);\n"
+                "INSERT INTO `pmast` VALUES (7,'AB/12345/C','GUPTA RAVI K','1980-01-02');\n"
+                "INSERT INTO `pmast` VALUES (8,NULL,'MEENA',NULL);\n"
+                "CREATE TABLE `drm` (`id` int, `dr_nm` varchar(80));\n"
+                "INSERT INTO `drm` VALUES (1,'Dr. A Rao'),(2,'Dr. B Sen');\n")
+        recs = H._text_records(self._pf("misc/dump.txt", text))
+        self.assertEqual([r.loc for r in recs], ["row:0", "row:1"])
+        self.assertTrue(recs[0].facts.is_patient)
+        self.assertFalse(recs[1].facts.is_patient)
+        self.assertFalse(any(t.endswith(":7") for t in recs[0].facts.ids))   # a serial key is no id
+
+    def test_sql_dump_unparseable_is_not_split(self):
+        from raksha import harvest as H
+        text = ("CREATE TABLE `p` (`a` int, `pt_nm` varchar(9));\n"
+                "INSERT INTO `p` VALUES (1,'X Y','extra');\n")
+        self.assertIsNone(H._sql_inserts(text.split("\n"), H._line_starts(text)))
+
+    def test_household_card_and_head_of_family(self):
+        self.assertEqual(F.classify_label("Scheme_Card"), F.INSURANCE)
+        self.assertEqual(F.classify_label("Family Card No"), F.INSURANCE)
+        self.assertEqual(F.classify_label("Head_of_Family"), F.RELATIVE)
+        self.assertEqual(F.classify_label("TID"), F.OTHER_ID)
+        self.assertEqual(F.classify_label("Gaadi No."), F.OTHER_ID)
+
+    def test_caller_column_is_relative(self):
+        self.assertEqual(F.classify_column("Caller (Naam)", ["Ram Lal Verma", "Sita Devi"]), F.RELATIVE)
+        self.assertEqual(F.classify_column("Caller Mob.", ["9810011111", "9810022222"]), F.PHONE)
+
+    def test_two_people_claim_line_is_null(self):
+        from raksha import harvest as H
+        text = ("Claim_No,Beneficiary,UHID,Mobile\n"
+                "C1,Asha Rani,UH26X000111,9810011111\n"
+                "C2,Asha Rani + Mohan Lal,,9810011111\n")
+        recs = H._csv_records(self._pf("billing/claims.csv", text))
+        self.assertTrue(recs[0].facts.is_patient)
+        self.assertFalse(recs[1].facts.is_patient)
+        self.assertEqual(recs[1].facts.ids, [])
+
+    def test_pivoted_grid_rows_are_null(self):
+        from raksha import harvest as H
+        text = ("Test,Unit,Asha Rani (KP-100001),Mohan Lal (KP-100002)\n"
+                "Haemoglobin,g/dL,12.1,13.0\n"
+                "Mobile,,9810011111,9810022222\n")
+        recs = H._csv_records(self._pf("lab/grid.csv", text))
+        self.assertTrue(all(not r.facts.is_patient and not r.facts.ids for r in recs))
+
+    def test_calendar_and_vcard_lists_are_null(self):
+        from raksha import harvest as H
+        ev = ("BEGIN:VEVENT\nSUMMARY:F/U Asha Rani (AB.D.100001)\nDESCRIPTION:mob 9810011111\nEND:VEVENT\n"
+              "BEGIN:VEVENT\nSUMMARY:F/U Mohan Lal (AB.D.100002)\nDESCRIPTION:mob 9810022222\nEND:VEVENT\n")
+        rec = H._text_records(self._pf("opd/cal.txt", "BEGIN:VCALENDAR\n" + ev + "END:VCALENDAR\n"))[0]
+        self.assertFalse(rec.facts.is_patient)
+        self.assertEqual(rec.facts.ids, [])
