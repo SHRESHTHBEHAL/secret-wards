@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import dates, fields, privacy
 from .detect import ID_KINDS, NAME_KINDS, Known, detect
-from .harvest import harvest_file
+from .harvest import harvest_file, keyed_record_id
 from .ingest import dump_csv, dump_json
 from .normalize import to_ascii_digits, try_b64_text
 from .patterns import find_identifiers, norm_id, protected_spans
@@ -714,8 +714,31 @@ def _is_id_number(v: Any, ctx: _Ctx) -> bool:
 _WARD_ADDR = re.compile(r"(?<![A-Za-z])(?:Ward|Wd)\.?\s*(?:No\.?\s*)?[0-9]+(?![0-9]|\s*\()", re.I)
 
 
+_ADDR_SEG_KEEP = re.compile(r"^\[[A-Z\-]+\]$")
+
+
+def _address_segments(v: str, out: str, ctx: _Ctx) -> str:
+    """Address cell: every comma segment before the last is an address part, even an unclassified
+    small town that no cue caught; only the last segment (district / city / state) may survive."""
+    segs = v.split(",")
+    if len(segs) < 2:
+        return out
+    for seg in segs[:-1]:
+        w = seg.strip(" \t.;:-")
+        if not w or not re.search(r"[A-Za-z\u0900-\u097F]", w) or _ADDR_SEG_KEEP.match(w):
+            continue
+        rx = re.compile(r"(?:(?<=^)|(?<=[,;]))([ \t]*)" + re.escape(w) + r"(?=[ \t.;:-]*(?:,|$))")
+        new = rx.sub(lambda m: m.group(1) + "[ADDRESS]", out, count=1)
+        if new != out:
+            ctx.count("ADDRESS")
+            ctx.generalized = True
+            out = new
+    return re.sub(r"\[ADDRESS\](?:[ \t]*,[ \t]*\[ADDRESS\])+", "[ADDRESS]", out)
+
+
 def _address(v: str, ctx: _Ctx) -> str:
     out = scrub_text(v, ctx, "full", collapse=True)
+    out = _address_segments(v, out, ctx)
     out2 = _WARD_ADDR.sub("[ADDRESS]", out)
     if out2 != out:
         ctx.count("ADDRESS")
@@ -947,7 +970,7 @@ def _json(data: Any, fs: _File) -> Any:
     def walk(node: Any, keys: List[str], ptr: str, depth: int) -> Any:
         loc = ptr if ptr else "doc"
         if loc in fs.ctx and isinstance(node, (dict, list)):
-            fs.ctx[loc].has_pid = _has_pid(node, keys)
+            fs.ctx[loc].has_pid = _has_pid(node, keys) or bool(keyed_record_id(loc))
         ctx = fs.ctx_for_ptr(ptr) if ptr else fs.main_ctx() if "doc" in fs.ctx else fs.file_ctx
         if depth > 400:
             return "[REDACTED]" if isinstance(node, str) else node
@@ -956,12 +979,19 @@ def _json(data: Any, fs: _File) -> Any:
             orig = set(str(k) for k in node)
             for k, v in node.items():
                 ks = str(k)
+                cptr = ptr + "/" + _esc(ks)
+                if cptr in fs.ctx and isinstance(v, dict) and keyed_record_id(cptr):
+                    # record collection keyed by patient id: the key is the record's hospital id
+                    nk = _unique(fs.psns.get(cptr) or "[ID]", set(out) | orig)
+                    fs.ctx[cptr].count("MRN")
+                    out[nk] = walk(v, keys, cptr, depth + 1)
+                    continue
                 nk = _scrub_label(ks, fs)
                 if nk != ks:
                     nk = _unique(nk, set(out) | orig)
                 elif nk in out:
                     nk = _unique(nk, set(out))
-                out[nk] = walk(v, keys + [ks], ptr + "/" + _esc(ks), depth + 1)
+                out[nk] = walk(v, keys + [ks], cptr, depth + 1)
             return out
         if isinstance(node, list):
             return [walk(v, keys, ptr + "/%d" % i, depth + 1) for i, v in enumerate(node)]
