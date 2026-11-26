@@ -220,7 +220,7 @@ def _looks_like_date(tok: str) -> bool:
 # ---------------------------------------------------------------- patient ids (MRN)
 
 _NON_PATIENT_PREFIXES = frozenset("""
-BL BILL BLL INV INVC INVOICE RCPT RCP RCT REC RECEIPT SMP SAM SAMP SAMPLE SPL SPEC SPECIMEN OPD OP VIS VST
+BL BILL BLL INV INVC INVOICE RCPT RCP RCT REC RECEIPT SMP SAM SAMP SAMPLE SPL SPEC SPECIMEN VIS VST
 VISIT PKG PKGE PACK PACKAGE TXN TRN TRX ORD ORDER TKN TOKEN CLM CLAIM VCH VOUCHER ACC ACCN AMB HD TKT
 TICKET LAB LB BAR BC REF PAY PMT CHQ UTR GST GSTIN BATCH LOT ICD LOINC SNOMED
 """.split())
@@ -230,7 +230,7 @@ _RE_NON_PATIENT_LABEL = re.compile(
 )
 _RE_PATIENT_LABEL = re.compile(
     r"(?<![a-z])(?:uhid|mrn|mr\s*no|cr\s*no|hosp(?:ital)?[\s_]*(?:no|id|uhid)|patient[\s_]*(?:id|no|ref)|"
-    r"pt[\s_]*id|reg(?:istration|n|d)?\.?[\s_]*(?:no|number|id|#)?|ipd?[\s_]*(?:no|number|id)?|"
+    r"pt[\s_]*id|reg(?:istration|n|d)?\.?[\s_]*(?:no|number|id|#)?|ipd?[\s_]*(?:no|number|id)?|opd[\s_]*(?:no|number|id|reg)?|"
     r"adm(?:ission)?[\s_]*(?:no|number|id)?|inpatient[\s_]*(?:no|id)?|case[\s_]*(?:no|id)|"
     r"पंजीकरण\s*सं\.?|पंजीयन\s*सं\.?|आईपीडी\s*सं\.?|यूएचआईडी|भर्ती\s*सं\.?|रजि\.?\s*नं\.?)"
     r"[\s\"':#.\-=]*$"

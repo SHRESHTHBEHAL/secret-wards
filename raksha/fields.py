@@ -134,7 +134,7 @@ _S = {
                "enrolment", "enrollment", "member", "beneficiary", "registration", "regd", "mrd", "patient", "pt",
                "rogi", "marij", "mariz", "panjikaran", "panjikrit", "nondani", "pravesh_no"),
     "enc": ("ipd", "ip", "adm", "admission", "admit", "encounter", "inpatient", "aipidi", "bharti",
-            "ipno", "ipdno"),
+            "ipno", "ipdno", "opd", "opdno"),
     "other_id": ("bill", "invoice", "receipt", "sample", "specimen", "trip", "ticket", "order",
                  "accession", "barcode", "visit", "voucher", "token", "txn", "transaction", "claim",
                  "request", "booking", "package", "lot", "batch", "serial", "sl", "sno",

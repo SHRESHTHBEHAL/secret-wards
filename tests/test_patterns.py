@@ -103,13 +103,14 @@ class TestPatientIds(unittest.TestCase):
         for t, v in (("UHID: KMH/26/093318", "KMH26093318"), ("UHID-020731", "UHID020731"),
                      ("Reg No: RGH2026-051177", "RGH2026051177"), ("IP/26/00917", "IP2600917"),
                      ("ADM000845", "ADM000845"), ("IPD No: XYZ-IPD-00812", "XYZIPD00812"),
-                     ("ref ABC-0091234", "ABC0091234"), ("पंजीकरण सं.: KMH२०२६-०८४१२२", "KMH2026084122")):
+                     ("ref ABC-0091234", "ABC0091234"), ("पंजीकरण सं.: KMH२०२६-०८४१२२", "KMH2026084122"),
+                     ("OPD/26/03/00412", "OPD260300412"), ("OPD No: OPD-78950", "OPD78950")):
             with self.subTest(t=t):
                 self.assertEqual(vals(P.find_patient_ids(t), "MRN"), [v])
 
     def test_excluded(self):
         for t in ("BL/26/000731", "Bill No: XQ/26/000731", "S26004415", "sample_id: QW26004415",
-                  "OPD/26/03/00412", '"visit_id": "VX/26/03/00412"', "MG019B", "Invoice INV-2026-88211",
+'"visit_id": "VX/26/03/00412"', "MG019B", "Invoice INV-2026-88211",
                   "PMJAY-UP-6614290837", "Receipt: RC2026-00123"):
             with self.subTest(t=t):
                 self.assertEqual(P.find_patient_ids(t), [])
