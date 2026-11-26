@@ -7,6 +7,7 @@ Standard library only, Python 3.9+.
 from __future__ import annotations
 
 import base64
+import bisect
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,33 @@ class Env:
     pseudonyms: Dict[str, str] = field(default_factory=dict)
     records: Dict[str, List[Record]] = field(default_factory=dict)   # rel -> harvested records
     shifts: Any = None                                                # pseudo.ShiftBook: collision-free offsets
+    dob_watch: Any = None                                             # DobWatch: shifted dates that hit a DOB
+
+
+class DobWatch:
+    """Dates of birth seen in the input, and the shift keys whose shifted dates landed on one of them.
+
+    A shifted clinical date equal to another person's removed DOB reads as a DOB leak; the pipeline moves
+    every flagged key (its whole patient, so intervals stay exact) one day further and redoes its files."""
+
+    def __init__(self, dobs: Any) -> None:
+        self.dobs = frozenset(d for d in dobs if d is not None)
+        self.hit = set()  # type: Set[str]
+
+    def check(self, ctx: Any, src: str, out: str, order: str, default_year: Optional[int] = None) -> None:
+        if not self.dobs or out == src or ctx.skey is None:
+            return
+        try:
+            for h in dates.find_dates(src, order, default_year):
+                if dates.shift_date(h.date, ctx.shift) in self.dobs:
+                    self.hit.add(ctx.skey)
+                    return
+        except Exception:  # noqa: BLE001
+            return
+
+    def check_date(self, ctx: Any, new: Any) -> None:
+        if self.dobs and ctx.skey is not None and new in self.dobs:
+            self.hit.add(ctx.skey)
 
 
 @dataclass
@@ -115,6 +143,8 @@ class _Ctx:
         self.name_slot_used = False
         self.generalized = False
         self.counts = {}  # type: Dict[str, int]
+        self.skey = None  # type: Optional[str]   # the shift key (patient / record) this context uses
+        self.watch = None  # type: Any             # Env.dob_watch
 
     def count(self, kind: str, n: int = 1) -> None:
         name = _COUNT_NAME.get(kind, kind)
@@ -287,6 +317,7 @@ class _File:
         self.file_ctx = self._ctx_for(frozenset(file_keys), frozenset(file_ids), None,
                                       self._shift("rec:%s:@file" % pf.sha256), order, default_year,
                                       privacy.unlinked([r.facts for r in recs], self.pol))
+        self.file_ctx.skey = "rec:%s:@file" % pf.sha256
         # headers, keys and file names: every known name token of the dataset
         self.label_ctx = self._ctx_for(self.all_keys, frozenset(), None, 0, order, default_year)
         self.label_ctx.do_shift = False
@@ -302,8 +333,10 @@ class _File:
     def _ctx_for(self, own_keys: frozenset, own_ids: frozenset, psn: Optional[str], shift: int, order: str,
                  default_year: Optional[int], dec: Optional[privacy.Decision] = None) -> _Ctx:
         known = Known(own_keys=own_keys, full_names=self.full_names, id_values=self.all_ids)
-        return _Ctx(known, psn, shift, order, default_year, own_ids, self.all_ids, self.full_set,
-                    self.env.policy or {}, not self.clean, self.pol, dec)
+        c = _Ctx(known, psn, shift, order, default_year, own_ids, self.all_ids, self.full_set,
+                 self.env.policy or {}, not self.clean, self.pol, dec)
+        c.watch = self.env.dob_watch
+        return c
 
     def _make(self, r: Record, order: str, default_year: Optional[int]) -> _Ctx:
         key = self.env.assign.get((self.pf.rel, r.loc)) if self.env.assign else None
@@ -315,6 +348,7 @@ class _File:
             own_keys = pk if rk <= pk else pk | rk
             own_ids = pi if ri <= pi else pi | ri
             own_keys, own_ids = _intern(self.env, own_keys), _intern(self.env, own_ids)
+            skey = key
             shift = self._shift(key)
             if pdec is not None:
                 dec = pdec
@@ -326,11 +360,14 @@ class _File:
         else:
             psn = None
             facts = [r.facts]
-            shift = self._shift("rec:%s:%s" % (self.pf.sha256, r.loc))
+            skey = "rec:%s:%s" % (self.pf.sha256, r.loc)
+            shift = self._shift(skey)
             dec = privacy.unlinked(facts, self.pol)
             own_keys, own_ids = _own(facts)
         self.psns[r.loc] = psn
-        return self._ctx_for(own_keys, own_ids, psn, shift, order, default_year, dec)
+        c = self._ctx_for(own_keys, own_ids, psn, shift, order, default_year, dec)
+        c.skey = skey
+        return c
 
     def ctx_for_ptr(self, ptr: str) -> _Ctx:
         if ptr in self.ctx:
@@ -420,10 +457,28 @@ def _is_known_name(surface: str, ctx: _Ctx) -> bool:
 _WORD = re.compile(r"[A-Za-z]+|[\u0900-\u0963\u0971-\u097F]+")
 
 
+class _Overlap:
+    """O(log n) "does [s, e) overlap any of these intervals" (a per-word scan of every span was quadratic)."""
+
+    def __init__(self, ivs) -> None:
+        ivs = sorted(ivs)
+        self.starts = [a for a, _b in ivs]
+        self.maxend = []  # type: List[int]
+        m = -1
+        for _a, b in ivs:
+            m = b if b > m else m
+            self.maxend.append(m)
+
+    def hit(self, s: int, e: int) -> bool:
+        i = bisect.bisect_left(self.starts, e)
+        return i > 0 and self.maxend[i - 1] > s
+
+
 def _own_token_spans(text: str, ctx: _Ctx, spans: list) -> list:
     """Whole-word occurrences of the record's own name tokens that detect left (e.g. "Asha's")."""
     own = ctx.known.own_keys
     cands = []
+    taken = None  # type: Optional[_Overlap]
     for m in _WORD.finditer(text):
         w = m.group()
         if len(w) < 3 or not (w[0].isupper() or "\u0900" <= w[0] <= "\u097F") or (w.isupper() and len(w) > 3):
@@ -435,18 +490,20 @@ def _own_token_spans(text: str, ctx: _Ctx, spans: list) -> list:
         if not k or k in _GENERIC_KEYS or k not in own:
             continue
         s, e = m.start(), m.end()
-        if any(o.start < e and s < o.end for o in spans):
+        if taken is None:
+            taken = _Overlap((o.start, o.end) for o in spans)
+        if taken.hit(s, e):
             continue
         cands.append((s, e))
     if not cands:
         return []
     try:
-        prot = [(p.start, p.end) for p in protected_spans(text) if p.kind != "ASHA"]
+        prot = _Overlap((p.start, p.end) for p in protected_spans(text) if p.kind != "ASHA")
     except Exception:  # noqa: BLE001
-        prot = []
+        prot = _Overlap([])
     out = []
     for s, e in cands:
-        if any(a < e and s < b for a, b in prot):
+        if prot.hit(s, e):
             continue
         if re.search(r"(?:\bDr\.?|डॉ\.?)\s*(?:[A-Z][a-z]+\s+)?$", text[max(0, s - 30):s]):
             continue
@@ -463,8 +520,14 @@ def _pin_mask(s: str, ctx: Optional[_Ctx] = None) -> str:
     return "[PIN]"
 
 
+_NEG_LEAD = re.compile("^\\s*[-\u2212\u2013]\\s*$")   # "-5", "− 3": a negative number, not an age
+
+
 def _age_band(age: int, ctx: _Ctx) -> str:
-    return ctx.pol.band_for(int(age), ctx.dec)
+    age = int(age)
+    if age < 0 or age > 120:      # not an age: a neutral token, never a negative / nonsense band
+        return "[AGE]"
+    return ctx.pol.band_for(age, ctx.dec)
 
 
 def _band_text(text: str, ctx: _Ctx) -> str:
@@ -494,8 +557,8 @@ def _band(surface: str, value: str, ctx: _Ctx) -> str:
             if value and str(value).isdigit():
                 return _age_band(int(value), ctx)
             return surface
-        if int(m.group()) > 120:
-            return surface
+        if int(m.group()) > 120 or _NEG_LEAD.match(a[:m.start()]):
+            return "[AGE]"
         band = _age_band(int(m.group()), ctx)
         return a[:m.start()] + band + a[m.end():]
     except Exception:  # noqa: BLE001
@@ -537,7 +600,10 @@ def _compact_date(v: Any, d: Any, ftype: str, ctx: _Ctx) -> Any:
         return v
     else:
         ctx.generalized = True
-    new = dates.shift_date(d, ctx.shift).strftime("%Y%m%d")
+    nd = dates.shift_date(d, ctx.shift)
+    if ctx.watch is not None:
+        ctx.watch.check_date(ctx, nd)
+    new = nd.strftime("%Y%m%d")
     if as_int:
         return int(new)
     sv = str(v)
@@ -576,6 +642,8 @@ def _gap(text: str, ctx: _Ctx, dates_on: bool, ages_on: bool) -> str:
     if dates_on and ctx.do_shift:
         try:
             out = dates.shift_text(out, ctx.shift, ctx.order, ctx.default_year)
+            if ctx.watch is not None:
+                ctx.watch.check(ctx, text, out, ctx.order, ctx.default_year)
         except Exception:  # noqa: BLE001
             pass
     if ages_on and ctx.do_shift:
@@ -945,6 +1013,8 @@ def _typed(v: Any, ftype: str, ctx: _Ctx) -> Any:
         out = dates.shift_text(v, ctx.shift, ctx.order, ctx.default_year)
         if out != v:
             ctx.generalized = True
+            if ctx.watch is not None:
+                ctx.watch.check(ctx, v, out, ctx.order, ctx.default_year)
             return out
         return scrub_text(v, ctx, "ids", ages_on=False)
     if ftype in (fields.AGE, fields.AGE_SEX):
@@ -1408,6 +1478,8 @@ class _Fhir:
                     nv = node
                 if nv != node:
                     ctx.generalized = True
+                    if ctx.watch is not None:
+                        ctx.watch.check(ctx, node, nv, "dmy")
                 return nv
             last = keys[-1] if keys else ""
             if last in _FHIR_FULL or len(node) > 60:
@@ -1428,6 +1500,8 @@ class _Fhir:
             return v
         if nv != v:
             self.ctx.generalized = True
+            if self.ctx.watch is not None:
+                self.ctx.watch.check(self.ctx, v, nv, "dmy")
         return nv
 
     def _meta(self, v: Any) -> Any:
