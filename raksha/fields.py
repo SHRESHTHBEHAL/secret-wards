@@ -14,6 +14,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 from .dates import parse_one
 from .lexicon import CLINICAL_WORDS
 from .normalize import to_ascii_digits
+from .scripts import fold
 from .translit import deva_to_latin, is_deva
 
 # ---------------------------------------------------------------- type constants
@@ -82,7 +83,7 @@ _NON_WORD = re.compile(r"[^a-z0-9]+")
 @lru_cache(maxsize=4096)
 def _tokens(label: str) -> Tuple[str, ...]:
     s = unicodedata.normalize("NFKC", str(label or ""))
-    s = to_ascii_digits(s)
+    s = fold(to_ascii_digits(s))
     if is_deva(s):
         s = deva_to_latin(s)
     s = _CAMEL.sub(" ", s)

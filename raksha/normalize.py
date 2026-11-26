@@ -9,6 +9,8 @@ import unicodedata
 from typing import List, Optional
 from urllib.parse import unquote
 
+from .scripts import fold
+
 # Every non-ASCII decimal digit (Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, ... ) -> ASCII.
 _DIGIT_TABLE = {}
 for _cp in range(0x80, 0x10000):
@@ -31,6 +33,7 @@ def norm_text(s: str) -> str:
     if not s:
         return ""
     s = unicodedata.normalize("NFKC", s).translate(_INVISIBLE)
+    s = fold(s)  # Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam, Urdu -> Devanagari
     s = to_ascii_digits(s)
     s = unicodedata.normalize("NFD", s)
     s = _LATIN_MARKS.sub("", s)

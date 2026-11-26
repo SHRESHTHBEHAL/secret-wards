@@ -11,7 +11,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
-from . import dates, lexicon, patterns
+from . import dates, lexicon, patterns, scripts
 from .translit import GENERIC_NAME_PARTS, HONORIFICS, TITLES, name_key, name_tokens
 from .types import Facts, Span
 
@@ -98,9 +98,10 @@ spouse son daughter relative relation attendant
 नाम मरीज़ मरीज रोगी आयु उम्र उमर लिंग जन्म तिथि मोबाइल फोन फ़ोन संपर्क सम्पर्क पता पंजीकरण पंजीयन
 आईपीडी सं सं. नं नं. ग्राम गांव गाँव तहसील जिला ज़िला पिन पिता पति पत्नी माता पुत्र पुत्री वर्ष पुरुष महिला
 तारीख भर्ती छुट्टी निदान डिस्चार्ज सारांश ओपीडी पर्चा मकान नंबर मोहल्ला वार्ड पास पीछे सामने
-""")
+""") | scripts.LABEL_WORDS
 
-_HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन")
+_HON_PATIENT = _ws("ji jee sahab saheb sahib didi bhai behenji behen bahen bahenji जी साहब दीदी भाई बहनजी बहन") \
+    | scripts.HONORIFICS
 _HON_KIN = _ws("""
 bhaiya bhaiyya bhaiyaa amma ammi ammaji chacha chachi chachaji tai tau bua mausi mama mami bhabhi bhabhiji
 dada dadi nana nani babuji papa mummy uncle aunty auntie baba kaka भैया अम्मा चाचा चाची ताई ताऊ बुआ मौसी मामा मामी भाभी
@@ -110,7 +111,7 @@ _HON_AFTER = _HON_PATIENT | _HON_KIN
 _TITLE_BEFORE = _ws("""
 mr mrs ms smt shri shree sri sh km kum kumari miss sushri master baby late swargiya janab mister srimati
 shrimati श्री श्रीमती सुश्री कुमारी कु कुं स्व स्वर्गीय जनाब
-""")
+""") | scripts.TITLES
 _DROP = frozenset(_nfc(w.casefold()) for w in HONORIFICS | TITLES) | _TITLE_BEFORE | _HON_AFTER
 
 # Devanagari verbs and pronouns that sit next to a mid-sentence name ("उनको रमेश जी लाए")
@@ -262,7 +263,7 @@ def _lw(label: str) -> List[str]:
     t = re.sub(r"(?<![a-z])([sdwhcfm])\s*/\s*o(?![a-z])", r" \1/o ", t)
     t = re.sub(r"/(?!o(?![a-z]))", " ", t)
     t = re.sub(r"[^a-z0-9ऀ-ॿ/]+", " ", t)
-    return t.split()
+    return [scripts.alias_label_word(w) for w in t.split()]
 
 
 def _has(ws: List[str], stems: Tuple[str, ...], exact: Tuple[str, ...] = ()) -> bool:
@@ -451,13 +452,14 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
 
 _KIN_RE = re.compile(r"(?<![A-Za-z/])([SDWHCFMBsdwhcfmb])[ \t]*/[ \t]*([Oo])(?![A-Za-z/])\.?[ \t]*:?[ \t]*")
 _KIN_EN = re.compile(r"(?<![A-Za-z])(son|daughter|wife|husband|father|mother)\s+of\s+", re.I)
-_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(पिता|पति|पत्नी|पुत्र|पुत्री|माता)(?:[ \t]*(?:का|की)[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
+_KIN_HI = re.compile(r"(?<![ऀ-ॿ])(" + "|".join(scripts.KIN_WORDS) + r"|पिता|पति|पत्नी|पुत्र|पुत्री|माता)(?:[ \t]*(?:" + "|".join(scripts.POSSESSIVES) + r")[ \t]*नाम)?[ \t]*[:\-]?[ \t]*")
 _HON_RE = re.compile(r"(?<![A-Za-zऀ-ॿ])(" + "|".join(sorted(
     (re.escape(w) for w in _HON_AFTER), key=len, reverse=True)) + r")(?![A-Za-zऀ-ॿ])", re.I)
 _TITLE_RE = re.compile(
     r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Smt|Shri|Shree|Sri|Km|Kum|Kumari|Miss|Sushri|Late|Janab|Srimati|Shrimati|"
     r"MR|MRS|MS|SMT|SHRI|SRI|KM)\.?[ \t]+"
-    r"|(?<![ऀ-ॿ])(?:श्रीमती|श्री|सुश्री|कुमारी|स्वर्गीय|स्व\.|कु\.)[ \t]*")
+    r"|(?<![ऀ-ॿ])(?:श्रीमती|श्री|सुश्री|कुमारी|स्वर्गीय|स्व\.|कु\.|"
+    + "|".join(sorted((re.escape(w) for w in scripts.TITLES), key=len, reverse=True)) + r")[ \t]*")
 _VERB_RE = re.compile(
     r"(?<![A-Za-z])(?:(?:called|raised|witnessed|brought|accompanied|referred|informed|signed|reported|visited|"
     r"received|attended|escorted|collected|verified|registered|requested|consented|consent|given|dropped|"
@@ -1092,6 +1094,7 @@ def _extend_generic(cx: _Ctx, spans: List[Span]) -> List[Span]:
 def _run(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set[int]]:
     if not text:
         return [], set()
+    text = scripts.fold(text)  # 11 scripts -> Devanagari/Latin; same length, so spans index the original
     cx = _Ctx(text)
     _layer_identifiers(cx)
     _layer_labels(cx)

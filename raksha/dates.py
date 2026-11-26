@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from . import scripts as _scripts
+
 MIN_YEAR = 1900
 MAX_YEAR = 2100
 
@@ -413,7 +415,7 @@ _GEN = r"(?:F|M|Female|Male|female|male|महिला|पुरुष|स्�
 _NOPRE = r"(?<![0-9०-९\-/.+:])"
 
 _AGE_LABEL_RE = re.compile(
-    r"(?:\b(?:Age|AGE|age)(?:\s*/\s*(?:Sex|SEX|sex|Gender|gender))?|आयु|उम्र|उमर)\s*[:：\-]?\s*"
+    r"(?:\b(?:Age|AGE|age)(?:\s*/\s*(?:Sex|SEX|sex|Gender|gender))?|आयु|उम्र|उमर|" + "|".join(_scripts.AGE_WORDS) + r")\s*[:：\-]?\s*"
     + _N + _NUM_END
     + r"(?!\s*(?:days?|months?|mths?|mo\b|weeks?|wks?|दिन|माह|महीने|महीना|सप्ताह|हफ्ते))")
 _AGE_GENDER_RE = re.compile(

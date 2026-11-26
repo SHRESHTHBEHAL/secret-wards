@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from .normalize import decode_layers, digits_only, norm_text
+from .scripts import fold
 from .translit import GENERIC_NAME_PARTS, HONORIFICS, TITLES, name_key, name_tokens
 from .types import Facts, Patient
 
@@ -126,6 +127,7 @@ def _norm_map(text: str) -> Tuple[str, Optional[List[int]]]:
     """Normalised text plus, for non-ASCII input, the original index of each normalised char."""
     if text.isascii():
         return text.lower(), None
+    text = fold(text)  # length-preserving, so the index map below stays valid for the original
     out = []
     idx = []  # type: List[int]
     cache = _CHAR_NORM

@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 from raksha.normalize import norm_text
+from raksha.scripts import fold
 
 _CONS = {
     "क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "n",
@@ -178,7 +179,7 @@ def name_tokens(name: str) -> List[str]:
 _KEY_RULES = (
     ("chh", "c"), ("ch", "c"), ("sh", "s"), ("ph", "f"), ("x", "ks"),
     ("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("uu", "u"),
-    ("ai", "e"), ("au", "o"), ("w", "v"), ("z", "j"), ("q", "k"), ("y", "i"),
+    ("ai", "e"), ("au", "o"), ("ow", "o"), ("w", "v"), ("z", "j"), ("q", "k"), ("y", "i"),
 )
 _H_AFTER_CONS = re.compile(r"([bcdfgjklmnpqrstvxz])h")
 _DOUBLE = re.compile(r"(.)\1+")
@@ -187,8 +188,8 @@ _NON_ALPHA = re.compile(r"[^a-z]")
 
 @lru_cache(maxsize=262144)
 def name_key(token: str) -> str:
-    """Phonetic key of a single name token (Latin or Devanagari)."""
-    t = token
+    """Phonetic key of a single name token (Latin, Devanagari or any folded Indian script)."""
+    t = fold(token)
     if is_deva(t):
         t = deva_to_latin(t)
     t = _NON_ALPHA.sub("", norm_text(t))
