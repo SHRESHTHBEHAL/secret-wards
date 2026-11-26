@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import dates, fields as F, patterns
 from .normalize import to_ascii_digits, try_b64_text
@@ -507,6 +507,7 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
             t = F.classify_column(label or "", col[:500])
         except Exception:  # noqa: BLE001
             t = F.OTHER
+        t = _override(pf).get(c, t)
         types.append(t)
         orders.append(_date_order(col, label or "") if t in (F.DATE, F.DOB) else "")
     file_patient = any(t in _PATIENT_SIGNAL for t in types)
@@ -533,7 +534,8 @@ def _json_orders(data: Any) -> Dict[str, str]:
     return {k: _date_order(vs, k) for k, vs in sorted(by_key.items())}
 
 
-def _harvest_tree(fb: _FB, node: Any, prefix: List[Any], orders: Dict[str, str]) -> None:
+def _harvest_tree(fb: _FB, node: Any, prefix: List[Any], orders: Dict[str, str],
+                  ov: Optional[Dict[Any, str]] = None) -> None:
     for n, (keys, v) in enumerate(_leaves(node, list(prefix))):
         if n > 20000:
             break
@@ -541,7 +543,10 @@ def _harvest_tree(fb: _FB, node: Any, prefix: List[Any], orders: Dict[str, str])
             continue
         last = next((str(x) for x in reversed(keys) if not isinstance(x, int)), "")
         group = "/".join(str(x) for x in keys[:-1])
-        put(fb, _ktype(keys, v), v, orders.get(last, "dmy"), group)
+        t = _ktype(keys, v)
+        if ov:
+            t = ov.get(_sig(keys), t)
+        put(fb, t, v, orders.get(last, "dmy"), group)
 
 
 def _json_records(pf: ParsedFile) -> List[Record]:
@@ -552,7 +557,7 @@ def _json_records(pf: ParsedFile) -> List[Record]:
     if units:
         for loc, keys, elem in units:
             fb = _FB()
-            _harvest_tree(fb, elem, keys, orders)
+            _harvest_tree(fb, elem, keys, orders, _override(pf))
             f = fb.finish()
             f.is_patient = fb.signal or _has_patient_facts(f)
             out.append(Record(rel=pf.rel, loc=loc, facts=f))
@@ -775,6 +780,106 @@ def _file_name_facts(fb: _FB, rel: str) -> None:
         run = []
     if best:
         fb.name(" ".join(best))
+
+
+# ---------------------------------------------------------------- cross-file id evidence
+# A column / key whose label says nothing ("Kramank", "ref", "hosp_no" in a new language) but whose
+# values are hospital ids already known from OTHER files of the same dataset is a patient-id slot.
+_OVERRIDES: Dict[str, Dict[Any, str]] = {}
+_UPGRADABLE = frozenset({F.OTHER, F.OTHER_ID, F.FREE_TEXT, F.CLINICAL, F.HOSPITAL})
+
+
+def _okey(pf: ParsedFile) -> str:
+    return pf.sha256 or pf.rel
+
+
+def _override(pf: ParsedFile) -> Dict[Any, str]:
+    return _OVERRIDES.get(_okey(pf), {})
+
+
+def _sig(keys: Sequence[Any]) -> Tuple[str, ...]:
+    return tuple(str(k) for k in keys if not isinstance(k, int))
+
+
+def _slots(pf: ParsedFile) -> Dict[Any, Tuple[str, List[str]]]:
+    """slot (CSV column index / JSON key signature) -> (current type, string values)."""
+    out: Dict[Any, Tuple[str, List[str]]] = {}
+    if pf.kind == KIND_CSV:
+        header = list(pf.header or [])
+        rows = pf.rows or []
+        width = max([len(header)] + [len(r or []) for r in rows])
+        for c in range(width):
+            col = [r[c] for r in rows if r and c < len(r) and r[c] is not None]
+            try:
+                t = F.classify_column(header[c] if c < len(header) else "", col[:500])
+            except Exception:  # noqa: BLE001
+                t = F.OTHER
+            out[c] = (t, [_s(v) for v in col if _s(v)])
+    elif pf.kind == KIND_JSON:
+        for n, (keys, v) in enumerate(_leaves(pf.data, [])):
+            if n > 20000:
+                break
+            sv = _s(v)
+            if not sv or isinstance(v, float):
+                continue
+            sg = _sig(keys)
+            t = _ktype(keys, v)
+            cur = out.get(sg)
+            if cur is None:
+                out[sg] = (t, [sv])
+            else:
+                cur[1].append(sv)
+                if cur[0] != t and t not in _UPGRADABLE:
+                    out[sg] = (t, cur[1])
+    return out
+
+
+def _id_key(v: str) -> str:
+    k = patterns.norm_id(v)
+    return k if len(re.sub(r"[^0-9]", "", k)) >= 3 else ""
+
+
+def prepare(pfs: Sequence[ParsedFile]) -> None:
+    """Two-pass typing: harvest every file once, collect the hospital / admission ids typed by
+    label or shape, then mark slots of other files whose values overlap them (>= half of the
+    distinct values) as PATIENT_ID / ENC_ID for the following harvest_file calls."""
+    _OVERRIDES.clear()
+    owners: Dict[str, Set[str]] = {}
+    for pf in pfs:
+        try:
+            for r in harvest_file(pf):
+                for t in (r.facts.ids if r.facts else []):
+                    typ, _, val = t.partition(":")
+                    if typ in (ID_UHID, ID_ENC):
+                        owners.setdefault(typ + ":" + patterns.norm_id(val), set()).add(_okey(pf))
+        except Exception:  # noqa: BLE001
+            continue
+    for pf in pfs:
+        try:
+            ov: Dict[Any, str] = {}
+            me = _okey(pf)
+            for slot, (t, vals) in _slots(pf).items():
+                if t not in _UPGRADABLE:
+                    continue
+                distinct = {k for k in (_id_key(v) for v in vals) if k}
+                if not distinct or len(distinct) < 0.6 * len(set(vals)):
+                    continue
+                hits = {}
+                for typ in (ID_UHID, ID_ENC):
+                    hits[typ] = sum(1 for k in distinct if owners.get(typ + ":" + k, set()) - {me})
+                best = max(hits, key=lambda x: hits[x])
+                if hits[best] and hits[best] >= 0.5 * len(distinct):
+                    ov[slot] = F.ENC_ID if best == ID_ENC else F.PATIENT_ID
+            if ov:
+                _OVERRIDES[me] = ov
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def harvest_all(pfs: Sequence[ParsedFile]) -> Dict[str, List[Record]]:
+    """harvest_file for every file, with cross-file id evidence (see prepare)."""
+    prepare(pfs)
+    return {pf.rel: harvest_file(pf) for pf in pfs}
 
 
 # ---------------------------------------------------------------- entry point
