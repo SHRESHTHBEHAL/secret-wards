@@ -150,10 +150,19 @@ def _low(w: str) -> str:
     return _nfc(w.lower().strip("'’-"))
 
 
+# greeting words ("Sat Sri Akal <name> ji", "Respected <name>") and document-type words ("Aadhaar <number>")
+# are never part of a person's name
+_NEVER_NAME = _ws("""
+dear respected respectfully namaste namaskar namaskaram vanakkam akal pranam pranaam salaam salam johar greetings
+aadhaar aadhar adhaar aadhaarcard voter epic passport licence license abha uhid mrn
+pati patni pita beta beti sasur devar damad
+""")
+
+
 def _is_name_tok(w: str, mode: str) -> bool:
     """mode 'any': after a name label; 'cap': free text, Latin must be Capitalised."""
     lw = _low(w)
-    if not lw or lw in _STOP:
+    if not lw or lw in _STOP or lw in _NEVER_NAME:
         return False
     if _is_dev(w):
         return len(lw) >= 2
@@ -583,7 +592,7 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
                 add(ps, pe, "VILLAGE", "", 3)
                 got += 1
             continue
-        if not re.search(r"[A-Za-zऀ-ॿ]", part):
+        if not re.search(r"[^\W\d_]", part):        # letters of any script ("<Tamil street>")
             if re.search(r"[0-9०-९]", part):
                 add(ps, pe, "ADDRESS", "", 3)
             continue
@@ -892,6 +901,62 @@ def _layer_labels(cx: _Ctx) -> None:
             if sub and _classify_label(sub.group(1)) not in ("", "clinical"):
                 ve = vs + sub.start()
             _apply_label(cx, cls, label, vs, ve)
+
+
+# a phone / Aadhaar number a scan broke over a line end: "Mob : 67879 8\n1262      Aadhar : ..."
+_SPLIT_NUM_LABEL = re.compile(r"(?i)(?<![A-Za-z])(mob(?:ile)?|ph(?:one)?|contact|aadh?aa?r|adhaar)(?:[ \t]+no\.?)?[ \t]*[:\-][ \t]*"
+                              r"([0-9](?:[0-9]|[ ](?=[0-9])|[ ]{2}(?=[0-9]{2})){2,15})[ \t]*\n[ \t]*([0-9]{1,6})(?=[ \t]{2,}|[ \t]*$|[ \t]*\n)",
+                              re.M)
+
+
+def _layer_split_numbers(cx: _Ctx) -> None:
+    t = cx.text
+    if "\n" not in t:
+        return
+    for m in _SPLIT_NUM_LABEL.finditer(t):
+        d = re.sub(r"[^0-9]", "", m.group(2) + m.group(3))
+        aad = m.group(1).lower().startswith(("aadh", "adh"))
+        if aad and len(d) == 12 and d[0] not in "01":
+            kind = "AADHAAR"
+        elif not aad and len(d) == 10 and d[0] in "6789":
+            kind = "PHONE"
+        else:
+            continue
+        cx.add(m.start(2), m.end(2), kind, d, 1)
+        cx.add(m.start(3), m.end(3), kind, d, 1)
+
+
+# "key = value" lines of an export ("insured.name = <name>", "mugavari=<address>"): only the person and
+# address classes are applied; a dotted / underscored key is read as words
+_EQ_LINE = re.compile(r"[ \t]*([A-Za-z][A-Za-z0-9_.\-]{0,30}(?:[ \t][A-Za-z][A-Za-z0-9_.\-]{0,20}){0,2})[ \t]*=[ \t]*(?=[^ \t=])")
+_EQ_CLASSES = ("name", "relative", "attendant", "address", "village")
+_EQ_PERSON_KEY = _ws("patient pt insured proposer nominee member beneficiary applicant claimant")
+
+
+def _layer_eq_labels(cx: _Ctx) -> None:
+    t = cx.text
+    if "=" not in t:
+        return
+    for ls, line in _lines(t):
+        if line.count("=") != 1 or ":" in line:
+            continue
+        m = _EQ_LINE.match(line)
+        if not m:
+            continue
+        label = re.sub(r"[._\-]+", " ", m.group(1)).strip()
+        cls = _classify_label(label)
+        ws = _lw(label)
+        if len(ws) >= 2 and ws[0] in _EQ_PERSON_KEY and cls in ("", "clinical", "name"):
+            if ws[-1] == "place":
+                cls = "village"                     # "insured.place = <town>"
+            elif ws[-1] in ("name", "naam", "aka", "alias"):
+                cls = "relative" if ws[0] in ("proposer", "nominee") else "name"
+        if cls not in _EQ_CLASSES:
+            continue
+        vs, ve = _strip_span(t, ls + m.end(), ls + len(line))
+        if cls == "village" and is_district(_clean(t[vs:ve])):
+            continue
+        _apply_label(cx, cls, label, vs, ve)
 
 
 # the rest of a labelled hospital number that a scan broke after a separator: "/ 02 19"
@@ -1205,7 +1270,8 @@ def _layer_path_names(cx: _Ctx) -> None:
     t = cx.text
     for m in _PATH_NAME.finditer(t):
         pieces = [p for p in re.split(r"[_ ]", m.group(1)) if p]
-        if any(_low(p) in _STOP or _low(p) in patterns._UNDERSCORE_WORDS or _low(p) in _EN_COMMON for p in pieces):
+        if any(_low(p) in _STOP or _low(p) in patterns._UNDERSCORE_WORDS or _low(p) in _EN_COMMON
+               or _low(p) in _NEVER_NAME for p in pieces):
             continue   # "Ward_Register_00123", "Lab_Results_202611": a folder label, not a person
         if len(pieces) == 1 and not m.group(2) and len(m.group(3)) < 6:
             continue
@@ -2051,6 +2117,12 @@ _KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:[Mm]y[ \t]+|[Hh]er[ \t]+|[Hh]is[ \t]+)
                        r"bhai|behen|bro\.|sis\.)[ \t]+(?![oO][fF][ \t])")
 
 
+# a capitalised Hinglish kin word at a sentence start: "Pati <Name> ne bataya", "Beta <Name> ko bulaya"
+_KIN_HL_CAP = re.compile(r"(?<![A-Za-z/])(?:Pati|Patni|Pita|Beta|Beti|Bhai|Behen|Bahen|Sasur|Devar|Bahu|Damad)[ \t]+(?=[A-Z][a-z])")
+# a scan that split the kin word and the name: "elder bro ther <Dhani ram Munda>"
+_KIN_OCR = re.compile(r"(?<![A-Za-z])(?:bro[ ]ther|sis[ ]ter|fa[ ]ther|mo[ ]ther|hus[ ]band|daugh[ ]ter)[ \t]+(?=[A-Z][a-z])", re.I)
+_OCR_NAME = re.compile(r"[A-Z][a-z]+(?:[ ][a-z]{2,4}(?=[ ][A-Z]))?(?:[ ][A-Z][a-z]+){0,2}")
+_HL_POSTPOS = re.compile(r"[ \t]+(?:ne|ka|ki|ke|ko|se)(?![A-Za-z])")
 _AGESEX_OF = re.compile(
     r"(?<![0-9])[0-9]{1,3}[ \t]*(?:y|yr|yrs|years?|Y|Yrs)?\.?[ \t]*(?:/|,)?[ \t]*(?:M|F|Male|Female|male|female)(?:\)?[ \t]*,|\))[ \t]*"
     r"(?:of|from|r/o|resident[ \t]+of)[ \t]+((?:[A-Z][a-z]{2,}[ \t]+)?[A-Z][a-z]{2,})(?![A-Za-z])")
@@ -2069,6 +2141,20 @@ def _layer_agesex_of(cx: _Ctx) -> None:
 
 def _layer_kin_bare(cx: _Ctx) -> None:
     t = cx.text
+    for m in _KIN_OCR.finditer(t):
+        n = _OCR_NAME.match(t, m.end())
+        if n and all(_is_name_tok(w, "any") for w in n.group().split() if w[0].isupper()):
+            rel = re.sub(r"[ \t]", "", m.group()).lower()
+            ov = [p for p in patterns.protected_spans(t) if p.start < n.end() and p.end > n.start()]
+            if ov and all(p.kind == "HISTORY" for p in ov):
+                cx.cands.append((5, n.start(), n.end(), "RELATIVE_NAME", rel))  # "H/o contact ... bro ther <X>"
+            else:
+                cx.add(n.start(), n.end(), "RELATIVE_NAME", rel, 5)
+    for m in _KIN_HL_CAP.finditer(t):
+        le = t.find("\n", m.end())
+        nm = _take_name(t, m.end(), len(t) if le < 0 else le, "cap", max_tok=3)
+        if nm and _HL_POSTPOS.match(t, nm[1]):
+            cx.add(nm[0], nm[1], "RELATIVE_NAME", _low(t[m.start():m.end()].strip()), 5)
     for m in _KIN_BARE.finditer(t):
         le = t.find("\n", m.end())
         le = len(t) if le < 0 else le
@@ -2333,6 +2419,11 @@ _RE_FOOT_NAME = re.compile(r"[ \t]*[:\-]?[ \t]*((?:[A-Z][a-z]+|[A-Z]\.?)(?:-[A-Z
 _RE_DEAR_CAPS = re.compile(r"(?<![A-Za-z])(?:Dear|Hi|Hello|Namaste|Namaskar|Mr|Mrs|Ms|Shri|Smt)\.?[ \t]+"
                            r"([A-Z]{3,}(?:[ \t]+[A-Z]{3,}){0,2}(?:[ \t]+[A-Z]\.?)?)(?=[ \t]*[,:.!]|[ \t]+[a-z])")
 _CAPS_NOT = _ws("sir madam maam customer patient user member team all parent guardian beneficiary applicant doctor")
+# "Dear <Name>,", "Namaste <Name> ji", "Respected <Name>": the greeting is kept, the addressee removed
+_RE_GREET = re.compile(r"(?<![A-Za-z])(?:Dear|Respected|Namaste|Namaskar|Namaskaram|Vanakkam|Hello|Hi)[ \t]+(?=[A-Z][a-z])")
+_GREET_AFTER = re.compile(r"[ \t]*(?:[,!:]|(?:ji|jee|sir|madam)(?![A-Za-z]))")
+_GREET_NOT = _CAPS_NOT | _ws("""colleague colleagues everyone friends friend sister brother nurse staff concerned officer
+manager members patients parents family families customers madam sir sirs mam folks""")
 _DEV_ROLE = (r"गवाह|साक्षी|परिजन|अभिभावक|हस्ताक्षरकर्ता|रिश्तेदार|संबंधी|सम्बन्धी|पड़ोसी|पडोसी|मित्र|दोस्त|साला|साली|जीजा|"
              r"देवर|ननद|भाभी|भतीजा|भतीजी|भांजा|भांजी|ससुर|सास|बहू|दामाद|चाचा|चाची|मामा|मामी|ताऊ|ताई|फूफा|बुआ|मौसा|मौसी|"
              r"नाना|नानी|दादा|दादी|सहमति[ \t]+देने[ \t]+वाला|सहमति[ \t]+देने[ \t]+वाली|रक्तदाता")
@@ -2396,6 +2487,16 @@ def _layer_extra_frames(cx: _Ctx) -> None:
         if any(w in _CAPS_NOT or w in _STOP or w in _HEADER_WORDS for w in ws if len(w) > 1):
             continue
         cx.add(m.start(1), m.end(1), "PATIENT_NAME", "", 4)
+    for m in _RE_GREET.finditer(t):
+        le = t.find("\n", m.end())
+        le = len(t) if le < 0 else le
+        nm = _take_name(t, m.end(), le, "cap", max_tok=3)
+        if not nm or not _GREET_AFTER.match(t, nm[1]):
+            continue
+        ws = [_low(w) for w in re.findall(r"[A-Za-z]+", t[nm[0]:nm[1]])]
+        if any(w in _GREET_NOT or w in _HEADER_WORDS for w in ws):
+            continue
+        cx.add(nm[0], nm[1], "PERSON", "", 4)
     for m in (_RE_DEV_ROLE.finditer(t) if _IS_DEVA.search(t) else ()):
         toks = list(re.finditer(_DEV, m.group(1)))
         keep = []
@@ -2417,11 +2518,11 @@ def _layer_dev_case(cx: _Ctx) -> None:
         for m in rx.finditer(t):
             s, e = m.start(1), m.end(1)
             words = _WORD_ANY.findall(t[s:e])
-            if not words or any(_low(w) in _STOP for w in words):
+            if not words or any(_low(w) in _STOP or _low(w) in _NEVER_NAME for w in words):
                 # keep the trailing name words only
                 good = []
                 for w in reversed(words):
-                    if _low(w) in _STOP:
+                    if _low(w) in _STOP or _low(w) in _NEVER_NAME:
                         break
                     good.append(w)
                 if not good:
@@ -3026,6 +3127,8 @@ def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
     _layer_identifiers(cx)
     _layer_pid_labels(cx)
     _layer_labels(cx)
+    _layer_eq_labels(cx)
+    _layer_split_numbers(cx)
     keep_cells = _layer_tables(cx)
     _layer_space_labels(cx)
     _layer_dob(cx, order)
