@@ -36,7 +36,7 @@ _PATIENT_SIGNAL = frozenset({F.PATIENT_ID, F.ENC_ID, F.AADHAAR, F.ABHA, F.ABHA_A
 _RECORD_SIGNAL = frozenset({F.PATIENT_ID, F.ENC_ID, F.AADHAAR, F.ABHA, F.DOB, F.AGE, F.AGE_SEX})
 _STRONG_ID_TYPES = (ID_UHID, ID_ENC, ID_AADHAAR, ID_ABHA)
 # Array keys that name a collection of patient records even when an element carries no id.
-_RECORD_KEY = re.compile(r"^(?:visits?|patients?|results?|records?|admissions?|encounters?|reports?|"
+_RECORD_KEY = re.compile(r"^(?:visits?|patients?|results?|records?|admissions?|encounters?|encs?|reports?|"
                          r"registrations?|opd|ipd|cases?|samples?|discharges?|claims?|bills?|"
                          r"slips?|parchi(?:yan|yaan|ya)?|parche|rogi|mareez|marij)$")
 
@@ -437,7 +437,17 @@ def _leaves(node: Any, keys: List[Any], depth: int = 0):
             for x in _leaves(node[k], keys + [str(k)], depth + 1):
                 yield x
     elif isinstance(node, list):
+        av = F.av_list(node)
         for i, v in enumerate(node):
+            pair = F.av_pair(v) if av else None
+            if pair is not None:
+                # attribute/value fact: the value is typed by its attribute code
+                ck, vk, code = pair
+                for k in list(v.keys()):
+                    sub = keys + [i, code] if str(k) == vk else keys + [i, str(k)]
+                    for x in _leaves(v[k], sub, depth + 1):
+                        yield x
+                continue
             for x in _leaves(v, keys + [i], depth + 1):
                 yield x
     else:
@@ -503,13 +513,26 @@ def _wrapper_list(node: list, keys: List[Any]) -> bool:
             if not any(isinstance(x, int) for x in rel):
                 return False
             inner = True
-        if not any(isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+        if not any(isinstance(v, list) and v and all(isinstance(x, dict) for x in v) and not F.av_list(v)
                    and (len(v) >= 2 or _RECORD_KEY.search(str(k).lower()) is not None) for k, v in e.items()):
             return False
     return inner
 
 
 _COLUMNS_KEY = re.compile(r"^(?:columns?|cols?|headers?|header_row|fields?|field_?names|col_?names|schema)$", re.I)
+
+
+def _schema_names(v: Any) -> Optional[List[str]]:
+    """Column labels of a list of column descriptors ([{"name": "uhid", "type": "string"}, ..])."""
+    if not isinstance(v, list) or len(v) < 2 or not all(isinstance(x, dict) for x in v):
+        return None
+    out = []
+    for x in v:
+        nm = next((x[kk] for kk in ("name", "field", "key", "id", "label", "title") if kk in x), None)
+        if not isinstance(nm, str) or not nm.strip():
+            return None
+        out.append(nm)
+    return out
 
 
 def columnar_rows(node: Any) -> Optional[Tuple[str, List[str]]]:
@@ -523,6 +546,21 @@ def columnar_rows(node: Any) -> Optional[Tuple[str, List[str]]]:
                 and all(isinstance(x, str) and x.strip() for x in v)):
             labels = [str(x) for x in v]
             break
+    if labels is None:
+        # a table schema: {"schema": {"fields": [{"name": "uhid", "type": ..}, ..]}, "data": [[..], ..]}
+        for k, v in node.items():
+            if not _COLUMNS_KEY.match(str(k)):
+                continue
+            cand = [v]
+            if isinstance(v, dict):
+                cand = [x for kk, x in v.items() if _COLUMNS_KEY.match(str(kk))]
+            for c in cand:
+                names = _schema_names(c)
+                if names:
+                    labels = names
+                    break
+            if labels is not None:
+                break
     if labels is None:
         return None
     for k, v in node.items():
@@ -539,6 +577,9 @@ def _record_arrays(node: Any, ptr: str, keys: List[Any], out: List[Tuple[str, Li
     if depth > MAX_DEPTH:
         return
     if isinstance(node, list):
+        if F.av_list(node):
+            # attribute/value facts belong to the object that owns the list
+            return
         named = bool(keys) and not isinstance(keys[-1], int) and \
             _RECORD_KEY.search(str(keys[-1]).lower()) is not None
         if node and not _wrapper_list(node, keys) and (any(_is_record(e, keys) for e in node[:50])
