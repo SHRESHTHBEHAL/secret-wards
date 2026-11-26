@@ -1244,7 +1244,12 @@ def _has_pid(node: Any, keys: List[str]) -> bool:
             for k, y in x.items():
                 stack.append((y, ks + [str(k)], d + 1))
         elif isinstance(x, list):
+            av = fields.av_list(x)
             for y in x:
+                pair = fields.av_pair(y) if av else None
+                if pair is not None:
+                    stack.append((y[pair[1]], ks + [pair[2]], d + 2))
+                    continue
                 stack.append((y, ks, d + 1))
         elif isinstance(x, str) and x.strip():
             try:
@@ -1297,7 +1302,19 @@ def _json(data: Any, fs: _File) -> Any:
                 out[nk] = walk(v, keys + [ks], cptr, depth + 1)
             return out
         if isinstance(node, list):
-            return [walk(v, keys, ptr + "/%d" % i, depth + 1) for i, v in enumerate(node)]
+            av = fields.av_list(node)
+            res = []
+            for i, v in enumerate(node):
+                pair = fields.av_pair(v) if av else None
+                if pair is None:
+                    res.append(walk(v, keys, ptr + "/%d" % i, depth + 1))
+                    continue
+                # attribute/value fact: the value is typed by its attribute code
+                ck, vk, code = pair
+                iptr = ptr + "/%d" % i
+                res.append({k: walk(x, keys + [code] if str(k) == vk else keys + [str(k)],
+                                    iptr + "/" + _esc(str(k)), depth + 2) for k, x in v.items()})
+            return res
         try:
             t = fields.json_key_type(keys, node)
         except Exception:  # noqa: BLE001
