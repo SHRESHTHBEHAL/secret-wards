@@ -982,6 +982,12 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
         t = _override(pf).get(c, t)
         types.append(t)
         orders.append(_date_order(col, label or "") if t in (F.DATE, F.DOB) else "")
+    try:
+        inst = F.institutional_table(header) if len(header) == width else None
+    except Exception:  # noqa: BLE001
+        inst = None
+    if inst is not None:   # a stock / roster table: its values are the institution's own references, never a patient's
+        types = [F.OTHER_ID if inst[c] else types[c] for c in range(width)]
     file_patient = any(t in _PATIENT_SIGNAL for t in types)
     text_order = _date_order([v for r in rows[:300] for v in (r or []) if isinstance(v, str)
                               and _DATEISH.search(v)])
