@@ -102,3 +102,11 @@ class GateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DoctorPrefixTest(unittest.TestCase):
+    def test_prefix_needs_separator(self):
+        # folded Malayalam "ഡോ" is "डो": it must not swallow names that merely start with it
+        out = redact("पिता/अभिभावक: डोरोथी भोसले")
+        self.assertNotIn("डोरोथी", out)
+        self.assertIn("ഡോ. ജോസഫ് മാത്യു", redact("Seen by ഡോ. ജോസഫ് മാത്യു"))

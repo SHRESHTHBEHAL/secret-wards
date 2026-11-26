@@ -764,7 +764,9 @@ def _layer_places(cx: _Ctx) -> None:
         if not _ADDR_CONTEXT.search(t, ss, m.start()):
             continue   # "near normal", "behind the eye" in clinical prose stay
         s, e = m.span(1)
-        cx.add(s, len(t[:e].rstrip(" \t.,")), "LANDMARK", "", 4)
+        e = len(t[:e].rstrip(" \t.,"))
+        if e > s:   # an address-context landmark wins over a protected word inside it ("opp. Gram Panchayat")
+            cx.cands.append((4, s, e, "LANDMARK", ""))
 
 
 def _layer_address_lines(cx: _Ctx) -> None:
