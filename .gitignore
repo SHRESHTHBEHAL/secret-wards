@@ -1,0 +1,17 @@
+# run outputs (may contain sanitised or raw-derived data)
+my_output*/
+out*/
+output/
+quarantine/
+logs/
+
+# never commit practice/hidden data or the organiser kit
+dev/
+Secret-Wards-ToolKit/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.env
