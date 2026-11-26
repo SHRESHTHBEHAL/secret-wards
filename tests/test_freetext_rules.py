@@ -689,3 +689,29 @@ class TextFormats(unittest.TestCase):
     def test_formats_inert_on_prose(self):
         t = "Seen in OPD. pata nahi kab se dard hai. gaon me sab theek."
         self.assertEqual([x for x in kinds(t) if x[0] in ("ADDRESS", "VILLAGE")], [])
+
+
+class ClinicalNotPlace(unittest.TestCase):
+    def test_rule_out_lower_case_diagnosis(self):
+        for t in ("Imp: k/c HTN; r/o pneumothorax on the left.", "Plan: r/o mesial temporal sclerosis on MRI.",
+                  "Imp: r/o neurotoxic envenomation - no ptosis", "Imp: r/o scar dehiscence at the incision.",
+                  "ANC: r/o pre-eclampsia - urine albumin nil."):
+            self.assertEqual([x for x in kinds(t) if x[0] in ("ADDRESS", "VILLAGE", "LANDMARK")], [], t)
+
+    def test_resident_of_still_an_address(self):
+        k = kinds("Harun Tamuli r/o Kalibor, Tehsil Dhing, Nagaon")
+        self.assertIn("Kalibor", " ".join(v for _, v in k))
+        k2 = kinds("Jonali r/o village bhakatpara, nagaon")
+        self.assertIn("bhakatpara", " ".join(v for _, v in k2))
+
+    def test_rural_hospital_is_not_a_village(self):
+        t = "सोनगिरी ग्रामीण रुग्णालय, केंद्र प्रमुख"
+        self.assertEqual([x for x in kinds(t) if x[0] in ("VILLAGE", "ADDRESS")], [])
+        self.assertIn(("VILLAGE", "टेकडीपुर"), kinds("ग्राम टेकडीपुर, तहसील सोनगिरी"))
+
+    def test_asha_role_before_role_word(self):
+        known = detect.Known(own_keys=frozenset({detect._word_key("Asha")}))
+        for t in ("Met ASHA Sahiya at the AWC.", "ASHA referral slip attached."):
+            self.assertEqual([sp for sp in detect.detect(t, known) if sp.kind in detect.NAME_KINDS], [], t)
+        self.assertTrue([sp for sp in detect.detect("Asha sahiya came today", known)
+                         if sp.kind in detect.NAME_KINDS])
