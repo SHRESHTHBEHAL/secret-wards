@@ -669,10 +669,10 @@ def main() -> int:
             return 1
     print(f"SELF-CHECK: {len(problems)} entity surfaces findable before but not after mutation; "
           f"{len(pres_problems)} preserve probes lost")
-    for p in problems[:30]:
-        print("   ENTITY", " | ".join(map(str, p)))
+    for p in problems[:30]:            # location and type only: never echo the surface itself
+        print("   ENTITY", " | ".join(map(str, p[:3])))
     for p in pres_problems[:15]:
-        print("   PRESERVE", " | ".join(map(str, p)))
+        print("   PRESERVE", " | ".join(map(str, p[:2])))
     return 1 if problems else 0
 
 

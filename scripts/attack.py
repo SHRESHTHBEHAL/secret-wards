@@ -1099,13 +1099,13 @@ def main():
             print("  %s risk %.3f (rec %.3f prof %.3f, %d cands) %s:%s" % (
                 pt, r["risk4"], r["p"], r["pp"], len(src["cands"]), r["file"], r["loc"]))
             print("      filters %s  weights %s" % (src["applied"], src["why"].get(r["true"])))
-            print("      ages %s bands %s by %s g %s dist %s teh %s vil %s pin %s pfx %s house %s" % (
-                sorted(ev.ages)[:4], sorted(ev.bands)[:4], sorted(ev.birth_years)[:3], sorted(ev.genders),
-                sorted(ev.districts), sorted(ev.tehsils)[:3], sorted(ev.villages)[:3], sorted(ev.pins)[:3],
-                sorted(ev.pin_prefixes)[:3], sorted(ev.houses)[:3]))
-            if ev.names or ev.relatives or ev.phones or ev.last4:
-                print("      names %s rel %s phones %s last4 %s" % (sorted(ev.names)[:4], sorted(ev.relatives)[:3],
-                                                                  sorted(ev.phones)[:2], sorted(ev.last4)[:2]))
+            print("      evidence counts: ages %d bands %d birth-years %d genders %d districts %d tehsils %d villages %d "
+                  "pins %d pin-prefixes %d houses %d" % (
+                      len(ev.ages), len(ev.bands), len(ev.birth_years), len(ev.genders), len(ev.districts),
+                      len(ev.tehsils), len(ev.villages), len(ev.pins), len(ev.pin_prefixes), len(ev.houses)))
+            if ev.names or ev.relatives or ev.phones or ev.last4:   # counts only: never echo record content
+                print("      names %d rel %d phones %d last4 %d" % (len(ev.names), len(ev.relatives),
+                                                                  len(ev.phones), len(ev.last4)))
     if a.json:
         with open(a.json, "w") as fh:
             json.dump(res, fh, indent=1, default=str)

@@ -1,7 +1,7 @@
 """Orchestration: load -> harvest -> link -> pseudonymise -> sanitize -> leak gate -> export.
 
-Never prints data, file names or the secret. stderr only ever carries an exception class name and
-a stage name. Standard library only, Python 3.9+.
+Outputs no data, no file names and no key material. stderr only ever carries an exception class name
+and a stage name. Standard library only, Python 3.9+.
 """
 from __future__ import annotations
 
@@ -204,7 +204,7 @@ def run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]
 def _run(input_dir: Path, output_dir: Path, secret: bytes, policy: Dict[str, Any]) -> int:
     t0 = time.monotonic()
     if not secret:
-        sys.stderr.write("raksha: no secret configured; nothing processed\n")
+        sys.stderr.write("raksha: key not configured; nothing processed\n")
         return 2
     err = _Errors()
     input_dir, output_dir = Path(input_dir), Path(output_dir)
