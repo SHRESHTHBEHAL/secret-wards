@@ -189,7 +189,11 @@ def _take_name(text: str, pos: int, end: int, mode: str = "cap", max_tok: int = 
                 return None
             i = we + 1 if we < len(text) and text[we] == "." else we
             continue
-        if not _is_name_tok(w, mode):
+        initial = (len(w) == 1 and w.isupper() and we + 1 < end and text[we] == "." and text[we + 1] in " \t"
+                   and n < max_tok - 1)
+        if initial:
+            pass
+        elif not _is_name_tok(w, mode):
             if lw in _GENERIC and (mode == "any" or w[:1].isupper() or _is_dev(w)):
                 pass
             else:
@@ -198,7 +202,7 @@ def _take_name(text: str, pos: int, end: int, mode: str = "cap", max_tok: int = 
             first = j
         last = we
         n += 1
-        if lw not in _GENERIC:
+        if lw not in _GENERIC and not initial:
             n_real += 1
         i = we
         if i < end and text[i] == "." and lw in _ABBR | _GENERIC or (i < end and text[i] == "." and len(lw) == 1):
@@ -271,12 +275,12 @@ def _take_name_back1(text: str, ls: int, pos: int, mode: str, max_tok: int,
 
 _SEG_SPLIT = re.compile(r"[ \t]{2,}|\t|\|")
 _LABEL_RE = re.compile(
-    r"[ \t]*([A-Za-zऀ-ॿ][A-Za-zऀ-ॿ0-9 .'’/()#&_\-]{0,40}?)[ \t]*[:：][ \t]*")
+    r"[ \t]*([A-Za-zऀ-ॿ][A-Za-zऀ-ॿ0-9 .'’/()#&_\-]{0,40}?)[ \t]*[:：](?:[ \t]*[:：])?[ \t]*")
 
 
 def _lw(label: str) -> List[str]:
     t = _nfc(label.lower())
-    t = re.sub(r"(?<![a-z])([sdwhcfm])\s*/\s*o(?![a-z])", r" \1/o ", t)
+    t = re.sub(r"(?<![a-z])([sdwhcfmbr])\s*/\s*o(?![a-z])", r" \1/o ", t)
     t = re.sub(r"/(?!o(?![a-z]))", " ", t)
     t = re.sub(r"[^a-z0-9ऀ-ॿ/]+", " ", t)
     return [scripts.alias_label_word(w) for w in t.split()]
@@ -297,17 +301,21 @@ def _classify_label(label: str) -> str:
     if not ws:
         return ""
     j = " ".join(ws)
-    if _has(ws, ("address", "addr", "residen", "पता", "निवास"), ("add", "pata")):
+    if _has(ws, ("address", "addr", "residen", "पता", "निवास"), ("add", "pata", "r/o")):
         return "address"
     if _has(ws, ("dob", "birth", "janm", "जन्म", "d/o/b")) or j.startswith("d o b"):
         return "dob"
     if _has(ws, ("date", "time", "तारीख", "दिनांक", "समय"), ("dt", "dated", "on")):
         return "clinical"
+    if _has(ws, ("witness", "गवाह", "साक्षी", "informant", "identified", "brought", "escort"), ("copy",)) and \
+            not _has(ws, ("doctor", "consult", "physician", "डॉ", "चिकित्सक"), ("dr",)):
+        return "attendant"
     if _has(ws, ("doctor", "consult", "physician", "surgeon", "डॉ", "चिकित्सक"), ("dr", "by")):
         return "clinical"
     if _has(ws, ("father", "husband", "guardian", "mother", "wife", "spouse", "relative", "relation",
                  "पिता", "पति", "पत्नी", "माता", "अभिभावक", "संरक्षक", "kin"),
-            ("son", "daughter", "mata", "nok", "pita", "pati", "patni", "s/o", "w/o", "d/o", "c/o", "h/o")):
+            ("son", "daughter", "mata", "nok", "pita", "pati", "patni", "s/o", "w/o", "d/o", "c/o", "h/o", "f/o",
+             "m/o", "b/o")):
         return "relative"
     if _has(ws, ("attend", "companion", "caller", "informant", "witness", "visitor", "escort", "परिजन")):
         return "attendant"
@@ -414,7 +422,7 @@ def _strip_part(text: str, a: int, b: int) -> str:
     return text[a:b] if a < b else ""
 
 
-def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
+def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_keep: bool = False) -> int:
     """Classify comma-separated parts of text[s:e]; returns number of classified parts."""
     parts = []
     i = s
@@ -463,6 +471,9 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
             add(ps, pe, k, "", 3)
             got += 1
             continue
+        if strict and idx == n - 1 and got and _PLACE_NAME.fullmatch(part) and not _is_stopish(part):
+            add(ps, pe, "DISTRICT", _clean(part), 3)      # "..., Gandhi Colony, Uttara Kannada - 581401"
+            continue
         if strict:
             # an unlabelled name-like part between known address parts and a later district / tehsil /
             # PIN part ("H.No. 12, Pipariya, Distt. Dewas") is the village or locality
@@ -476,7 +487,7 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False) -> int:
             if re.search(r"[0-9०-९]", part):
                 add(ps, pe, "ADDRESS", "", 3)
             continue
-        if idx == n - 1 and got and not re.search(r"[0-9०-९]", part):
+        if idx == n - 1 and (got or (last_keep and n > 1)) and not re.search(r"[0-9०-९]", part):
             add(ps, pe, "DISTRICT", _clean(part), 3)      # trailing town / district name: kept
             continue
         add(ps, pe, "ADDRESS", "", 3)
@@ -805,6 +816,168 @@ def _layer_address_lines(cx: _Ctx) -> None:
             m = _LABEL_RE.match(line)
             st = ls + (m.end() if m else 0)
             _parse_address(t, st, ls + len(line), cx.add, strict=True)
+
+
+# ---------------------------------------------------------------- reference-annotator rules
+
+# residence trigger in running prose: "resident of 14/2 X Street, Y, Z dist.", "निवासी मकान सं. 27, ..."
+_RESIDE_RE = re.compile(r"(?<![A-Za-z])(?:resident[ \t]+of|residing[ \t]+at|r/o|R/O)[ \t]*[:\-]?[ \t]*"
+                        r"|(?<![ऀ-ॿ])(?:निवासी|निवास|रहने[ \t]+वाले|रहने[ \t]+वाली)[ \t]*[:\-]?[ \t]*")
+_DIST_WORD = re.compile(r"(?<![A-Za-zऀ-ॿ])(?:dist|distt|district|जिला|ज़िला|जनपद)(?![A-Za-zऀ-ॿ])", re.I)
+_RESIDE_STOP = _ws("""
+was is are has had her his who with aged age and since for presented presenting came come admitted
+अपने अपनी अपना जो की का के ने को है हैं था थी उम्र आयु
+""")
+_ABBR_DOT = _ws("dist distt no nr opp rd st teh vill p o po h sec sr sn ps सं नं म")
+_STATES = _ws("""
+andhra arunachal assam bihar chhattisgarh goa gujarat haryana himachal jharkhand karnataka kerala madhya
+maharashtra manipur meghalaya mizoram nagaland odisha orissa punjab rajasthan sikkim tamil telangana tripura
+uttarakhand uttaranchal bengal delhi jammu kashmir ladakh puducherry pondicherry chandigarh
+""")
+
+
+def _sentence_end(t: str, pos: int, limit: int) -> int:
+    """End of the sentence that starts at pos: newline, danda, or a full stop after a real word."""
+    i = pos
+    while i < limit:
+        c = t[i]
+        if c in "\n।|":
+            return i
+        if c == "." and (i + 1 >= limit or t[i + 1] in " \t\n"):
+            m = re.search(r"([A-Za-zऀ-ॿ]+)$", t[max(pos, i - 20):i])
+            w = _low(m.group(1)) if m else ""
+            if m and len(w) >= 2 and w not in _ABBR_DOT and not (len(w) == 1):
+                return i
+        i += 1
+    return limit
+
+
+def _layer_residence(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _RESIDE_RE.finditer(t):
+        s = m.end()
+        if s >= len(t) or t[s] in "\n":
+            continue
+        le = t.find("\n", s)
+        le = len(t) if le < 0 else le
+        se = _sentence_end(t, s, min(le, s + 200))
+        # comma segments: stop after a district / state segment, before a function-word segment
+        end = s
+        i = s
+        nseg = 0
+        while i < se:
+            j = t.find(",", i, se)
+            j = se if j < 0 else j
+            for wm in _WORD_ANY.finditer(t, i, j):
+                if _low(wm.group()) in _RESIDE_STOP:
+                    j = wm.start()
+                    se = j
+                    break
+            seg = t[i:j].strip(" \t.;:")
+            words = _WORD_ANY.findall(seg)
+            if not seg or len(seg) > 48:
+                break
+            end = j
+            nseg += 1
+            dm = _DIST_WORD.search(t, i, j)
+            if dm:
+                end = dm.end()
+                break
+            if words and _low(words[0]) in _STATES:
+                break
+            i = j + 1
+        if nseg == 0:
+            continue
+        e = len(t[:end].rstrip(" \t.,;"))
+        if e > s:
+            _parse_address(t, s, e, cx.add, last_keep=True)
+
+
+# a closing line followed by a one-line signature: "Thanks,\nAsha" / "धन्यवाद,\nX"
+_SIGNOFF_RE = re.compile(r"(?im)^[ \t]*(?:thanks|thank[ \t]+you|regards|warm[ \t]+regards|best[ \t]+regards|"
+                         r"kind[ \t]+regards|yours(?:[ \t]+(?:sincerely|truly|faithfully))?|sincerely|"
+                         r"धन्यवाद|भवदीय|भवदीया|आपका|आपकी)[ \t]*[,!.]?[ \t]*\n[ \t]*")
+
+
+def _layer_signoff(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _SIGNOFF_RE.finditer(t):
+        s = m.end()
+        le = t.find("\n", s)
+        le = len(t) if le < 0 else le
+        line = t[s:le].rstrip(" \t,.")
+        if not line or re.match(r"(?:Dr|DR|dr|Doctor|Prof|डॉ|डा)\b", line):
+            continue
+        toks = _WORD_ANY.findall(line)
+        if not 1 <= len(toks) <= 3 or _HEADER_LINE.search(line):
+            continue
+        if not re.fullmatch(r"[A-Za-zऀ-ॿ .'’\-]+", line):
+            continue
+        nm = _take_name(t, s, s + len(line), "cap", max_tok=3)
+        if nm:
+            cx.add(nm[0], nm[1], "PERSON", "", 4)
+
+
+# lower-case nursing shorthand: "pt <name> ko ...", "attendant (husband <name>)"
+_LOW_PT = re.compile(r"(?<![A-Za-z])(?:pt|patient|mareez|mariz|marij)\.?[ \t]+([a-z][a-z'\-]{2,})"
+                     r"(?:[ \t]+([a-z][a-z'\-]{2,}))?[ \t]+(?:ko|ka|ki|ke|ne|se)(?![A-Za-z])", re.I)
+_KIN_LOW = r"(?:husband|wife|mother|father|son|daughter|brother|sister|bhai|behen|pati|patni|beta|beti|pita|mata)"
+_LOW_ATT = re.compile(r"(?<![A-Za-z])(?:attndnt|attendant|attender|relative|nok)[ \t]*\(([^()\n]{1,60})\)", re.I)
+_LOW_KIN_IN = re.compile(r"(?<![A-Za-z])" + _KIN_LOW + r"[ \t]*:?[ \t]+([A-Za-z][a-z'\-]{2,})(?:[ \t]+([A-Za-z][a-z'\-]{2,}))?",
+                         re.I)
+
+
+_LOW_NOT_NAME = _ws("""
+absent present away informed called available unavailable notified sleeping awake outside inside here there
+gone left aware unaware ok okay alone along says said told asked refused agreed consented counselled
+explained informed waiting present not also only bedside ward home
+""")
+
+
+def _plain_word(w: str) -> bool:
+    lw = _low(w)
+    return (len(lw) >= 3 and lw not in _STOP and lw not in _LOW_NOT_NAME and lw not in _NOT_LOWER_NAME and lw not in lexicon.HINDI_COMMON_WORDS
+            and lw not in lexicon.CLINICAL_WORDS and lw not in lexicon.COMPLAINT_WORDS
+            and lw not in ("ko", "ka", "ki", "ke", "ne", "se", "hai", "tha", "thi", "ji"))
+
+
+def _layer_lower_names(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _LOW_PT.finditer(t):
+        if not _plain_word(m.group(1)):
+            continue
+        e = m.end(1)
+        if m.group(2) and _plain_word(m.group(2)):
+            e = m.end(2)
+        elif m.group(2):
+            continue
+        cx.add(m.start(1), e, "PATIENT_NAME", "", 5)
+    for m in _LOW_ATT.finditer(t):
+        for k in _LOW_KIN_IN.finditer(t, m.start(1), m.end(1)):
+            if not _plain_word(k.group(1)):
+                continue
+            e = k.end(1)
+            if k.group(2) and _plain_word(k.group(2)):
+                e = k.end(2)
+            cx.add(k.start(1), e, "RELATIVE_NAME", "", 4)
+
+
+# bare kinship word + capitalised name: "my mother Asha", "brother Ravi Kumar", Hinglish "pati Ramu"
+_KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:my[ \t]+|her[ \t]+|his[ \t]+)?(husband|wife|brother|sister|parent|mother|"
+                       r"father|son|daughter|pati|patni|pita|mata|beta|beti|bhai|behen)[ \t]+(?![oO][fF][ \t])")
+
+
+def _layer_kin_bare(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _KIN_BARE.finditer(t):
+        le = t.find("\n", m.end())
+        le = len(t) if le < 0 else le
+        if re.match(r"(?:Dr|DR|Doctor|डॉ)\b", t[m.end():m.end() + 8]):
+            continue
+        nm = _take_name(t, m.end(), le, "cap", max_tok=3)
+        if nm and t[nm[0]].isupper():
+            kind = "PATIENT_NAME" if _clinical_after(t, nm[1]) and m.group().lower().startswith("my") else "RELATIVE_NAME"
+            cx.add(nm[0], nm[1], kind, m.group(1).lower(), 5)
 
 
 def _layer_kinship(cx: _Ctx) -> None:
@@ -1153,6 +1326,9 @@ _PLACE_BEFORE = re.compile(r"(?:Distt|Dist|District|Tehsil|Tahsil|Jila|Zila|in|a
 _CAP_TOK = re.compile(r"[A-Z](?:[A-Za-z]|" + _POSS + r")*\.?")
 
 
+_PIN_AFTER = re.compile(r"[ \t]*[\-–][ \t]*[1-9][0-9]{5}(?![0-9])")
+
+
 def _layer_unknown_pairs(cx: _Ctx) -> None:
     t = cx.text
     for ls, line in _lines(t):
@@ -1170,6 +1346,7 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
                 if (real and not re.match(r"[ \t]*[:：]", t[e:e + 3])
                         and not _PLACE_BEFORE.search(_tail(t, ls, s))
                         and not (nxt and _low(nxt.group(1)) in _ORG_TAIL)
+                        and not _PIN_AFTER.match(t, e)
                         and (not allcaps or _name_context(t, ls, s))):
                     cx.add(s, e, "PERSON", "", 9)
             del run[:]
@@ -1232,6 +1409,25 @@ def _layer_self_propagate(cx: _Ctx, spans: List[Span]) -> None:
         hit = keymap.get(k)
         if hit:
             cx.add(m.start(), m.end(), hit[0], hit[1], 10)
+
+
+def _lift_covering_names(cx: _Ctx) -> None:
+    """A known name token (prio 6) inside a longer, weaker name run ("Baby of <Given> <Surname>") must not
+    split it: the covering run is lifted to the token's priority so the whole name is replaced."""
+    inner = sorted((c[1], c[2]) for c in cx.cands if c[0] == 6 and c[3] in NAME_KINDS)
+    if not inner:
+        return
+    starts = [a for a, _ in inner]
+    for c in list(cx.cands):
+        if c[0] <= 6 or c[3] not in NAME_KINDS:
+            continue
+        i = bisect.bisect_left(starts, c[1])
+        while i < len(inner) and inner[i][0] < c[2]:
+            a, b = inner[i]
+            if b <= c[2] and b - a < c[2] - c[1]:
+                cx.cands.append((6, c[1], c[2], c[3], c[4]))
+                break
+            i += 1
 
 
 def _layer_ages(cx: _Ctx) -> None:
@@ -1330,7 +1526,11 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_address_lines(cx)
     _layer_places(cx)
     _layer_path_names(cx)
+    _layer_residence(cx)
     _layer_kinship(cx)
+    _layer_kin_bare(cx)
+    _layer_signoff(cx)
+    _layer_lower_names(cx)
     _layer_honorifics(cx)
     _layer_verbs(cx)
     _layer_dev_case(cx)
@@ -1339,6 +1539,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_phone_proximity(cx)
     _layer_unknown_pairs(cx)
     _layer_ages(cx)
+    _lift_covering_names(cx)
     first = _resolve(cx.cands)
     _layer_self_propagate(cx, first)
     spans = _extend_generic(cx, _reclassify(_resolve(cx.cands), text))
