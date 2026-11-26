@@ -754,7 +754,14 @@ def classify_column(label: str, values: Sequence[Any]) -> str:
         ct = code_column_type(label, values)
         if ct:
             return ct
-    return _combine(lt, classify_values(values))
+    vt = classify_values(values)
+    if vt in (PHONE, AADHAAR) and lt in (OTHER_ID, ENC_ID, PATIENT_ID, INSURANCE):
+        # a 10 / 12 digit number under a label that names a document, admission or registration number
+        # (barcode, bill no, IP no) is that number, not a mobile or an Aadhaar
+        toks = _tokens(str(label or ""))
+        if lt != OTHER_ID and vt == PHONE or any(t in _NOT_PATIENT_CODE_LABEL for t in toks):
+            return lt
+    return _combine(lt, vt)
 
 
 # ---------------------------------------------------------------- JSON paths
@@ -856,6 +863,10 @@ _RE_META_PERSON = re.compile(r"(?:^|\s)[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}")
 _RE_NAMEISH = re.compile(r"^[A-Z][a-z]+(?:\s+(?:[A-Z]\.?|[A-Z][a-z]+)){1,3}$")
 
 
+_JOB_WORDS = frozenset({"occupation", "profession", "job", "designation", "employment", "vyavsay", "pesha"})
+_COMPANION_WORDS = frozenset({"companion", "attendant", "escort", "bystander", "caretaker", "caregiver"})
+
+
 def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     """Type of a JSON leaf from its key path (array indexes skipped) and its value."""
     keys = [str(k) for k in path_keys if not isinstance(k, int)]
@@ -867,6 +878,12 @@ def json_key_type(path_keys: Sequence[str], value: Any = None) -> str:
     lt = _label_type(toks)
     vh = _value_hint(value)
     owner = _owner(parents)
+
+    # A job title is not a name; a companion / attendant / escort is a private person, not a date.
+    if any(t in _JOB_WORDS for t in toks):
+        return OTHER
+    if any(t in _COMPANION_WORDS for t in toks) and isinstance(value, str) and not re.search(r"[0-9]", value):
+        return RELATIVE
 
     # Export metadata naming a person ("printedFor": "Name (phone)"); a login like "clerk07" is not one.
     if isinstance(value, str) and (len(toks) == 2 and toks[0] in _META_VERB and toks[1] in ("for", "by", "to")
