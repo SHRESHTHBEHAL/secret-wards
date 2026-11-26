@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import bisect
+import functools
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -335,6 +336,7 @@ def _has(ws: List[str], stems: Tuple[str, ...], exact: Tuple[str, ...] = ()) -> 
     return False
 
 
+@functools.lru_cache(maxsize=8192)
 def _classify_label(label: str) -> str:
     ws = _lw(label)
     if not ws:
@@ -758,10 +760,28 @@ def _layer_identifiers(cx: _Ctx) -> None:
         cx.add(sp.start, sp.end, "PIN", sp.value, 1)
     # Hospital-shaped codes that the patient-id rules vetoed as reference numbers ("ref no NMC/25/137211"):
     # they may well be the patient's number, so they are redacted, but never used to link records.
-    taken = [(c[1], c[2]) for c in cx.cands]
+    taken = sorted((c[1], c[2]) for c in cx.cands)
+    t_starts = [a for a, _ in taken]
+    t_maxend = []
+    hi = -1
+    for _, b in taken:
+        hi = b if b > hi else hi
+        t_maxend.append(hi)
     for m in _REF_SHAPED.finditer(t):
-        if not any(a < m.end() and m.start() < b for a, b in taken):
+        k = bisect.bisect_left(t_starts, m.end())
+        if not (k and t_maxend[k - 1] > m.start()) and not _document_ref(t, m.start(), m.group()):
             cx.add(m.start(), m.end(), "REF_ID", "", 7)
+
+
+def _document_ref(t: str, s: int, tok: str) -> bool:
+    """A claim / bill / lab / certificate / lot number named as such (label just before on the line,
+    or a document prefix like LOT- / CLM-) is a reference value to keep; only a bare 'ref no' code,
+    which may be the patient's own number, is redacted."""
+    if re.match(r"[A-Z]+", tok).group() in patterns._NON_PATIENT_PREFIXES:
+        return True
+    ls = t.rfind("\n", 0, s) + 1
+    seg = t[max(ls, s - 40):s].lower()
+    return any(not m.group().startswith("ref") for m in patterns._RE_NON_PATIENT_LABEL.finditer(seg))
 
 
 _DOSE_AFTER = re.compile(r"[ \t]+[0-9]{1,4}(?:\.[0-9]+)?[ \t]*(?:mg|mcg|ml|iu|units?|µg)?[ \t]*"
