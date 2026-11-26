@@ -49,6 +49,9 @@ _BINARY_MAGIC = (
 _CP1252_UNDEFINED = frozenset((0x81, 0x8D, 0x8F, 0x90, 0x9D))
 _CSV_DELIMS = (",", "\t", ";", "|")
 
+# Attachments and long notes routinely exceed the csv module's 128 KB field default.
+csv.field_size_limit(2 ** 31 - 1)
+
 
 def walk(input_dir: Path) -> List[Path]:
     """Every regular file under input_dir (hidden ones included), sorted by posix relative path."""
@@ -132,10 +135,29 @@ def _looks_utf16(raw: bytes) -> Optional[str]:
         return None
     nuls = sample.count(0)
     if nuls / len(sample) < 0.3:
-        return None
+        return _utf16_indic(sample)
     even = sample[0::2].count(0)
     odd = sample[1::2].count(0)
     return "utf-16-be" if even > odd else "utf-16-le"
+
+
+def _utf16_indic(sample: bytes) -> Optional[str]:
+    """BOM-less UTF-16 of Indic text has no NULs: every high byte is the script block (0x09-0x0D).
+    Accept it only when one byte lane is almost all block bytes and the text decodes to letters."""
+    if len(sample) < 8:
+        return None
+    for codec, lane in (("utf-16-le", sample[1::2]), ("utf-16-be", sample[0::2])):
+        block = sum(1 for b in lane if b in (0x00, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x06))
+        if block / len(lane) < 0.9 or sum(1 for b in lane if b != 0) / len(lane) < 0.3:
+            continue
+        try:
+            text = sample[: len(sample) // 2 * 2].decode(codec)
+        except UnicodeDecodeError:
+            continue
+        letters = sum(1 for c in text if c.isalpha() or c.isspace() or c.isdigit() or "\u0900" <= c <= "\u0dff")
+        if letters / max(1, len(text)) > 0.85:
+            return codec
+    return None
 
 
 def _cp1252_plausible(raw: bytes) -> bool:
@@ -250,7 +272,8 @@ def _load_json(rel: str, sha: str, text: str) -> ParsedFile:
     if _json_depth_exceeds(text):
         return _quarantine(rel, sha, R_DEEP)
     try:
-        data = json.loads(text, strict=False)
+        # NaN / Infinity are not JSON: keep them as text so the export stays valid JSON
+        data = json.loads(text, strict=False, parse_constant=lambda c: c)
     except (ValueError, RecursionError):
         return _quarantine(rel, sha, R_JSON)
     kind = KIND_FHIR if isinstance(data, dict) and data.get("resourceType") == "Bundle" else KIND_JSON
@@ -291,6 +314,8 @@ def _load_inner(path: Path, rel: str, sha: str, raw: bytes) -> ParsedFile:
             rows = _parse_csv(text, delim)
         except csv.Error:
             return _quarantine(rel, sha, R_CSV)
+        while rows and not any(c.strip() for c in rows[0]):
+            rows.pop(0)   # blank lines above the header are not data rows
         if not rows:
             return _quarantine(rel, sha, R_EMPTY)
         return ParsedFile(rel=rel, sha256=sha, kind=KIND_CSV, text=text, delimiter=delim,

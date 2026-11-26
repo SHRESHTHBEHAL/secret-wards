@@ -159,3 +159,40 @@ class IngestTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestRobustnessTest(unittest.TestCase):
+    def _load(self, name, raw):
+        import tempfile
+        from pathlib import Path
+        from raksha import ingest
+        d = Path(tempfile.mkdtemp())
+        (d / name).write_bytes(raw)
+        return ingest.load(d / name, d)
+
+    def test_huge_csv_field_is_not_quarantined(self):
+        pf = self._load("big.csv", ("name,attach\nx," + "A" * 200000 + "\n").encode())
+        self.assertEqual(pf.kind, "csv")
+        self.assertEqual(len(pf.rows[0][1]), 200000)
+
+    def test_nan_stays_valid_json(self):
+        import json
+        from raksha import ingest
+        pf = self._load("n.json", b'{"a": NaN, "b": Infinity, "c": 1}')
+        self.assertEqual(pf.kind, "json")
+        json.loads(ingest.dump_json(pf.data), parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+
+    def test_blank_lines_above_header(self):
+        pf = self._load("b.csv", b"\n\nName,Age\nA,1\n")
+        self.assertEqual(pf.header, ["Name", "Age"])
+        self.assertEqual(pf.rows, [["A", "1"]])
+
+    def test_bomless_utf16_hindi(self):
+        pf = self._load("h.txt", "मरीज़ का नाम: सुनीता देवी\nआयु 45 वर्ष\n".encode("utf-16-le"))
+        self.assertEqual(pf.kind, "text")
+        self.assertIn("सुनीता", pf.text)
+
+    def test_plain_ascii_not_mistaken_for_utf16(self):
+        pf = self._load("a.txt", b"Patient seen in OPD. BP 140/90. Review after 7 days.\n")
+        self.assertEqual(pf.kind, "text")
+        self.assertIn("Review", pf.text)
