@@ -157,7 +157,15 @@ def _is_name_tok(w: str, mode: str) -> bool:
         return False
     if mode == "cap" and not w[0].isupper():
         return False
+    if mode == "cap" and (lw in _ORG_STOP or (w.isupper() and not re.search(r"[AEIOUY]", w)) or w in ("ASHA", "ANM", "AWW")):
+        return False                    # facility acronyms (SDH, PHC, GMCH) and ward / device words
     return True
+
+
+_ORG_STOP = frozenset("""
+hospital hospitals clinic nursing home institute college medical centre center lab labs laboratory diagnostics
+sdh phc chc uphc dh ps sho mode add ward unit dept department casualty emergency icu micu sicu nicu picu ot
+""".split())
 
 
 def _take_name(text: str, pos: int, end: int, mode: str = "cap", max_tok: int = 4,
@@ -359,7 +367,7 @@ def _classify_label(label: str) -> str:
 # ---------------------------------------------------------------- address parts
 
 _A_HOUSE = re.compile(
-    r"(?:H\.?\s*No\.?|House(?:\s*No\.?)?|Makan(?:\s*No\.?)?|Flat(?:\s*No\.?)?|Plot(?:\s*No\.?)?|Qtr\.?(?:\s*No\.?)?|"
+    r"(?:H\.?\s*No\.?|D\.?\s*No\.?|#|Barrack|House(?:\s*No\.?)?|Makan(?:\s*No\.?)?|Flat(?:\s*No\.?)?|Plot(?:\s*No\.?)?|Qtr\.?(?:\s*No\.?)?|"
     r"Door\s*No\.?|मकान(?:\s*(?:नं|नंबर|न)\.?)?|म\.?\s*नं\.?|प्लॉट)\s*[:#\-]?\s*[0-9०-९A-Za-z/\-]*[0-9०-९]", re.I)
 _A_LOC = re.compile(r"(?:Mohalla|Mohallah|Mohalla|Muhalla|Ward|Sector|Colony|Gali|Lane|Street|Block|Basti|"
                     r"मोहल्ला|मुहल्ला|वार्ड|गली|सेक्टर|कॉलोनी|बस्ती)(?![A-Za-z])", re.I)
@@ -370,7 +378,9 @@ _A_LAND_TAIL = re.compile(r"के\s+(?:पास|पीछे|सामने|�
 _A_VILL = re.compile(r"(?:Vill(?:age)?\.?|Gram|Gaon|Gaanv|Gaun|ग्राम|गांव|गाँव|ग्रा\.)[ \t]*[:.\-]?[ \t]*", re.I)
 _A_TEH = re.compile(r"(?:Tehsil|Tahsil|Teh\.|Taluka|तहसील)[ \t]*[:.\-]?[ \t]*", re.I)
 _A_DIST = re.compile(r"(?:Distt\.?|Dist\.?|District|Jila|Zila|जिला|ज़िला|जनपद)[ \t]*[:.\-]?[ \t]*", re.I)
-_A_POST = re.compile(r"(?:P\.?\s*O\.?|Post|Thana|PS|डाक|पोस्ट|थाना)(?![A-Za-z])[ \t]*[:.\-]?[ \t]*", re.I)
+_A_POST = re.compile(r"(?:P\.?\s*O\.?|Post|डाक|पोस्ट|डाकघर)(?![A-Za-z])[ \t]*[:.\-]?[ \t]*", re.I)
+# police station / block / panchayat-level administrative names are kept (not a home address)
+_A_PS = re.compile(r"(?:Thana|P\.?S\.?|Police[ \t]+Station|थाना|प्रखंड)(?![A-Za-zऀ-ॿ])[ \t]*[:.\-]?[ \t]*")
 _A_KIN = re.compile(r"(?:[CSDWH])[ \t]*/[ \t]*[Oo]\.?[ \t]*:?[ \t]*")
 _A_PIN_TAIL = re.compile(r"[ \t]*[\-–][ \t]*([1-9][0-9]{5}|[१-९][०-९]{5})[ \t]*$")
 _PIN_ONLY = re.compile(r"(?:pin(?:code)?\s*[:\-]?\s*)?([1-9][0-9]{5}|[१-९][०-९]{5})$", re.I)
@@ -391,6 +401,8 @@ def _strip_span(text: str, s: int, e: int) -> Tuple[int, int]:
 def _addr_part_kind(part: str) -> str:
     if _A_KIN.match(part):
         return "kin"
+    if _A_PS.match(part) and len(part) > 4:
+        return "PS"
     if _A_HOUSE.match(part):
         return "HOUSE"
     if _A_VILL.match(part) and len(part) > 4:
@@ -462,6 +474,9 @@ def _parse_address(text: str, s: int, e: int, add, strict: bool = False, last_ke
                 add(vs, ve, k, _clean(text[vs:ve]) if k == "DISTRICT" else "", 3)
                 got += 1
             continue
+        if k == "PS":
+            got += 1
+            continue
         if k == "PIN":
             m = _PIN_ONLY.match(part)
             add(ps + m.start(1), ps + m.end(1), "PIN", patterns._digits(m.group(1)), 1)
@@ -509,7 +524,7 @@ _TITLE_RE = re.compile(
 _VERB_RE = re.compile(
     r"(?<![A-Za-z])(?:(?:called|raised|witnessed|brought|accompanied|referred|informed|signed|reported|visited|"
     r"received|attended|escorted|collected|verified|registered|requested|consented|consent|given|dropped|"
-    r"handed\s+over|submitted|filed|lodged|booked)\s+(?:by|to)|informed|contacted|caller|attendant|attender|"
+    r"handed\s+over|submitted|filed|lodged|booked|couriered|forwarded|identified|handed)\s+(?:by|to)|informed|contacted|caller|attendant|attender|"
     r"companion|witness|visitor|guardian|relative|nok|spoke\s+(?:to|with)|met|per)[ \t]*[:(\-]?[ \t]*",
     re.I)
 _OF_RE = re.compile(
@@ -583,7 +598,15 @@ class _Ctx:
             return
         if kind in NAME_KINDS and self.asha_hard_iv.hits(s, e):
             return
+        if kind in NAME_KINDS and prio >= 4 and _ORG_NEXT.match(self.text, e):
+            return                                  # "<X> SDH", "<X> Path Lab", "<X> Hospital": an institution
         self.cands.append((prio, s, e, kind, value))
+
+
+_ORG_NEXT = re.compile(r"[ \t]*(?:(?:Path(?:ology)?|Diagnostic|Medical|Memorial|Charitable|General|Civil|District|"
+                       r"Seva|Nursing)[ \t]+)?(?:Hospital|Hosp\.?|Clinic|Lab|Labs|Laboratory|Laboratories|Diagnostics|"
+                       r"SDH|PHC|CHC|UPHC|CHC|Ward|Nursing[ \t]+Home|Medical[ \t]+College|Institute|Trust|Foundation|"
+                       r"Yojana|अस्पताल|सीएचसी|पीएचसी|योजना)(?![A-Za-z])")
 
 
 def _resolve(cands: List[Tuple[int, int, int, str, str]]) -> List[Span]:
@@ -612,6 +635,55 @@ def _lines(text: str):
     for line in text.split("\n"):
         yield pos, line
         pos += len(line) + 1
+
+
+_SLASH_AGE = re.compile(r"[ \t]*[0-9]{1,3}[ \t]*(?:[YyMmDd][ \t]*)?[MFmf][ \t]*$|[ \t]*[MFmf][ \t]*/?[ \t]*[0-9]{1,3}[ \t]*[Yy]?[ \t]*$")
+_SLASH_KEEP = re.compile(r"[ \t]*(?:OT|Bed|BED|Ward|Dr|DR|Unit|Rm|Room)(?![a-z])")
+
+
+def _layer_slash_header(cx: _Ctx) -> None:
+    """'<Name>/62F/<hospital id>/OT-4/Dr. X': a line of >= 4 slash fields, one an age-sex shape."""
+    t = cx.text
+    for ls, line in _lines(t):
+        if line.count("/") < 3 or len(line) > 160:
+            continue
+        fields = line.split("/")
+        k = next((i for i, f in enumerate(fields) if _SLASH_AGE.fullmatch(f) and i > 0), -1)
+        if k < 0:
+            continue
+        off = [ls]
+        for f in fields:
+            off.append(off[-1] + len(f) + 1)
+        a, b = _strip_span(t, off[k - 1], off[k - 1] + len(fields[k - 1]))
+        nm = _take_name_back(t, b, "any", 4) if a < b else None
+        if nm and nm[0] >= a:
+            cx.add(nm[0], nm[1], "PATIENT_NAME", "", 2)
+        if k + 1 < len(fields) and not _SLASH_KEEP.match(fields[k + 1]):
+            c, d = _strip_span(t, off[k + 1], off[k + 1] + len(fields[k + 1]))
+            if c < d and re.search(r"[0-9]", t[c:d]) and re.fullmatch(r"[A-Za-z0-9\-]{4,24}", t[c:d]):
+                cx.add(c, d, "MRN", patterns.norm_id(t[c:d]), 0)
+
+
+# patient-id labels in prose (any script); the id may mix Devanagari letters and digits ("<abbr>/२६/०७७१२")
+_PID_LABEL = re.compile(
+    r"(?<![A-Za-zऀ-ॿ])(?:UHID|MRD|MRN|CR[ \t]*No|IP[ \t]*No|IPD[ \t]*No|OPD[ \t]*No|Regn|Reg\.?[ \t]*No|Registration[ \t]*No|"
+    r"Casualty[ \t]*No|Admission[ \t]*No|MCP[ \t]*card(?:[ \t]*no)?|"
+    r"भर्ती[ \t]*(?:संख्या|क्रमांक|सं\.?|नं\.?)|पंजीयन[ \t]*(?:क्रमांक|संख्या|सं\.?)|पंजीकरण[ \t]*(?:क्रमांक|संख्या|सं\.?)|"
+    r"नोंदणी[ \t]*(?:क्र\.?|क्रमांक)|ओपीडी[ \t]*(?:सं\.?|संख्या|क्रमांक|नं\.?)|आईपीडी[ \t]*(?:सं\.?|संख्या|क्रमांक)?|यूएचआईडी)"
+    r"(?:[ \t]*(?:No\.?|is|->|[:.\-–=#]))*[ \t]*", re.I)
+_PID_VALUE = re.compile(r"[A-Za-z0-9०-९ऀ-ॿ][A-Za-z0-9०-९ऀ-ॣॱ-ॿ/\-]*[0-9०-९]")
+
+
+def _layer_pid_labels(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _PID_LABEL.finditer(t):
+        v = _PID_VALUE.match(t, m.end())
+        if not v:
+            continue
+        g = v.group()
+        if len(re.sub(r"[^0-9०-९]", "", g)) < 3 or not re.search(r"[0-9०-९]", g):
+            continue
+        cx.add(v.start(), v.end(), "MRN", patterns.norm_id(g), 1)
 
 
 def _layer_identifiers(cx: _Ctx) -> None:
@@ -827,6 +899,40 @@ def _layer_places(cx: _Ctx) -> None:
             cx.cands.append((4, s, e, "LANDMARK", ""))
 
 
+_LM_NOUN = (r"(?:bridge|temple|mandir|masjid|mosque|church|gurudwara|dargah|school|ground|maidan|gate|chowk|chowraha|tank|"
+            r"market|bazaar|bazar|park|tower|petrol[ \t]+pump|pump|dhaba|well|pond|talab|statue|circle|junction|bus[ \t]+stand|"
+            r"stand|godown|mill|factory|garden|lake|teppakulam|kulam|kund|ghat|tree|peepal|post[ \t]+office)")
+_LM_PREP = re.compile(r"(?<![A-Za-z])(?:near|nr\.?|behind|opp\.?|opposite|beside|next[ \t]+to|in[ \t]+front[ \t]+of|close[ \t]+to)"
+                      r"[ \t]+((?:the[ \t]+)?(?:[A-Za-z][A-Za-z'\-]*[ \t]+){0,4}" + _LM_NOUN + r")(?![A-Za-z])", re.I)
+_LM_POST_LAT = re.compile(r"(?<![A-Za-z])((?:[a-z][a-z'\-]+[ \t]+){0,3}[a-z][a-z'\-]+)[ \t]+ke[ \t]+(?:paas|pass|samne|saamne|peeche|piche|bagal)"
+                          r"(?![A-Za-z])", re.I)
+_LM_POST_DEV = re.compile(r"(?<![ऀ-ॿ])((?:[ऀ-ॿ]+[ \t]+){0,2}[ऀ-ॿ]+)[ \t]+के[ \t]+(?:सामने|पास|पीछे|बगल|निकट)(?![ऀ-ॿ])")
+
+
+def _layer_landmarks(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _LM_PREP.finditer(t):
+        s, e = m.span(1)
+        if _ORG_NEXT.match(t, e) or re.search(r"(?i)hospital|phc|chc|sdh|lab|ward", t[s:e]):
+            continue
+        cx.cands.append((4, s, e, "LANDMARK", ""))
+    for rx in (_LM_POST_LAT, _LM_POST_DEV):
+        for m in rx.finditer(t):
+            s, e = m.span(1)
+            ws = t[s:e].split()
+            # keep only the trailing words that are not function / clinical words
+            k = len(ws)
+            while k > 0 and not (_low(ws[k - 1]) in _STOP or _low(ws[k - 1]) in _LOW_VERBISH or _low(ws[k - 1]) in _HI_FUNC):
+                k -= 1
+            if k == len(ws):
+                continue
+            s2 = s + len(" ".join(ws[:k])) + (1 if k else 0)
+            s2 = t.find(ws[k], s2 - 1 if k else s)
+            if re.search(r"(?i)hospital|phc|chc|sdh|अस्पताल|सीएचसी|पीएचसी", t[s2:e]):
+                continue
+            cx.add(s2, e, "LANDMARK", "", 5)
+
+
 def _layer_address_lines(cx: _Ctx) -> None:
     t = cx.text
     for ls, line in _lines(t):
@@ -850,7 +956,9 @@ def _layer_address_lines(cx: _Ctx) -> None:
 # ---------------------------------------------------------------- reference-annotator rules
 
 # residence trigger in running prose: "resident of 14/2 X Street, Y, Z dist.", "निवासी मकान सं. 27, ..."
-_RESIDE_RE = re.compile(r"(?<![A-Za-z])(?:resident[ \t]+of|residing[ \t]+at|r/o|R/O)[ \t]*[:\-]?[ \t]*"
+_RESIDE_RE = re.compile(r"(?<![A-Za-z])(?:resident[ \t]+of|residing[ \t]+at|r/o|R/O|lives[ \t]+(?:at|in)|living[ \t]+at|"
+                        r"stays[ \t]+at|staying[ \t]+at|resides[ \t]+at|(?:we|i)[ \t]+live[ \t]+(?:at|in)|"
+                        r"address[ \t]+(?:is|for[ \t]+[a-z]+)|from[ \t]+(?=(?:Flat|House|Plot|H\.[ \t]*No|D\.[ \t]*No|Door)\b))[ \t]*[:\-]?[ \t]*"
                         r"|(?<![ऀ-ॿ])(?:निवासी|निवास|रहने[ \t]+वाले|रहने[ \t]+वाली)[ \t]*[:\-]?[ \t]*")
 _DIST_WORD = re.compile(r"(?<![A-Za-zऀ-ॿ])(?:dist|distt|district|जिला|ज़िला|जनपद)(?![A-Za-zऀ-ॿ])", re.I)
 _RESIDE_STOP = _ws("""
@@ -879,6 +987,27 @@ def _sentence_end(t: str, pos: int, limit: int) -> int:
                 return i
         i += 1
     return limit
+
+
+_HOUSE_ANY = re.compile(
+    r"(?<![A-Za-z0-9])(?:(?:H|D)\.?[ \t]*No\.?|House[ \t]*No\.?|House|Flat[ \t]*No\.?|Flat|Plot[ \t]*No\.?|Plot|Door[ \t]*No\.?|"
+    r"Qtr\.?[ \t]*No\.?|Quarter[ \t]*No\.?|Barrack|#|Old[ \t]+No\.?|New[ \t]+No\.?|मकान[ \t]*(?:सं\.?|नं\.?|नंबर)?|फ्लैट|प्लॉट)"
+    r"[ \t]*[:\-]?[ \t]*[0-9०-९][0-9०-९A-Za-z/\-]*(?:[ \t]+room[ \t]+[0-9]+)?(?![0-9A-Za-z])", re.I)
+_LANE_ANY = re.compile(
+    r"(?<![A-Za-z])(?:Sector|Bye-?lane|Lane|Gali|Street|Cross|Main|Block|Phase)[ \t]*(?:No\.?)?[ \t]*[0-9][0-9A-Za-z\-]*(?![0-9A-Za-z])"
+    r"|(?<![ऀ-ॿ])(?:(?:[ऀ-ॿ]+[ \t]+){0,2}गली[ \t]*(?:नं\.?|नंबर|सं\.?)?[ \t]*[0-9०-९]+)")
+
+
+def _layer_house_markers(cx: _Ctx) -> None:
+    t = cx.text
+    for rx, kind in ((_HOUSE_ANY, "HOUSE"), (_LANE_ANY, "LOCALITY")):
+        for m in rx.finditer(t):
+            g = m.group()
+            if kind == "HOUSE" and g.startswith("#") and not re.match(r"#[ \t]*[0-9]{2,}", g):
+                continue
+            if re.match(r"(?:Block|Phase|Main|Cross)", g) and not _ADDR_CONTEXT.search(t, max(0, m.start() - 60), m.start()):
+                continue
+            cx.add(m.start(), m.end(), kind, "", 4)
 
 
 def _layer_residence(cx: _Ctx) -> None:
@@ -991,6 +1120,114 @@ def _layer_lower_names(cx: _Ctx) -> None:
             cx.add(k.start(1), e, "RELATIVE_NAME", "", 4)
 
 
+# lowercase Hinglish frames: "pati <x>", "saas <x>", "<x> ke ghar", "<x> ki patni", "<x y>, 9 mahine"
+_KIN_HL = (r"(?:pati|patni|sasur|saas|sas|beta|beti|bhai|bhaiya|behen|bahen|devar|nanad|jeth|jethani|bahu|damad|"
+           r"chacha|chachi|mama|mami|nana|nani|dada|dadi|bhabhi|jija|saala|saali|w/o|s/o|d/o|h/o)")
+_LOW_KIN_NEXT = re.compile(r"(?<![A-Za-z/])" + _KIN_HL + r"[ \t]*[:\-]?[ \t]+([a-z][a-z'\-]{2,})(?![A-Za-z])")
+_LOW_GEN = re.compile(r"(?<![A-Za-z])([a-z][a-z'\-]{2,})[ \t]+(?:ke[ \t]+ghar|ka[ \t]+(?:mob|mobile|number|phone|no)|"
+                      r"ki[ \t]+(?:patni|beti|maa|saas|bahu|behen)|ke[ \t]+(?:pati|bete|beta|bhai|sasur|papa)|ka[ \t]+(?:beta|pati|bhai))"
+                      r"(?![A-Za-z])")
+_LOW_AGE = re.compile(r"(?<![A-Za-z])([a-z][a-z'\-]{2,})(?:[ \t]+([a-z][a-z'\-]{2,}))?[ \t]*,[ \t]*[0-9]{1,3}[ \t]*"
+                      r"(?:mahine|mahina|saal|sal|varsh|yrs?|years?)(?![A-Za-z])")
+_LOW_VERBISH = _ws("""
+ne ko ka ki ke se hai hain tha thi the ho hua hui gaya gayi gaye aaya aayi aaye bola boli bole bataya batayi
+kaha kahi diya di de raha rahi rahe sath saath bhi aur ya to ji jee sahab didi bhaiya ghar ghr phone mob mobile
+number gaadi doctor dr asha anm aww phc chc sdh hospital wala wali log given says said only told was is has
+""")
+
+
+def _low_ok(w: str) -> bool:
+    return _plain_word(w) and _low(w) not in _LOW_VERBISH and _low(w) not in _EN_COMMON
+
+
+def _layer_low_frames(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _LOW_KIN_NEXT.finditer(t):
+        if _low_ok(m.group(1)):
+            cx.add(m.start(1), m.end(1), "RELATIVE_NAME", "", 6)
+    for m in _LOW_GEN.finditer(t):
+        if _low_ok(m.group(1)):
+            kind = "RELATIVE_NAME" if re.search(r"(?:ki|ke|ka)[ \t]+(?:patni|beti|maa|saas|bahu|behen|pati|bete|beta|bhai|sasur|papa)",
+                                                m.group()) else "PATIENT_NAME"
+            cx.add(m.start(1), m.end(1), kind, "", 6)
+    for m in _LOW_AGE.finditer(t):
+        if not _low_ok(m.group(1)) or (m.group(2) and not _low_ok(m.group(2))):
+            continue
+        cx.add(m.start(1), m.end(2) if m.group(2) else m.end(1), "PATIENT_NAME", "", 6)
+
+
+# name immediately before an age / sex shape: "<X>, 34/F", "<X> (F/57)", "<X> 62 Y / M", "<X>, 41 M"
+_AGE_SEX_AFTER = re.compile(
+    r"[ \t]*(?:,[ \t]*|\([ \t]*)?(?:[0-9]{1,3}[ \t]*(?:y|yr|yrs|years?|Y|Yrs)?[ \t]*[/,]?[ \t]*(?:M|F|Male|Female)(?![A-Za-z])"
+    r"|(?:M|F)[ \t]*/[ \t]*[0-9]{1,3}(?![0-9])|[0-9]{1,3}[ \t]*(?:yrs?|years?)(?![A-Za-z])"
+    r"|(?:उम्र|आयु|वय)[ \t]*[:\-]?[ \t]*[0-9०-९])")
+_AGE_SEX_START = re.compile(r"(?:[0-9]{1,3}[ \t]*(?:y|yr|yrs|years?|Y|Yrs)?[ \t]*/?[ \t]*[MF]|[MF][ \t]*/[ \t]*[0-9]|[0-9]{1,3}[ \t]*(?:yrs?|years?)|उम्र|आयु|वय)")
+
+
+# declarant and kin lists: "I, <Name>, son of", "मैं <नाम>, उम्र", "sons <A> and <B>", "भतीजा <नाम>"
+_DECLARANT = re.compile(r"(?:^|(?<=[.\n]))[ \t]*(?:I|मैं)[ \t]*,?[ \t]+(?=[A-Zऀ-ॿ])")
+_KIN_LIST = re.compile(r"(?<![A-Za-z])(?:sons|daughters|brothers|sisters|children|nephews)[ \t]+")
+_KIN_HI2 = re.compile(r"(?<![ऀ-ॿ])(?:भतीजा|भतीजी|भांजा|भांजी|सास|ससुर|देवर|ननद|जेठ|बहू|दामाद|मुलगा|मुलगी|नातू|पहचानकर्ता|"
+                      r"गवाह|अभिभावक|साक्षी)[ \t]*[:\-]?[ \t]*")
+
+
+def _layer_declarant(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _DECLARANT.finditer(t):
+        le = t.find("\n", m.end())
+        le = len(t) if le < 0 else le
+        nm = _take_name(t, m.end(), le, "cap", max_tok=3)
+        if nm and re.match(r"[ \t]*,", t[nm[1]:nm[1] + 2]):
+            cx.add(nm[0], nm[1], "PERSON", "", 5)
+    for m in _KIN_LIST.finditer(t):
+        le = t.find("\n", m.end())
+        le = len(t) if le < 0 else le
+        pos = m.end()
+        for _ in range(4):
+            nm = _take_name(t, pos, le, "cap", max_tok=3)
+            if not nm:
+                break
+            cx.add(nm[0], nm[1], "RELATIVE_NAME", "", 5)
+            j = re.match(r"[ \t]*(?:,|and|&)[ \t]*", t[nm[1]:nm[1] + 8])
+            if not j:
+                break
+            pos = nm[1] + j.end()
+    for m in _KIN_HI2.finditer(t):
+        le = t.find("\n", m.end())
+        le = len(t) if le < 0 else le
+        nm = _take_name(t, m.end(), le, "cap", max_tok=3)
+        if nm and _is_dev(t[nm[0]]):
+            cx.add(nm[0], nm[1], "RELATIVE_NAME", "", 4)
+
+
+_INTRO_WORD = re.compile(r"(?:(?:Seen|Saw|Reviewed|Examined|Kindly|See|Referring|Referred|Patient|Pt|Rx|One|Baby|Master|"
+                         r"Late|Admitted|Received|Today|Mr|Mrs|Ms|Smt|Shri)\.?[ \t]+)+")
+
+
+def _layer_name_age(cx: _Ctx) -> None:
+    t = cx.text
+    for m in re.finditer(r"[,(]?[ \t]*(?=" + _AGE_SEX_START.pattern + r")", t):
+        s = m.start()
+        if s == 0 or not _AGE_SEX_AFTER.match(t, s):
+            continue
+        if s > 0 and t[s - 1].isdigit():
+            continue
+        nm = _take_name_back(t, s, "cap", 4, allow_comma=False)
+        if not nm:
+            continue
+        w0 = t[nm[0]:nm[1]]
+        if re.match(r"(?:Dr|DR|Doctor|Age|Sex|Ward|Bed|Room|Day)\b", w0):
+            continue
+        intro = _INTRO_WORD.match(w0)
+        if intro:                                 # "Seen <X>, 34/M", "Kindly see <X>", "Patient <X>"
+            if intro.end() >= len(w0):
+                continue
+            nm = (nm[0] + intro.end(), nm[1])
+        if _ORG_NEXT.match(t, nm[1]):
+            continue
+        cx.add(nm[0], nm[1], "PATIENT_NAME", "", 4)
+
+
 # bare kinship word + capitalised name: "my mother Asha", "brother Ravi Kumar", Hinglish "pati Ramu"
 _KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:my[ \t]+|her[ \t]+|his[ \t]+)?(husband|wife|brother|sister|parent|mother|"
                        r"father|son|daughter|pati|patni|pita|mata|beta|beti|bhai|behen)[ \t]+(?![oO][fF][ \t])")
@@ -1023,6 +1260,10 @@ def _layer_kinship(cx: _Ctx) -> None:
             nm = _take_name(t, m.end(), le, "any", max_tok=3)
             if nm and not re.match(r"[A-Zऀ-ॿ]", t[nm[0]]):
                 nm = None
+            if nm and letter in "CH" and re.search(r"(?<![A-Za-z])[a-z]", t[nm[0]:nm[1]]):
+                nm = None                    # "H/O NSAID intake": history of, not husband of
+        if nm and letter in "CH" and re.match(r"[ \t]+[a-z]", t[nm[1]:nm[1] + 3]):
+            nm = None                        # "H/O NSAID intake", "C/O Fever since": clinical
         if not nm:
             continue
         cx.add(nm[0], nm[1], "RELATIVE_NAME", letter + "/o", 3)
@@ -1136,6 +1377,9 @@ def _layer_verbs(cx: _Ctx) -> None:
             if re.match(r"(?:Dr|DR|dr|Doctor|डॉ)\b", t[m.end():m.end() + 8]):
                 continue
             nm = _take_name(t, m.end(), le, "cap")
+            if nm and re.match(r"[ \t]+[0-9]{1,4}(?![0-9])(?![ \t]*[0-9])", t[nm[1]:nm[1] + 12]) and nm[1] - nm[0] > 3 and \
+                    " " not in t[nm[0]:nm[1]]:
+                continue                         # "Caller: <Drug> 200 two puffs": a dose, not a person
             if nm:
                 cx.add(nm[0], nm[1], kind, "", 5)
 
@@ -1549,7 +1793,9 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
         return [], set()
     text = scripts.fold(text)  # 11 scripts -> Devanagari/Latin; same length, so spans index the original
     cx = _Ctx(text)
+    _layer_slash_header(cx)
     _layer_identifiers(cx)
+    _layer_pid_labels(cx)
     _layer_labels(cx)
     _layer_dob(cx, order)
     _layer_address_lines(cx)
@@ -1557,10 +1803,15 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_path_names(cx)
     _layer_patient_anchor(cx)
     _layer_residence(cx)
+    _layer_house_markers(cx)
+    _layer_landmarks(cx)
     _layer_kinship(cx)
     _layer_kin_bare(cx)
     _layer_signoff(cx)
     _layer_lower_names(cx)
+    _layer_low_frames(cx)
+    _layer_name_age(cx)
+    _layer_declarant(cx)
     _layer_honorifics(cx)
     _layer_verbs(cx)
     _layer_dev_case(cx)
