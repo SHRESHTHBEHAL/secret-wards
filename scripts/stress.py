@@ -112,11 +112,14 @@ def build(src: Path, dst: Path, n: int, names: Set[str]) -> int:
     return count
 
 
+_RUN_KEY = __import__("secrets").token_hex(16)
+
 def run_once(py: str, inp: Path, out: Path, tmp: Path, profile: Optional[Path]) -> Dict[str, float]:
     if out.exists():
         shutil.rmtree(str(out))
     tmp.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, RAKSHA_SECRET="stress-secret", TMPDIR=str(tmp), HOME=str(tmp))
+    env = dict(os.environ, TMPDIR=str(tmp), HOME=str(tmp))
+    env["RAKSHA_SECRET"] = _RUN_KEY          # random per stress run, never a literal
     cmd = [py]
     if profile:
         cmd += ["-m", "cProfile", "-o", str(profile)]

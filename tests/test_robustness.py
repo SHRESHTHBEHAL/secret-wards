@@ -358,7 +358,7 @@ class DeterminismAndSecrets(Base):
             code, so, se = self.main(secret=secret, out=out)
             self.assertNotEqual(code, 0)
             self.assertNotIn("Traceback", se)
-            self.assertIn("secret", se)
+            self.assertIn("not configured", se)
             for v in IDS:
                 self.assertNotIn(v, so + se)
             self.assertFalse((out / "sanitized").exists() and any((out / "sanitized").iterdir()))
