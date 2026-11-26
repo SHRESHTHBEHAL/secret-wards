@@ -100,8 +100,18 @@ left right bilateral mca aca pca ica lad lcx rca svc ivc lv rv la ra infarct inf
 paraparesis quadriparesis aphasia dysarthria ataxia spasticity
 """
 
+# acronyms, mechanisms, devices, departments and staff words written capitalised in notes
+_CLIN_EXTRA = """
+rta rti mlc avf af afib paroxysmal persistent alleged implant implants lot batch serial neurosurgery neurosurgical
+nephrology haematology hematology neonatology anaesthesia anesthesia radiology pathology microbiology dialysis
+haemodialysis hemodialysis technician technologist deworming immunisation immunization vaccination national
+shaft skid ptb pcos pcod att rt lt bl murmur fistula shunt mortuary hearse helpline tollfree pillion
+sdh edh sah ich dvt pe ards mods hie rds nec ivh pda vsd asd tof copd ild ckd esrd aki dka hhs uti cauti vap
+lscs nvd ftnd svd ppiucd iucd pphn iugr sga lga prom pprom gdm pih apgar nicu sncu hdu ccu iccu micu sicu picu
+"""
+
 CLINICAL_WORDS = frozenset(
-    _words(_DRUGS) | _words(_FORMS) | _words(_LABS) | _words(_DIAG) | _words(_HINGLISH) | _words(_HINDI) | _words(_ANATOMY)
+    _words(_CLIN_EXTRA) | _words(_DRUGS) | _words(_FORMS) | _words(_LABS) | _words(_DIAG) | _words(_HINGLISH) | _words(_HINDI) | _words(_ANATOMY)
 )
 
 COMPLAINT_WORDS = frozenset(_words("""
@@ -194,6 +204,7 @@ kamrup kanchipuram kandhamal kangra kanker kannauj kannur kanpur kanyakumari kap
 karbi karimganj karimnagar karnal karur kasaragod kathua katihar katni kaushambi kendrapara kendujhar
 keonjhar khagaria khammam khandwa khargone kheda khordha khunti kinnaur kishanganj kishtwar kodagu koderma
 kohima kokrajhar kolar kolasib kolhapur kolkata kollam koppal koraput korba koriya kota kottayam kozhikode
+subansiri siang kameng garo khasi jaintia
 krishna kullu kupwara kurnool kurukshetra kutch lakhimpur lakhisarai lalitpur latur lawngtlai leh lohardaga
 lucknow ludhiana lunglei madhepura madhubani madurai mahabubnagar mahasamund mahendragarh mahoba mainpuri
 malappuram malda mamit mandi mandla mandsaur mandya mangalore mathura mau mayurbhanj medak meerut mehsana
