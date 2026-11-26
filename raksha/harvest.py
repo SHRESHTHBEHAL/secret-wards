@@ -37,12 +37,13 @@ _RECORD_SIGNAL = frozenset({F.PATIENT_ID, F.ENC_ID, F.AADHAAR, F.ABHA, F.DOB, F.
 _STRONG_ID_TYPES = (ID_UHID, ID_ENC, ID_AADHAAR, ID_ABHA)
 # Array keys that name a collection of patient records even when an element carries no id.
 _RECORD_KEY = re.compile(r"^(?:visits?|patients?|results?|records?|admissions?|encounters?|reports?|"
-                         r"registrations?|opd|ipd|cases?|samples?|discharges?|claims?|bills?)$")
+                         r"registrations?|opd|ipd|cases?|samples?|discharges?|claims?|bills?|"
+                         r"slips?|parchi(?:yan|yaan|ya)?|parche|rogi|mareez|marij)$")
 
 _ENC_RX = re.compile(r"(?:^|[^A-Z])(?:IPD|IP|ADM|ADMN|INP|ADMISSION)(?=[^A-Z]|$)")
 _REL_RX = re.compile(
     r"^\s*(?:([SDWHCG])\s*/\s*[Oo]|(son|daughter|wife|husband|care|ward)\s+of"
-    r"|(पुत्र|पुत्री|पत्नी|पति|पिता|माता))\.?\s*[:\-]?\s*(.*)$", re.I | re.S)
+    r"|(पुत्री|पुत्र|पत्नी|पति|पिता|माता)(?![\u093e-\u094d]))\.?\s*[:\-]?\s*(.*)$", re.I | re.S)
 _DATEISH = re.compile(r"(?<![0-9])[0-9०-९]{1,4}[./\-][0-9०-९]{1,2}[./\-][0-9०-९]{2,4}(?![0-9])")
 _TAG_RX = re.compile(r"<[^>]+>")
 _LETTER = re.compile(r"[A-Za-zऀ-ॿ]")
@@ -597,15 +598,35 @@ def _root_person(d: dict) -> bool:
     return False
 
 
+def _unit_patient_ids(units: List[Tuple[str, List[Any], Any]]) -> Set[str]:
+    """Distinct patient-number values carried by the units themselves (one per unit at most)."""
+    seen = set()  # type: Set[str]
+    for _loc, keys, elem in units[:200]:
+        if not isinstance(elem, dict):
+            continue
+        for n, (lk, v) in enumerate(_leaves(elem, list(keys))):
+            if n > 200:
+                break
+            if _s(v) and _ktype(lk, v) == F.PATIENT_ID:
+                seen.add(_s(v))
+                break
+    return seen
+
+
 def _json_units(pf: ParsedFile) -> List[Tuple[str, List[Any], Any]]:
     data = pf.data
     if pf.kind != KIND_JSON or not isinstance(data, (dict, list)):
         return []
     try:
+        out: List[Tuple[str, List[Any], Any]] = []
         if isinstance(data, dict) and _single_record(data) and not any(
                 isinstance(v, dict) and _keyed_collection(v, [str(k)]) for k, v in data.items()):
+            # export metadata naming one id ("requestedFor") does not make a visit list one record
+            # when its entries carry two or more different patient numbers of their own
+            _record_arrays(data, "", [], out)
+            if len(_unit_patient_ids(out)) >= 2:
+                return out
             return []
-        out: List[Tuple[str, List[Any], Any]] = []
         _record_arrays(data, "", [], out)
         if not out and isinstance(data, dict) and not _root_person(data):
             # no id-bearing records and nobody named outside the arrays: a list of same-shaped
