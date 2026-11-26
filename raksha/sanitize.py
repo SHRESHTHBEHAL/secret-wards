@@ -473,15 +473,11 @@ def _suppress_district(surface: str, ctx: _Ctx, text: str = "", start: int = 0, 
 
 
 def _detect(text: str, ctx: _Ctx) -> list:
-    try:
-        spans = list(detect(text, ctx.known, ctx.order))
-    except Exception:  # noqa: BLE001
-        spans = []
+    # A detector failure must never read as "nothing personal here": it propagates, and the pipeline
+    # quarantines the file (fail closed) instead of exporting text the detector never examined.
+    spans = list(detect(text, ctx.known, ctx.order))
     if _PATHLIKE.search(text):
-        try:
-            alt = list(detect(text.translate(_PATH_SEP), ctx.known, ctx.order))
-        except Exception:  # noqa: BLE001
-            alt = []
+        alt = list(detect(text.translate(_PATH_SEP), ctx.known, ctx.order))
         added = False
         for sp in alt:
             if sp.kind in ("DISTRICT", "GENDER", "AGE", "DOB"):
@@ -1556,6 +1552,15 @@ class _Fhir:
                     out[k] = v
                 elif k == "identifier":
                     out[k] = self._other_ids(v, rt == "Encounter")
+                elif k in ("valueAddress", "address") and isinstance(v, (dict, list)):
+                    out[k] = self._address(v)      # an address under any extension url or element
+                elif k == "valueHumanName" and isinstance(v, (dict, list)):
+                    out[k] = self._name(v, "[NAME]" if rt == "Patient" else "[RELATIVE]")
+                elif k in ("valueContactPoint", "telecom") and isinstance(v, (dict, list)):
+                    out[k] = self._telecom(v)
+                elif k == "contained" and isinstance(v, list):
+                    out[k] = [self.resource(x) if isinstance(x, dict) and x.get("resourceType") else
+                              self.generic(x, keys + [k], rt) for x in v]
                 elif k == "display" and isinstance(v, str):
                     out[k] = v if is_coding else self._display(node, v)
                 elif k == "text" and isinstance(v, dict) and "div" in v:
