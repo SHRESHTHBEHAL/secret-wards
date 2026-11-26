@@ -582,7 +582,8 @@ _TITLE_RE = re.compile(
     r"(?<![A-Za-z])(?:Mr|Mrs|Ms|Smt|Shri|Shree|Sri|Km|Kum|Kumari|Miss|Sushri|Late|Janab|Srimati|Shrimati|"
     r"MR|MRS|MS|SMT|SHRI|SRI|KM)\.?[ \t]+|(?<![A-Za-z])(?:Pu|Pi|Hav|Const|Sub|Nk|Sep|Insp|SI|ASI)\.?[ \t]+(?=[A-Z][a-z])"
     r"|(?<![ऀ-ॿ])(?:श्रीमती|श्री|सुश्री|कुमारी|स्वर्गीय|स्व\.|कु\.|"
-    + "|".join(sorted((re.escape(w) for w in scripts.TITLES), key=len, reverse=True)) + r")[ \t]*")
+    + "|".join(sorted((re.escape(w) for w in scripts.TITLES), key=len, reverse=True))
+    + r")(?:(?<=\.)|(?![ऀ-ॿ]))[ \t]*")   # a whole token: "श्री राम", "स्व.", never the "श्री" of "श्रीकांत"
 _VERB_RE = re.compile(
     r"(?<![A-Za-z])(?:(?:called|raised|witnessed|brought|accompanied|referred|informed|signed|reported|visited|"
     r"received|attended|escorted|collected|verified|registered|requested|consented|consent|given|dropped|"
@@ -603,7 +604,7 @@ _CASE_LAT = re.compile(
     r"(?:^|(?<=[.!?|])|(?<=-[ \t]))[ \t]*((?:[A-Z][a-z]+[ \t]+){0,2}[A-Z][a-z]+)[ \t]+(?:ko|ki|ka|ke|ne)(?![A-Za-z])",
     re.M)
 _DOB_RE = re.compile(r"(?<![A-Za-z])(?:DOB|D\.O\.B\.?|Date\s+of\s+Birth|Birth\s*Date|B'?day|Janm\s*Tithi|"
-                     r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक))[ \t]*[:\-]?[ \t]*", re.I)
+                     r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक)|Born(?:[ \t]+on)?|Janm|Janam|जन्म)[ \t]*[:\-]?[ \t]*", re.I)
 _GENDER_RE = re.compile(
     r"(?<![0-9०-९])[0-9०-९]{1,3}[ \t]*(?:Y|Yr|Yrs|Years?|yrs?|years?|वर्ष|साल)?\.?[ \t]*/[ \t]*"
     r"(F|M|Female|Male|FEMALE|MALE|महिला|पुरुष|स्त्री)(?![A-Za-zऀ-ॿ])")
@@ -1156,6 +1157,41 @@ def _layer_path_names(cx: _Ctx) -> None:
             pos += len(piece) + 1
 
 
+_RO_MARK = re.compile(r"(?<![A-Za-z])r/o(?![A-Za-z])", re.I)
+_RO_NEXT = re.compile(r"[ \t]*[:\-]?[ \t]*\??[ \t]*([A-Za-z][A-Za-z\-']*)(?:[ \t]+([A-Za-z][A-Za-z\-']*))?")
+_RO_CLIN_EXTRA = _ws("""
+acs mi stemi nstemi cva tia dvt pe uti ari urti lrti copd ckd aki dka hhs tb ptb gerd ibs sle ra ectopic
+infection infective obstruction perforation torsion abscess fracture malignancy carcinoma ca tumour tumor
+mass lesion bleed bleeding haemorrhage hemorrhage ischemia ischaemia pathology cause causes etiology
+any other secondary acute chronic viral bacterial fungal enteric cardiac renal hepatic surgical
+""")
+
+
+def _ro_rule_out(t: str, pos: int) -> bool:
+    """True when the "r/o" ending at pos means "rule out" (a diagnosis follows), not "resident of"."""
+    m = _RO_NEXT.match(t, pos)
+    if not m:
+        return False
+    for w in (m.group(1), m.group(2)):
+        if not w:
+            continue
+        lw = w.lower()
+        if lw in lexicon.CLINICAL_WORDS or lw in lexicon.COMPLAINT_WORDS or lw in _RO_CLIN_EXTRA:
+            return True
+        if w[:1].isupper():
+            return False
+    return False
+
+
+def _ro_before(t: str, s: int) -> bool:
+    """The r/o marker right before position s reads as "rule out"."""
+    i = t.rfind("/", max(0, s - 8), s)
+    if i < 1:
+        return False
+    m = _RO_MARK.search(t, max(0, i - 1), s)
+    return bool(m) and _ro_rule_out(t, m.end())
+
+
 def _layer_places(cx: _Ctx) -> None:
     """Villages and landmarks written in sentences rather than address lines."""
     t = cx.text
@@ -1165,6 +1201,8 @@ def _layer_places(cx: _Ctx) -> None:
             name = t[s:e]
             if _is_stopish(name) or any(_low(w) in _STOP for w in name.split()[:1]):
                 continue
+            if _ro_before(t, s):
+                continue                       # "r/o malaria": rule out, not resident of
             cx.add(s, e, "VILLAGE", "", 4)
     for m in _LANDMARK_PHRASE.finditer(t):
         ss = max(t.rfind("\n", 0, m.start()) + 1, m.start() - 160)
@@ -1300,12 +1338,41 @@ def _layer_house_markers(cx: _Ctx) -> None:
             cx.add(m.start(), m.end(), kind, "", 4)
 
 
+_STREET_RE = re.compile(r"(?<![A-Za-z])((?:[A-Z][a-z]+\.?[ \t]+){0,2}[A-Z][a-z]{2,}[ \t]+(?:Road|Rd\.?|Marg|Street|St\.|Gali|Lane|"
+                        r"Path|Chowk|Nagar[ \t]+Road))(?![A-Za-z])")
+_STREET_CUE = re.compile(r"(?i)(?<![a-z])(?:resides?|residing|resident|lives?|living|stays?|staying|r/o|address|addr|"
+                         r"report[ \t]+to|reside|house|home|ghar|rehte|rehti|rahte|rahti|shifted|moved|native)(?![a-z])")
+_STREET_FACILITY = re.compile(r"(?i)(?<![a-z])(?:hospital|hosp|clinic|lab|labs|laboratory|diagnostics?|branch|centre|center|"
+                              r"pharmacy|chemist|medical|nursing|institute|college|office|bank|imaging|scan)(?![a-z])")
+
+
+def _layer_street_names(cx: _Ctx) -> None:
+    """"resides on Gandhi Street", "Report to: Station Gali": a street in a residence frame (never a
+    facility's own address line)."""
+    t = cx.text
+    for m in _STREET_RE.finditer(t):
+        s, e = m.span(1)
+        ls = t.rfind("\n", 0, s) + 1
+        if not _STREET_CUE.search(t, max(ls, s - 60), s):
+            continue
+        if _STREET_FACILITY.search(t, max(ls, s - 40), min(len(t), e + 25)):
+            continue
+        ws = t[s:e].split()
+        while ws and _low(ws[0].rstrip(".")) in _STOP:
+            s += len(ws[0]) + (len(t[s + len(ws[0]):]) - len(t[s + len(ws[0]):].lstrip(" \t")))
+            ws = ws[1:]
+        if len(ws) >= 2:
+            cx.add(s, e, "LOCALITY", "", 4)
+
+
 def _layer_residence(cx: _Ctx) -> None:
     t = cx.text
     for m in _RESIDE_RE.finditer(t):
         s = m.end()
         if s >= len(t) or t[s] in "\n":
             continue
+        if _RO_MARK.match(t, m.start()) and _ro_rule_out(t, m.start() + 3):
+            continue                           # "r/o typhoid": rule out, not resident of
         le = t.find("\n", s)
         le = len(t) if le < 0 else le
         se = _sentence_end(t, s, min(le, s + 200))
@@ -1876,6 +1943,22 @@ _KIN_BARE = re.compile(r"(?<![A-Za-z/])(?:[Mm]y[ \t]+|[Hh]er[ \t]+|[Hh]is[ \t]+)
                        r"bhai|behen|bro\.|sis\.)[ \t]+(?![oO][fF][ \t])")
 
 
+_AGESEX_OF = re.compile(
+    r"(?<![0-9])[0-9]{1,3}[ \t]*(?:y|yr|yrs|years?|Y|Yrs)?\.?[ \t]*(?:/|,)?[ \t]*(?:M|F|Male|Female|male|female)(?:\)?[ \t]*,|\))[ \t]*"
+    r"(?:of|from|r/o|resident[ \t]+of)[ \t]+((?:[A-Z][a-z]{2,}[ \t]+)?[A-Z][a-z]{2,})(?![A-Za-z])")
+
+
+def _layer_agesex_of(cx: _Ctx) -> None:
+    """"K. Selvi, 34/F, of Vadakaram": the place right after a person's age / sex is their home."""
+    t = cx.text
+    for m in _AGESEX_OF.finditer(t):
+        s, e = m.span(1)
+        ws = t[s:e].split()
+        if any(not _place_tok_ok(w) for w in ws):
+            continue
+        cx.add(s, e, "VILLAGE", "", 4)
+
+
 def _layer_kin_bare(cx: _Ctx) -> None:
     t = cx.text
     for m in _KIN_BARE.finditer(t):
@@ -2261,6 +2344,8 @@ def reset_caches() -> None:
     _KCACHE.clear()
     _WKEY.clear()
     _RCACHE.clear()
+    _PCACHE.clear()
+    dates.reset_cache()
 
 
 def _cached(obj: Any, build: Any) -> Any:
@@ -2315,6 +2400,9 @@ def _vnorm(k: str) -> str:
         return k
 
 
+_PET_ENDINGS = ("u", "i", "ya", "oo", "iya", "ie", "ee", "y", "ji")
+
+
 class _OwnIndex:
     """Exact candidate filter for `any(_fuzzy_keys(k, o) for o in own)`.
 
@@ -2329,12 +2417,21 @@ class _OwnIndex:
         self.own = own
         self.own_set = frozenset(own)
         aff = set()  # type: Set[str]
+        pre = set()  # type: Set[str]
+        inf = set()  # type: Set[str]
         if len(own) <= _SMALL_OWN:
             for o in own:
                 for n in range(5, len(o) - 1):
                     aff.add(o[:n])
                     aff.add(o[-n:])
+                for n in range(4, len(o)):
+                    pre.add(o[:n])
+                for st in range(2, 5):           # "Lal|remruat|puii" -> "Remruati": a 6+ letter inner stem
+                    for n in range(st + 6, len(o)):
+                        inf.add(o[st:n])
         self.affix = frozenset(aff)
+        self.pet_pre = frozenset(pre)
+        self.pet_inf = frozenset(inf)
         self.memo = {}  # type: Dict[str, bool]
         self.idx = None  # type: Optional[Tuple[Dict[str, List[str]], Dict[str, List[str]]]]
         if len(own) > _SMALL_OWN:
@@ -2345,6 +2442,17 @@ class _OwnIndex:
                     for v in _dels(key, 2 if len(key) >= 7 else 1):
                         space.setdefault(v, []).append(o)
             self.idx = (raw, vow)
+
+    def pet(self, k: str) -> bool:
+        """A short / pet form of an own given name: its first 4+ letters plus a diminutive ending
+        ("<stem>u", "<stem>i", "<stem>ya", "<stem>oo")."""
+        if not self.pet_pre or len(k) < 5:
+            return False
+        for end in _PET_ENDINGS:
+            stem = k[:-len(end)]
+            if k.endswith(end) and (stem in self.pet_pre or stem in self.pet_inf) and k not in self.own_set:
+                return True
+        return False
 
     def fuzzy(self, k: str) -> bool:
         hit = self.memo.get(k)
@@ -2375,7 +2483,8 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
             if not k or k in _GENERIC_KEYS:
                 continue
             if k in own_set or (len(k) >= 4 and oi.fuzzy(k)) or (
-                    k in oi.affix and (w[:1].isupper() or _is_dev(w)) and _low(w) not in _STOP
+                    (k in oi.affix or (w[:1].isupper() and oi.pet(k) and _low(w) not in lexicon.CLINICAL_WORDS))
+                    and (w[:1].isupper() or _is_dev(w)) and _low(w) not in _STOP
                     and _low(w) not in _DISTRICTS):
                 cx.add(s, e, "PATIENT_NAME", "", 6)
                 # "<Given>_<Surname>_<number>" export folder: the joined capitalised word is the surname
@@ -2405,6 +2514,18 @@ def _layer_known(cx: _Ctx, known: Known) -> None:
             dg = patterns._digits(g)
             if nid in known.id_values or (len(dg) >= 5 and dg in known.id_values):
                 cx.add(m.start(), m.end(), "MRN", nid, 1)
+        # a known phone / id re-written with spaces, dots or brackets inside: "(98) 7654-3210", "98.76.54.32.10"
+        for m in _SPLIT_DIGITS.finditer(t):
+            dg = patterns._digits(m.group())
+            if len(dg) < 10:
+                continue
+            for cand in (dg, dg[2:] if dg.startswith("91") else "", dg[1:] if dg.startswith("0") else ""):
+                if len(cand) >= 10 and cand in known.id_values:
+                    cx.add(m.start(), m.end(), "PHONE" if len(cand) == 10 else "MRN", cand, 1)
+                    break
+
+
+_SPLIT_DIGITS = re.compile(r"(?<![0-9A-Za-z])\+?\(?[0-9०-९]{1,5}\)?(?:[ .\-]{1,2}\(?[0-9०-९]{1,5}\)?){1,6}(?![0-9A-Za-z])")
 
 
 _HEADER_LINE = re.compile(r"(?<![A-Za-z])(?:" + "|".join(sorted(_HEADER_WORDS, key=len, reverse=True)) + r")(?![A-Za-z])",
@@ -2690,8 +2811,64 @@ def _run(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set
 def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Set[int]]:
     if not text:
         return [], set()
-    text = scripts.fold(text)  # 11 scripts -> Devanagari/Latin; same length, so spans index the original
-    cx = _Ctx(text)
+    pkey = (text, order)
+    hit = _PCACHE.get(pkey)
+    if hit is not None:
+        # the known-independent layers already ran on this very text: resume from a copy of their state
+        base, cands, enc, keep_cells = hit
+        cx = _Ctx.__new__(_Ctx)
+        cx.__dict__.update(base.__dict__)
+        cx.cands = list(cands)
+        cx.enc_starts = set(enc)
+        text = cx.text
+    else:
+        text = scripts.fold(text)  # 11 scripts -> Devanagari/Latin; same length, so spans index the original
+        cx = _Ctx(text)
+        keep_cells = _prefix_layers(cx, order)
+        while len(_PCACHE) >= _PCACHE_MAX:
+            del _PCACHE[next(iter(_PCACHE))]
+        _PCACHE[pkey] = (cx, tuple(cx.cands), frozenset(cx.enc_starts), keep_cells)
+    if known is not None:
+        _layer_known(cx, known)
+    _layer_phone_proximity(cx)
+    _layer_unknown_pairs(cx)
+    _layer_ages(cx)
+    _lift_covering_names(cx)
+    _layer_labelled_recur(cx)
+    first = _resolve(cx.cands)
+    _layer_wraps(cx, first)
+    _layer_self_propagate(cx, first)
+    spans = _extend_generic(cx, _reclassify(_resolve(cx.cands), text))
+    if keep_cells:
+        spans = [sp for sp in spans if not (sp.kind in ("PHONE", "PIN", "MRN", "AADHAAR") and
+                                            any(a <= sp.start and sp.end <= b for a, b in keep_cells))]
+    return spans, cx.enc_starts
+
+
+def _layer_labelled_recur(cx: _Ctx) -> None:
+    """A labelled multi-token patient name ("नाम/Name: <A B>") is removed wherever it recurs verbatim in the
+    same text, whatever classes its tokens fall in."""
+    t = cx.text
+    seen = set()  # type: Set[str]
+    for prio, s, e, kind, _v in list(cx.cands):
+        if kind != "PATIENT_NAME" or prio > 2:
+            continue
+        surf = t[s:e]
+        if surf in seen or len(surf) < 5 or len(surf.split()) < 2:
+            continue
+        seen.add(surf)
+        for m in re.finditer(r"(?<![A-Za-z0-9ऀ-ॿ])" + re.escape(surf) + r"(?![A-Za-z0-9ऀ-ॿ])", t):
+            if m.start() != s:
+                cx.cands.append((1, m.start(), m.end(), "PATIENT_NAME", ""))
+
+
+# known-independent layer state per (text, order): the same cell text is usually detected once without
+# known sets (facts) and again with them (sanitising), so the shared prefix runs once. Cleared by reset_caches().
+_PCACHE = {}  # type: Dict[Tuple[str, str], Tuple[Any, ...]]
+_PCACHE_MAX = 16000
+
+
+def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
     _layer_slash_header(cx)
     _layer_identifiers(cx)
     _layer_pid_labels(cx)
@@ -2705,6 +2882,7 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_patient_anchor(cx)
     _layer_surname_first(cx)
     _layer_residence(cx)
+    _layer_street_names(cx)
     _layer_house_markers(cx)
     _layer_landmarks(cx)
     _layer_place_words(cx)
@@ -2716,26 +2894,14 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     _layer_lower_names(cx)
     _layer_low_frames(cx)
     _layer_name_age(cx)
+    _layer_agesex_of(cx)
     _layer_declarant(cx)
     _layer_honorifics(cx)
     _layer_mail_intro(cx)
     _layer_verbs(cx)
     _layer_dev_case(cx)
     _layer_extra_frames(cx)
-    if known is not None:
-        _layer_known(cx, known)
-    _layer_phone_proximity(cx)
-    _layer_unknown_pairs(cx)
-    _layer_ages(cx)
-    _lift_covering_names(cx)
-    first = _resolve(cx.cands)
-    _layer_wraps(cx, first)
-    _layer_self_propagate(cx, first)
-    spans = _extend_generic(cx, _reclassify(_resolve(cx.cands), text))
-    if keep_cells:
-        spans = [sp for sp in spans if not (sp.kind in ("PHONE", "PIN", "MRN", "AADHAAR") and
-                                            any(a <= sp.start and sp.end <= b for a, b in keep_cells))]
-    return spans, cx.enc_starts
+    return keep_cells
 
 
 def detect(text: str, known: Optional[Known] = None, order: str = "dmy") -> List[Span]:
