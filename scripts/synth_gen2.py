@@ -281,7 +281,7 @@ for rel, f in files.items():
     for u in f["units"].values():
         for e in u["entities"]:
             hay = rel if e["channel"] == "filename" else raw
-            if e["surface"] not in hay: bad += 1; print("MISSING", rel, e["type"])      # never echo the value
+            if e["surface"] not in hay: bad += 1; print("MISSING", e["type"])      # type only: never echo a value or a file name
         for pv in u["preserve"]:
-            if pv["text"] not in raw: bad += 1; print("MISSING PRESERVE", rel)
+            if pv["text"] not in raw: bad += 1; print("MISSING PRESERVE")
 print(f"seed {SEED}: files {len(files)} entities {sum(len(u['entities']) for f in files.values() for u in f['units'].values())} missing {bad}")
