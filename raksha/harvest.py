@@ -502,9 +502,17 @@ _INSTITUTION = re.compile(r"(?:^|\s)(?:ward|wing|block|hospital|college|centre|c
                           r"laboratory|unit|dept|department|memorial|trust|mission|icu|ot|opd|ipd)(?:\s|$)", re.I)
 
 
+_DOCNO_KEY = re.compile(r"^(?:LAB|LB|RPT|REP|REPORT|SMP|SAMPLE|SPEC|ACC|ACCN|INV|BILL|RCPT|RCT|CLM|CLAIM|ORD|ORDER|"
+                        r"TKT|TICKET|SES|SESS|SESSION|BATCH|LOT|REQ|REF|APPT|PA|PREAUTH)[\-/_ ]?(?=[A-Z0-9\-/_]*[0-9]{3})",
+                        re.IGNORECASE)
+
+
 def key_kind(k: str) -> str:
-    """What a JSON object key itself is: "phone", "id", "name" or ""."""
+    """What a JSON object key itself is: "phone", "id", "name", "doc" (a report / sample / bill /
+    claim number: it keys a record but is not the patient's identifier) or ""."""
     k = str(k).strip()
+    if _DOCNO_KEY.match(k) and id_shaped_key(k):
+        return "doc"
     d = re.sub(r"[^0-9]", "", to_ascii_digits(k))
     if _PHONE_KEY.match(to_ascii_digits(k)) and (
             (len(d) == 10 and d[0] in "6789") or (len(d) == 12 and d.startswith("91") and d[2] in "6789")
@@ -533,6 +541,8 @@ def _keyed_collection(node: dict, keys: List[Any]) -> bool:
     parent = str(keys[-1]) if keys and not isinstance(keys[-1], int) else ""
     if kind == "phone":
         return True
+    if kind == "doc":
+        kind = "id"
     if kind == "name":
         return bool(parent) and _NAME_PARENT.search(parent) is not None
     if parent and _ID_PARENT.search(parent) and len(ks) >= 2:
@@ -640,24 +650,91 @@ def _digit_free(row: Sequence[Any]) -> bool:
     return not any(re.search(r"[0-9]{2,}", to_ascii_digits(_s(c))) for c in row)
 
 
+_CELL_CLASSES = (
+    ("email", re.compile(r"^[^\s@]+@[^\s@]+$")),
+    ("date", re.compile(r"^(?:\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4}|\d{1,2}[ \-/.]?[A-Za-z]{3,9}[ \-/.,]*\d{2,4}|[A-Za-z]{3,9}\.? \d{1,2},? \d{4})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm])?)?$")),
+    ("phone", re.compile(r"^(?:\+?\s*91[\s\-]?|0)?[6-9]\d{4}[\s\-]?\d{5}$|^\(?0\d{2,4}\)?[\s\-]?\d{6,8}$|^\+\d[\d\s\-]{8,15}$")),
+    ("agesex", re.compile(r"^\d{1,3}\s*(?:y|yr|yrs|years?)?\s*[/,\- ]\s*[MFmfTt]$|^[MFmf]\s*[/,\- ]\s*\d{1,3}\s*(?:y|yrs?)?$")),
+    ("age", re.compile(r"^\d{1,3}\s*(?:y|yr|yrs|years?|Y|M|D|mo|months?|days?)\.?$")),
+    ("num", re.compile(r"^[+\-]?\d+(?:\.\d+)?$")),
+    ("id", re.compile(r"^(?=[A-Za-z0-9/\-_. ]*\d{3})(?=[A-Za-z0-9/\-_. ]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9/\-_.]*[A-Za-z0-9]$")),
+)
+
+
+def _cell_class(c: Any) -> str:
+    """Value class of a cell: email / date / phone / agesex / age / num / id, or "" (text)."""
+    s = to_ascii_digits(_s(c)).strip()
+    if not s or len(s) > 40:
+        return ""
+    for name, rx in _CELL_CLASSES:
+        if rx.match(s):
+            return name
+    return ""
+
+
+def _label_cell(c: Any) -> bool:
+    """A cell that reads as a column label: no digit runs and a known field label."""
+    s = _s(c).strip()
+    if not s or re.search(r"[0-9०-९]{2,}", s) or len(s) > 40:
+        return False
+    try:
+        return F.classify_label(s) not in ("", F.OTHER)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _first_line_is_data(header: Sequence[Any], rows: Sequence[Sequence[Any]]) -> bool:
+    """Line 1 is a data line when its cells have value shapes (dates, phones, ids, numbers, age/sex,
+    e-mails) that agree with the column under them, and few of its cells read as labels.
+
+    A header row almost never holds a date, a phone, an id-shaped code or a bare number; a data row
+    has them in the same positions as the following lines."""
+    sample = [r for r in rows[:50] if any(_s(x) for x in r)]
+    agree = shaped = strong = 0
+    labels = sum(1 for h in header if _label_cell(h))
+    for c, h in enumerate(header):
+        k = _cell_class(h)
+        if not k:
+            continue
+        shaped += 1
+        if k in ("date", "phone", "email", "agesex", "id"):
+            strong += 1
+        col = [_cell_class(r[c]) for r in sample if c < len(r) and _s(r[c])]
+        if col and col.count(k) * 2 >= len(col):
+            agree += 1
+    if not sample:
+        # one-line file: only the cell shapes speak
+        return strong >= 2 and labels == 0
+    if agree >= 2 and agree > labels:
+        return True
+    return agree >= 1 and strong >= 1 and labels == 0 and shaped * 3 >= len([h for h in header if _s(h)])
+
+
+def _title_line(header: Sequence[Any], rows: Sequence[Sequence[Any]]) -> bool:
+    """A title line above the header: one filled cell, and the next line is a row of labels."""
+    if len(rows) < 2:
+        return False
+    filled = [h for h in header if _s(h)]
+    sub = [x for x in rows[0] if _s(x)]
+    if len(filled) != 1 or len(sub) < 3:
+        return False
+    nlab = sum(1 for x in sub if _label_cell(x))
+    return nlab * 2 >= len(sub) and not any(_cell_class(x) for x in sub)
+
+
 def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
     """(column labels, data rows, header line count) of a parsed CSV.
 
-    Header line count is 1 for a normal file, 0 for a headerless file (line 1 is data: two or more
-    cells with value shapes no label has) and 2 for a sparse group row above the real header. Data
-    row i always has the locator row:i."""
+    Header line count is 1 for a normal file, 0 for a headerless file (line 1 is data: its cells have
+    the value shapes of the columns under them) and 2 for a title line or a sparse group row above
+    the real header. Data row i always has the locator row:i."""
     header = list(pf.header or [])
     rows = [list(r or []) for r in (pf.rows or [])]
     filled = [c for c in header if _s(c)]
-    vals = 0
-    for c, h in enumerate(header):
-        if not _value_cell(h):
-            continue
-        col = [_shape_sig(r[c]) for r in rows[:50] if c < len(r) and _s(r[c])]
-        if col and col.count(_shape_sig(h)) * 2 >= len(col):
-            vals += 1     # shaped like the data under it: line 1 is itself a data line
-    if filled and vals >= 2 and vals * 4 >= len(filled):
+    if filled and _first_line_is_data(header, rows):
         return [""] * len(header), [header] + rows, 0
+    if _title_line(header, rows):
+        return [_s(x) for x in rows[0]], rows[1:], 2
     if rows and len(rows) >= 2 and header:
         sub = rows[0]
         sub_filled = [c for c in sub if _s(c)]
@@ -678,6 +755,7 @@ def csv_view(pf: ParsedFile) -> Tuple[List[str], List[List[str]], int]:
 # ---------------------------------------------------------------- per kind
 
 _HEAD_NAME = re.compile(r"\b(?:Mr|Mrs|Ms|Smt|Shri|Sri|Kum|Master|Baby)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})")
+_HEAD_SEP_NAME = re.compile(r"(?:^|[\-:\u2013\u2014|]\s+|\bfor\s+|\bof\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*(?:[,(;|]|\s+[\-\u2013]\s)")
 _HEAD_ID = re.compile(r"\b(?:IP|OP|UHID|MRN|MR|CR|IPD|OPD|Reg)\.?\s*(?:No\.?|#)?\s*[:\-]?\s*"
                       r"([A-Z0-9][A-Z0-9/\-]{3,}[A-Z0-9])")
 
@@ -713,13 +791,16 @@ def _csv_records(pf: ParsedFile) -> List[Record]:
                     g = None
                 if g is None:
                     continue
-                for m in _HEAD_NAME.finditer(hs):
-                    if m.group(1) not in g.names:
-                        g.names.append(m.group(1))
+                for m in list(_HEAD_NAME.finditer(hs)) + list(_HEAD_SEP_NAME.finditer(hs)):
+                    nm = m.group(1)
+                    if nm in g.names or any(F.classify_label(w) not in ("", F.OTHER) for w in nm.split()):
+                        continue
+                    g.names.append(nm)
                 for m in _HEAD_ID.finditer(hs):
                     v = m.group(1)
                     if re.search(r"\d", v):
-                        t = ID_UHID + ":" + re.sub(r"[\W_]", "", v).upper()
+                        adm = re.match(r"I\.?P", m.group(0), re.I) is not None   # IP / IPD no: an admission
+                        t = (ID_ENC if adm else ID_UHID) + ":" + re.sub(r"[\W_]", "", v).upper()
                         if t not in g.ids:
                             g.ids.append(t)
                         if v not in g.raw_ids:
@@ -809,7 +890,8 @@ def _mixed_patients(f: Facts) -> bool:
     uh = sorted({t for t in f.ids if t.split(":", 1)[0] == ID_UHID})
     if len(uh) >= 2:
         return True
-    full = [n for n in f.names if len(n.split()) >= 2]
+    # a short form ("Pu <name>", an initial) is not a second full name
+    full = [n for n in f.names if len([w for w in n.split() if len(w.strip(".")) >= 3]) >= 2]
     for i in range(len(full)):
         for j in range(i + 1, len(full)):
             if not _same_name(full[i], full[j]):
