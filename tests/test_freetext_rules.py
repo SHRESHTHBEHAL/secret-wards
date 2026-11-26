@@ -549,3 +549,58 @@ class DocumentShapes(unittest.TestCase):
     def test_ocr_split_admission_number(self):
         self.assertIn(("MRN", "ABCD/IPD/26/ 01 23"), kinds("IPD No           : ABCD/IPD/26/ 01 23\nWard: 2"))
         self.assertIn(("MRN", "ABC/26/0012"), kinds("UHID: ABC/26/0012 / 5 tabs"))
+
+
+class GreetingsAndFrames(unittest.TestCase):
+    def names(self, t):
+        return [v for k, v in kinds(t) if k in detect.NAME_KINDS]
+
+    def test_greeting_word_not_in_name(self):
+        self.assertEqual(self.names("Sat Sri Akal Jaspreet ji,\nYour bill is ready."), ["Jaspreet"])
+        self.assertEqual(self.names("Respected Kulwant Singh ji, report attached."), ["Kulwant Singh"])
+
+    def test_dear_addressee(self):
+        self.assertEqual(self.names("Dear Lalnunmawii, your bed is confirmed in Ward 3."), ["Lalnunmawii"])
+        self.assertEqual(self.names("Dear Sir, kindly see."), [])
+        self.assertEqual(self.names("Dear Dr. Venkatesh, kindly see."), [])
+
+    def test_document_word_not_a_name(self):
+        self.assertEqual(self.names("Aadhaar 234567890123"), [])
+
+    def test_hinglish_kin_word_kept(self):
+        t = "Inj Iron 100 mg IV. Pati Bhagwan Tirkey ne bataya ki ghar door hai."
+        self.assertEqual(self.names(t), ["Bhagwan Tirkey"])
+        self.assertEqual(self.names("Beta Sunilkant ko bulaya."), ["Sunilkant"])
+
+    def test_route_dot_ends_dose(self):
+        sp = [(p.kind, "x") for p in patterns.protected_spans("200 mg IV. Pati Ramu ne bataya")
+              if "Pati" in "200 mg IV. Pati Ramu ne bataya"[p.start:p.end]]
+        self.assertEqual(sp, [])
+
+    def test_ocr_split_kin_word(self):
+        t = "H/o conta ct with TB - elder bro ther Budhu ram Toppo (expired 2024)."
+        self.assertIn(("RELATIVE_NAME", "Budhu ram Toppo"), kinds(t))
+
+
+class EqualsLabels(unittest.TestCase):
+    def test_key_value_export(self):
+        t = ("insured.house = Kizhakkemadom\ninsured.place = Chengalam\ninsured.place = Kottayam\n"
+             "proposer.name = Saraswathyamma\nward = Mar Thoma Ward\nestimate.amount = 40000")
+        k = kinds(t)
+        self.assertIn(("ADDRESS", "Kizhakkemadom"), k)
+        self.assertIn(("VILLAGE", "Chengalam"), k)
+        self.assertIn(("RELATIVE_NAME", "Saraswathyamma"), k)
+        self.assertFalse(any(v in ("Kottayam", "Mar Thoma Ward", "40000") for _, v in k))
+
+    def test_tamil_address_parts(self):
+        k = kinds("mugavari=கதவு எண் 9/21, பிள்ளையார் கோவில் தெரு, கீழையூர்")
+        self.assertIn(("VILLAGE", "கீழையூர்"), k)
+        self.assertEqual(len(k), 3)
+
+
+class SplitNumbers(unittest.TestCase):
+    def test_phone_and_aadhaar_over_line_end(self):
+        k = kinds("Mob              : 98765 4\n3210      Aadhar : 2345  6789 01\n23\nWard : 2")
+        self.assertIn(("PHONE", "98765 4"), k)
+        self.assertIn(("PHONE", "3210"), k)
+        self.assertTrue(any(kd == "AADHAAR" and "23" in v for kd, v in k))
