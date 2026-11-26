@@ -1,0 +1,30 @@
+# Generalisation benchmark (data we never tuned on)
+
+The practice set is too small and too familiar to show how the pipeline behaves on the hidden datasets,
+so we measure on data with **new hospitals, name pools, villages, ID formats, labels and scripts**.
+
+| Set | How it is made | Leaked PII | Medical kept | Linking F0.5 | Composite* |
+|---|---|---:|---:|---:|---:|
+| practice (dev) | organisers | 0.0% | 98.5% | 1.00 | — |
+| synthetic A (tuning) | `scripts/synth_gen.py out 20261126` | 0.0% | 99.1% | 1.00 | 98.2 |
+| synthetic B (held out) | `scripts/synth_gen.py out 99` | 0.0% | 99.5% | 1.00 | 98.3 |
+| synthetic seed 5 (held out) | `scripts/synth_gen.py out 5` | — | — | — | 98.4 |
+| chaos 7 / 8 / 9 (held out) | `scripts/chaos.py --level 3 --seed N` | 0.0% | 98.5% | 1.00 | — |
+| 10 native-script notes | `tests/test_scripts.py` | 0 / 32 | 16 / 16 | — | — |
+
+\* `scripts/score_composite.py` follows docs/SCORING.md and scoring.toml for every computable part; the
+hidden attacker is approximated by direct-identifier and quasi-identifier exposure, so use
+`scripts/attack.py` for the privacy number (practice: combined risk 11.7%, resistance 0.88).
+
+**Reference point.** On synthetic A a frontier LLM (Claude Opus, doing the de-identification by hand,
+which the rules forbid; used only as a ceiling) scored 94.5 on the same scorer: 342 s for 41 files and not
+deterministic. Raksha: 98.2 in under a second, deterministic, offline, CPU-only.
+
+## Reproduce
+
+```bash
+python3 scripts/synth_gen.py /tmp/synth 99
+RAKSHA_SECRET=practice python3 main.py --input /tmp/synth/input --output /tmp/out
+python3 ../Secret-Wards-ToolKit/check_dev.py --output /tmp/out --truth /tmp/synth/truth/truth.json
+python3 scripts/score_composite.py /tmp/out /tmp/synth/truth/truth.json /tmp/synth/input --wall 1 --rss 50 --deterministic 1
+```
