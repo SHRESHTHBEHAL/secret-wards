@@ -387,3 +387,34 @@ class RoundFresh2Rules(unittest.TestCase):
         self.assertNotIn("509871", cell)
         self.assertNotIn("71-4-903", cell)
         self.assertNotIn("Kesarbagh", cell)
+
+
+class HandoverAndPlaceColumns(unittest.TestCase):
+    def test_handover_labels_are_people(self):
+        from raksha import fields as F
+        for label in ("Issued To", "Given To", "Handed To", "Received By", "Collected By", "Witness",
+                      "Informant", "Witness Name", "issued_to", "receivedBy"):
+            self.assertEqual(F.classify_label(label), F.RELATIVE, label)
+        for label in ("Issued On", "Issue Date", "Collected On", "Received On"):
+            self.assertEqual(F.classify_label(label), F.DATE, label)
+
+    def test_pickup_point_is_locality(self):
+        from raksha import fields as F
+        self.assertEqual(F.classify_label("Pickup_point"), F.LOCALITY)
+
+    def test_place_before_district_column(self):
+        from raksha import fields as F
+        cols = [["Qqqq Ward", "Rrrr Nagar, B Lane", "Ssss Tttt"], ["Pune", "Nagpur", "Thane"]]
+        out = F.refine_unlabelled(["", ""], [F.OTHER, F.OTHER], cols)
+        self.assertEqual(out[0], F.VILLAGE)
+        self.assertEqual(out[1], F.OTHER)     # the district keeps its type (district policy unchanged)
+
+    def test_address_parent_key_is_place(self):
+        from raksha import fields as F
+        self.assertEqual(F.json_key_type(["cases", "residence", "at_post"], "Uuuu Khurd"), F.VILLAGE)
+        self.assertEqual(F.json_key_type(["cases", "residence", "gaon"], "Vvvv"), F.VILLAGE)
+
+    def test_town_column_of_districts_is_district(self):
+        from raksha import fields as F
+        self.assertEqual(F.classify_column("TOWN", ["Pune", "Nagpur", "Thane", "Nashik"]), F.DISTRICT)
+        self.assertEqual(F.classify_column("TOWN", ["Wwww", "Xxxxpur", "Pune"]), F.VILLAGE)
