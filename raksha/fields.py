@@ -339,6 +339,9 @@ def _caller_column(label: str, lt: str) -> bool:
         _has(toks, g) for g in ("idword", "phone", "patient", "email", "address", "date", "village"))
 
 
+_COMPLAINT_WORDS = frozenset({"complaint", "complaints", "shikayat", "symptom", "symptoms"})
+
+
 def _label_type1(toks: Tuple[str, ...]) -> str:
     if not toks:
         return OTHER
@@ -418,6 +421,9 @@ def _label_type1(toks: Tuple[str, ...]) -> str:
             return DATE
     if h("doctor") and not h("patient"):
         return DOCTOR
+    # "C/O (complaints)": the column names the complaint; "c/o" there is "complains of", not "care of"
+    if any(t in _COMPLAINT_WORDS for t in toks) and not (h("name") or h("phone") or is_id):
+        return CLINICAL
     if h("relative") and not (h("phone") and not h("name")):
         return RELATIVE
     if h("phone"):
@@ -1241,3 +1247,31 @@ def av_list(node: Any) -> bool:
                 if c and isinstance(c[0], str) and _RE_AV_CODE.match(c[0].strip()):
                     n += 1
     return n * 5 >= len(node) * 4
+
+
+# column labels of a stock / formulary / roster table: the hospital's own data, no patient in it
+_INST_TABLE_WORDS = frozenset({"item", "items", "batch", "lot", "barcode", "hsn", "mrp", "stock", "supplier",
+                               "vendor", "distributor", "manufacturer", "mfr", "expiry", "rack", "pack", "sku",
+                               "formulary", "roster", "shift", "duty", "staff", "designation", "helpline"})
+# label types that make a table a patient table
+_PATIENT_LABEL_TYPES = frozenset({
+    NAME, FIRST_NAME, LAST_NAME, LOCAL_NAME, RELATIVE, PATIENT_ID, ENC_ID, PHONE, AADHAAR, ABHA, ABHA_ADDR, PAN,
+    INSURANCE, EMAIL, ADDRESS, HOUSE, LOCALITY, VILLAGE, TEHSIL, PIN, DOB, AGE, AGE_SEX, GENDER, BANK, RELATION})
+_INST_KEEP_TYPES = frozenset({OTHER, OTHER_ID, CLINICAL, HOSPITAL, DOCTOR, STATE})
+
+
+def institutional_table(labels: Sequence[str]) -> Optional[List[bool]]:
+    """A table whose column labels name no patient field at all and name a stock / formulary / roster
+    table (two or more such words). Returns, per column, whether its values are the institution's own
+    (kept, but for an exact known patient value); None for any other table. Labels only, never values."""
+    if not labels or any(not str(x or "").strip() for x in labels):
+        return None
+    keep = []
+    hits = 0
+    for lab in labels:
+        toks = _tokens(str(lab))
+        if classify_label(str(lab)) in _PATIENT_LABEL_TYPES or len(toks) > 3:
+            return None
+        hits += any(t in _INST_TABLE_WORDS for t in toks)
+        keep.append(classify_label(str(lab)) in _INST_KEEP_TYPES)
+    return keep if hits >= 2 else None
