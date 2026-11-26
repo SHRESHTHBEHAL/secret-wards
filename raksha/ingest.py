@@ -68,6 +68,41 @@ def walk(input_dir: Path) -> List[Path]:
     return [p for _, p in found]
 
 
+def escapes_root(path: Path, input_dir: Path) -> bool:
+    """True when `path` is a symlink (at any level below input_dir) whose target lies outside input_dir,
+    or cannot be resolved. Such files are never opened: they are listed as quarantined."""
+    try:
+        if not _any_link_below(Path(path), Path(input_dir)):
+            return False
+        root = os.path.realpath(str(input_dir))
+        real = os.path.realpath(str(path))
+        return not (real.startswith(root + os.sep) and os.path.isfile(real))
+    except (OSError, ValueError):
+        return True
+
+
+def _any_link_below(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    cur = root
+    for part in rel.parts:
+        cur = cur / part
+        if os.path.islink(str(cur)):
+            return True
+    return False
+
+
+def link_marker_sha(path: Path) -> str:
+    """Stable stand-in digest for a symlink that points outside the input (its target is never read)."""
+    try:
+        target = os.readlink(str(path))
+    except OSError:
+        target = ""
+    return hashlib.sha256(b"raksha-unfollowed-symlink\0" + os.fsencode(target)).hexdigest()
+
+
 def _rel(path: Path, input_dir: Path) -> str:
     try:
         return Path(path).relative_to(Path(input_dir)).as_posix()
