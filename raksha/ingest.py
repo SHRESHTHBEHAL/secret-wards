@@ -49,6 +49,8 @@ _BINARY_MAGIC = (
 # Bytes that cp1252 leaves undefined.
 _CP1252_UNDEFINED = frozenset((0x81, 0x8D, 0x8F, 0x90, 0x9D))
 _CSV_DELIMS = (",", "\t", ";", "|")
+# delimited-file extensions: comma / tab / pipe separated (.psv is a pipe-separated chart or export)
+_DELIMITED_EXT = (".csv", ".tsv", ".psv")
 
 # Attachments and long notes routinely exceed the csv module's 128 KB field default.
 csv.field_size_limit(2 ** 31 - 1)
@@ -255,6 +257,8 @@ def _sniff_delimiter(header_line: str, ext: str) -> str:
     counts = {d: _count_outside_quotes(header_line, d) for d in _CSV_DELIMS}
     if ext == ".tsv" and counts["\t"] > 0:
         return "\t"
+    if ext == ".psv" and counts["|"] > 0:
+        return "|"
     best = ","
     best_n = 0
     for d in _CSV_DELIMS:  # fixed order breaks ties deterministically
@@ -308,7 +312,7 @@ def _load_inner(path: Path, rel: str, sha: str, raw: bytes) -> ParsedFile:
         return _quarantine(rel, sha, R_UNSUPPORTED)
     if re.match(r"(?:MSH|FHS|BHS)\|", stripped):
         return _quarantine(rel, sha, R_UNSUPPORTED)    # HL7 v2 messages: a format we do not parse safely
-    if ext in (".csv", ".tsv"):
+    if ext in _DELIMITED_EXT:
         header_line = _first_line(text)
         if not header_line:
             return _quarantine(rel, sha, R_EMPTY)
