@@ -23,6 +23,17 @@ code { font: 9.5pt "SFMono-Regular", Menlo, monospace; background: #f3f5f7; padd
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
 .page2 { break-before: page; }
 .small { font-size: 9pt; color: #4a5a68; }
+
+.tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1.6mm; margin: 2mm 0 0.6mm; }
+.tile { border-top: 1.6pt solid #0f6c8c; background: #f6f9fb; padding: 1.2mm 1.6mm 1.3mm; }
+.tile .v { font-size: 15pt; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.tile .l { font-size: 8.2pt; color: #4a5a68; line-height: 1.2; margin-top: 0.5mm; }
+.charts { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3mm; margin: 0.6mm 0 1.2mm; }
+.chart { border: 0.5pt solid #c9d6de; padding: 1.4mm 1.6mm 0.8mm; }
+.chart h3 { font-size: 9pt; margin: 0 0 0.6mm; font-weight: 600; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart .cap { font-size: 8.2pt; color: #4a5a68; line-height: 1.2; }
+h2 { break-after: avoid; }
 </style></head><body>
 
 <h1>404FoundUs · Raksha: a measured privacy firewall for Indian hospital records</h1>
@@ -31,6 +42,8 @@ Repo: github.com/SHRESHTHBEHAL/secret-wards</div>
 <div class="pitch"><b>Pitch.</b> Raksha learns every identity from every file first, then scrubs it from every channel,
 in 11 Indian scripts, keeps each medical value exact, links patients with keyed pseudonyms that never merge namesakes,
 and tunes its privacy policy against a replica of the published attacker rather than by guesswork.</div>
+<div class="tiles"><div class="tile"><div class="v">0.0%</div><div class="l">personal data leaked, all scripts and hidden channels</div></div><div class="tile"><div class="v">0 / 4</div><div class="l">canaries found in the release</div></div><div class="tile"><div class="v">98.5%</div><div class="l">medical values kept exactly</div></div><div class="tile"><div class="v">1.00</div><div class="l">linking precision and recall, no wrong merges</div></div><div class="tile"><div class="v">0.4%</div><div class="l">records unique in the voter registry (raw 60.8%)</div></div><div class="tile"><div class="v">0.87</div><div class="l">resistance to our replica of the attacker</div></div></div>
+<div class="small">Measured on the practice data with the organisers' <code>check_dev.py</code>; attacker figure from <code>scripts/attack.py</code>.</div>
 
 <h2>1. In one paragraph</h2>
 <p>A plain PII tool looks for names in one document at a time and in one script. Raksha works on the whole dump:
@@ -86,32 +99,16 @@ shifts remove the attacker's global-shift recovery outright.</li>
 </ul>
 
 <h2>5. Privacy-utility trade-off (measured)</h2>
-<div class="two">
-<table>
-<tr><th>Practice data</th><th>Value</th></tr>
-<tr><td>Personal data leaked (overall / Hindi / Hinglish)</td><td class="n">0.0% / 0.0% / 0.0%</td></tr>
-<tr><td>Hidden channels (file name, key, header, metadata, base64)</td><td class="n">0.0%</td></tr>
-<tr><td>Canaries in output</td><td class="n">0 / 4</td></tr>
-<tr><td>Medical values kept</td><td class="n">98.5%</td></tr>
-<tr><td>Linking precision / recall / F0.5</td><td class="n">1.00 / 1.00 / 1.00</td></tr>
-<tr><td>Records unique in the voter registry</td><td class="n">0.4% (raw 60.8%)</td></tr>
-<tr><td>Replica attacker combined risk (resistance)</td><td class="n">13.0% (0.87)</td></tr>
-<tr><td>Run time / peak memory, 200 files</td><td class="n">2.0 s / 49 MB</td></tr>
-<tr><td>5,000 files (25× replica), growth exponent</td><td class="n">34 s / 295 MB, 1.0</td></tr>
-</table>
-<table>
-<tr><th>Policy decision</th><th>Privacy</th><th>Cost</th></tr>
-<tr><td>Remove DOB</td><td class="n">0.61→0.72</td><td>DOB detail</td></tr>
-<tr><td>10-year band per patient</td><td class="n">0.72→0.77</td><td>age detail</td></tr>
-<tr><td>Geo only in cells ≥ 3</td><td class="n">0.77→0.87</td><td>1.5% probes</td></tr>
-<tr><td>Shift FHIR meta dates</td><td class="n">A7 2.7%→0%</td><td>none</td></tr>
-<tr><td>Collision-free shifts</td><td>no global shift</td><td>none</td></tr>
-<tr><td>Generalise rare diagnoses</td><td class="n">+0.01 only</td><td>23% of dx: <b>rejected</b></td></tr>
-</table>
+<div class="charts">
+<div class="chart"><h3>Attacker resistance as each policy was added</h3><svg viewBox="0 0 170 102"><text x="0" y="13" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">no policy</text><rect x="0" y="16" width="85.4" height="9" fill="#9aa8b3"/><text x="88.39999999999999" y="23.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="700">0.61</text><text x="0" y="37" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">+ DOB removed</text><rect x="0" y="40" width="100.8" height="9" fill="#0f6c8c"/><text x="103.8" y="47.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="700">0.72</text><text x="0" y="61" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">+ one 10-year band</text><rect x="0" y="64" width="107.8" height="9" fill="#0f6c8c"/><text x="110.8" y="71.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="700">0.77</text><text x="0" y="85" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">+ small-cell geography</text><rect x="0" y="88" width="121.8" height="9" fill="#0f6c8c"/><text x="124.8" y="95.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="700">0.87</text></svg><div class="cap">Costs: DOB and age detail; 1.5% of clinical probes (district mentions).</div></div>
+<div class="chart"><h3>Leaked personal data on unseen layouts (%)</h3><svg viewBox="0 0 170 98"><rect x="0" y="0" width="7" height="7" fill="#c8791a"/><text x="10" y="6.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">first sight</text><rect x="62" y="0" width="7" height="7" fill="#0f6c8c"/><text x="72" y="6.5" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="start" fill="#15202b" font-weight="400">submitted code</text><line x1="14" y1="86.0" x2="170" y2="86.0" stroke="#dde5ea" stroke-width="0.5"/><text x="11" y="88.6" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">0</text><line x1="14" y1="65.3" x2="170" y2="65.3" stroke="#dde5ea" stroke-width="0.5"/><text x="11" y="67.93333333333334" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">4</text><line x1="14" y1="44.7" x2="170" y2="44.7" stroke="#dde5ea" stroke-width="0.5"/><text x="11" y="47.26666666666667" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">8</text><line x1="14" y1="24.0" x2="170" y2="24.0" stroke="#dde5ea" stroke-width="0.5"/><text x="11" y="26.6" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">12</text><rect x="20" y="76.7" width="13" height="9.3" fill="#c8791a"/><text x="26.5" y="74.7" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">1.8</text><rect x="35" y="85.2" width="13" height="0.8" fill="#0f6c8c"/><text x="41.5" y="83.2" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">0</text><text x="34" y="95" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">suite 1</text><rect x="58" y="30.2" width="13" height="55.8" fill="#c8791a"/><text x="64.5" y="28.199999999999996" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">10.8</text><rect x="73" y="72.0" width="13" height="14.0" fill="#0f6c8c"/><text x="79.5" y="70.05" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">2.7</text><text x="72" y="95" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">suite 2</text><rect x="96" y="55.5" width="13" height="30.5" fill="#c8791a"/><text x="102.5" y="53.516666666666666" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">5.9</text><rect x="111" y="72.0" width="13" height="14.0" fill="#0f6c8c"/><text x="117.5" y="70.05" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">2.7</text><text x="110" y="95" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">suite 3</text><rect x="134" y="71.5" width="13" height="14.5" fill="#c8791a"/><text x="140.5" y="69.53333333333333" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">2.8</text><rect x="149" y="79.8" width="13" height="6.2" fill="#0f6c8c"/><text x="155.5" y="77.8" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">1.2</text><text x="148" y="95" font-size="8" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">suite 4</text></svg><div class="cap">Four hand-written suites in file layouts the rules had never met.</div></div>
+<div class="chart"><h3>Run time by number of files (seconds)</h3><svg viewBox="0 0 170 98"><line x1="16" y1="84.0" x2="160" y2="84.0" stroke="#dde5ea" stroke-width="0.5"/><text x="13" y="86.6" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">0</text><line x1="16" y1="65.5" x2="160" y2="65.5" stroke="#dde5ea" stroke-width="0.5"/><text x="13" y="68.1" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">10</text><line x1="16" y1="47.0" x2="160" y2="47.0" stroke="#dde5ea" stroke-width="0.5"/><text x="13" y="49.6" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">20</text><line x1="16" y1="28.5" x2="160" y2="28.5" stroke="#dde5ea" stroke-width="0.5"/><text x="13" y="31.1" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">30</text><line x1="16" y1="10.0" x2="160" y2="10.0" stroke="#dde5ea" stroke-width="0.5"/><text x="13" y="12.6" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#4a5a68" font-weight="400">40</text><polyline fill="none" stroke="#0f6c8c" stroke-width="1.4" points="21.8,80.3 44.8,71.2 73.6,59.4 160.0,21.1"/><circle cx="21.8" cy="80.3" r="2.2" fill="#0f6c8c"/><circle cx="44.8" cy="71.2" r="2.2" fill="#0f6c8c"/><circle cx="73.6" cy="59.4" r="2.2" fill="#0f6c8c"/><circle cx="160.0" cy="21.1" r="2.2" fill="#0f6c8c"/><text x="21.759999999999998" y="93" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">200</text><text x="44.8" y="93" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">1,000</text><text x="73.6" y="93" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">2,000</text><text x="160.0" y="93" font-size="7" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#4a5a68" font-weight="400">5,000</text><text x="22.8" y="74.3" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="middle" fill="#15202b" font-weight="700">2 s</text><text x="40.8" y="67.2" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#15202b" font-weight="700">6.9 s</text><text x="69.6" y="55.4" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#15202b" font-weight="700">13.3 s</text><text x="156.0" y="17.1" font-size="7.5" font-family="Helvetica Neue, Arial" text-anchor="end" fill="#15202b" font-weight="700">34 s</text></svg><div class="cap">Linear growth; 49 MB at 200 files, 295 MB at 5,000. Limit: 15 min, 4 GB.</div></div>
 </div>
-<p><b>On data we did not tune on.</b> Generated sets (new names, columns, ID and date formats, scripts; ten seeds):
-0.0% leaked, no wrong merges, 98.5-100% of medical values kept. Hand-written suites in layouts the rules had never met:
-1.8%, 10.8%, 5.9% and 2.8% leaked at first sight; each gap was then closed with a general rule and a test.</p>
+<p><b>Other policy decisions.</b> Shifting FHIR <code>meta</code> dates took cross-release date matching from 2.7% to 0% at no cost. Collision-free
+per-patient shifts leave no global shift to recover, at no cost. Generalising rare diagnoses was <b>rejected</b>: +0.01 resistance for 23% of diagnoses changed.</p>
+<p><b>On data we did not tune on.</b> Generated sets (new names, columns, ID and date formats, scripts; ten seeds): 0.0% leaked, no wrong
+merges, 98.5-100% of medical values kept. The hand-written suites above are the honest test; each gap they exposed was closed
+with a general rule and a unit test, never a rule for one file.</p>
 <p><b>Why these settings.</b> Exact doses, labs and stay lengths are the research value, so they are never touched; we
 pay instead with age and geography detail, and only where the measured cell is small. Rare diagnoses stay: removing them
 bought almost no privacy for a large clinical loss.</p>
