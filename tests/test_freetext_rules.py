@@ -715,3 +715,73 @@ class ClinicalNotPlace(unittest.TestCase):
             self.assertEqual([sp for sp in detect.detect(t, known) if sp.kind in detect.NAME_KINDS], [], t)
         self.assertTrue([sp for sp in detect.detect("Asha sahiya came today", known)
                          if sp.kind in detect.NAME_KINDS])
+
+
+class DoctorTitleBoundary(unittest.TestCase):
+    """A Devanagari doctor title must start a word: it never begins inside a surname that ends in the same letters."""
+
+    def _names(self, text):
+        spans = detect.detect(text, detect.Known(set(), set(), set()), "dmy")
+        return [text[s.start:s.end] for s in spans if s.kind in ("PATIENT_NAME", "PERSON", "RELATIVE_NAME")]
+
+    def test_surname_ending_like_a_title_is_still_a_name(self):
+        for surname in ("फुर्ताडो", "पांडा"):
+            text = "नाम/Name: अनिल " + surname + "   आयु: 74 वर्ष"
+            self.assertTrue(any(surname in n for n in self._names(text)), surname)
+
+    def test_real_title_still_protects_the_doctor(self):
+        text = "डॉ. सुनील वर्मा ने जांच की।"
+        self.assertEqual(self._names(text), [])
+
+
+class MessageAndCellFrames(unittest.TestCase):
+    """Last rule round: addressees, key=value cells, bed lines, queue rows, letter blocks (invented data)."""
+
+    def _has(self, text, value):
+        return any(v == value for _, v in kinds(text))
+
+    def test_recipient_after_to_in_a_message(self):
+        self.assertIn(("PERSON", "Karma Pemba Dorjee"), kinds("TEST MSG to Karma Pemba Dorjee: template check OK"))
+        self.assertIn(("PERSON", "Pemba Lhamu"), kinds("OTP delivered to Pemba Lhamu"))
+
+    def test_recipient_frame_keeps_units_and_places(self):
+        for t in ("SMS: Referred to Civil Hospital Gangtok", "Reminder: Shifted to Medicine Ward: stable",
+                  "Alert for Sickle Cell Anaemia: screen", "Message sent by Staff Nurse Rita:"):
+            self.assertEqual([k for k, _ in kinds(t) if k in ("PERSON", "PATIENT_NAME")], [], t)
+
+    def test_semicolon_key_value_cell(self):
+        out = kinds("nm=Karma; dob=12.03.1985; sx=M")
+        self.assertIn(("PATIENT_NAME", "Karma"), out)
+        self.assertIn(("DOB", "12.03.1985"), out)
+        self.assertIn(("RELATIVE_NAME", "Pemba"), kinds("nok=Pemba; mob=9876543210"))
+        self.assertEqual(kinds("test=Glucose; res=110 mg/dL; ref=70-110"), [])
+
+    def test_json_pointer_hospital_number(self):
+        self.assertIn(("REF_ID", "ABC~126~10012345"), kinds("/patients/ABC~126~10012345/mobile"))
+        self.assertEqual(kinds("/a/b~1c/d"), [])
+
+    def test_bed_line_single_name(self):
+        self.assertTrue(self._has("Bed 4: Tashi (unknown, brought by 108), alcohol withdrawal", "Tashi"))
+        for t in ("Bed 3: Dengue, platelets 40k", "Bed 2: Vacant, cleaned", "Bed 6: Fever (3 days)"):
+            self.assertEqual(kinds(t), [], t)
+
+    def test_queue_rows_upper_case(self):
+        t = " A101  R-2  BABY DOLMA           UH778812\n A102  R-2  PEMBA          -\n A103  R-1  NEW REVIEW    -"
+        out = kinds(t)
+        self.assertIn(("PERSON", "DOLMA"), out)
+        self.assertIn(("PERSON", "PEMBA"), out)
+        self.assertFalse(any("REVIEW" in v for _, v in out))
+
+    def test_letter_block_house_line(self):
+        t = "Shri Nima\nS/o Tashi\nNear-the-Gompa 12, Rumtek\nGangtok - 737135"
+        self.assertIn(("HOUSE", "Near-the-Gompa 12"), kinds(t))
+        t2 = "Shri Nima\nS/o Tashi\nWard No. 4, Rumtek\nGangtok - 737135"
+        self.assertNotIn("HOUSE", [k for k, _ in kinds(t2)])
+
+    def test_vocative_message_opening(self):
+        self.assertIn(("PERSON", "Dolma"), kinds("Dolma, tumara Hb 9.2 g/dL. IFA tablet khaibe"))
+        self.assertEqual(kinds("Sir, aapka report ready"), [])
+
+    def test_firm_and_unit_names_kept(self):
+        for t in ("Bhai Kanhaiya Emergency", "Dhillon Surgicals Pvt Ltd", "Sidhu Medicos"):
+            self.assertEqual([k for k, _ in kinds(t) if k in ("PERSON", "PATIENT_NAME")], [], t)
