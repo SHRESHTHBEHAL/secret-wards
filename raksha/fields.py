@@ -651,7 +651,7 @@ def _value_shape_impl(v: str) -> str:
         if len(d) == 12 and d.startswith("91") and d[2] in "6789" and groups != [4, 4, 4]:
             return PHONE      # "(+91) 98765 43210", "91-98765-43210", "+91.98765.43210"
         if len(d) == 12 and d[0] in "23456789" and groups in ([12], [4, 4, 4]) and not s.lstrip().startswith(("+", "(")):
-            return AADHAAR    # "3972 0583 9628", "3972.0583.9628", "397205839628"
+            return AADHAAR    # 12 digits written "NNNN NNNN NNNN", "NNNN.NNNN.NNNN" or unspaced
         if len(d) == 12 and d[0] in "23456789" and not s.lstrip().startswith("+") and not d.startswith("91"):
             return AADHAAR
         if len(d) == 12 and d.startswith("91") and d[2] in "6789" and (" " not in s.strip() or s.startswith("+")):

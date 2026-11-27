@@ -103,7 +103,7 @@ def gender_of(s: str) -> str:
 
 
 def split_relative(s: str) -> Tuple[str, str]:
-    """'S/O SHYAM PATEL' -> ('S/o', 'SHYAM PATEL'); a bare name -> ('', name)."""
+    """'S/O GIVEN SURNAME' -> ('S/o', 'GIVEN SURNAME'); a bare name -> ('', name)."""
     m = _REL_RX.match(s or "")
     if not m:
         return "", (s or "").strip()
@@ -227,7 +227,7 @@ class _FB:
                 r, nm = split_relative(n)
                 self.rel(r or relation, nm)
         for r, n in found:
-            # "Asha amma ka BP ..." comes back from detect as a relative named Asha: a
+            # "<Given> amma ka BP ..." comes back from detect as a relative named Asha: a
             # kin/honorific word (not X/o) whose name is the patient's own name is the patient.
             if not re.search(r"/", r or "") and any(_same_name(n, m) for m in self.f.names):
                 continue

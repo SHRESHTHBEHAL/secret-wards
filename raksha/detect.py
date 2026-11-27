@@ -2240,7 +2240,7 @@ def _layer_kinship(cx: _Ctx) -> None:
         le = len(t) if le < 0 else le
         nm = _take_name(t, m.end(), le, "cap")
         if not nm:
-            # ALL CAPS guardian "S/O SHYAM PATEL" or lowercase after an explicit marker
+            # ALL CAPS guardian "S/O GIVEN SURNAME" or lowercase after an explicit marker
             nm = _take_name(t, m.end(), le, "any", max_tok=3)
             if nm and not re.match(r"[A-Zऀ-ॿ]", t[nm[0]]):
                 nm = None
