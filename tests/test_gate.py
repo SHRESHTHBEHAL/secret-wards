@@ -98,5 +98,44 @@ class GateTest(unittest.TestCase):
         self.assertEqual(gate.scan("Tavish Narkande 9876543210", fb), [])
 
 
+class KnownVillageTest(unittest.TestCase):
+    """A village learned from a typed village field is removed wherever it is written out."""
+
+    def kinds(self, fb, text):
+        return [(text[s:e], k) for s, e, k in gate.scan(text, fb)]
+
+    def test_two_word_village_in_free_text(self):
+        fb = fb_of(village="Vill. Zemra Tanda")
+        self.assertEqual(self.kinds(fb, "Pt came from Zemra Tanda by bus."), [("Zemra Tanda", "PLACE")])
+        self.assertEqual(gate.clean("Pt came from Zemra Tanda by bus.", fb, "[X]")[0], "Pt came from [X] by bus.")
+
+    def test_single_long_word_village(self):
+        fb = fb_of(village="Quorbhita")
+        self.assertEqual(self.kinds(fb, "native of quorbhita, farmer"), [("quorbhita", "PLACE")])
+        self.assertEqual(self.kinds(fb_of(village="Zemra"), "from Zemra"), [])          # too short to be safe
+
+    def test_institution_or_admin_unit_named_after_the_village_stays(self):
+        fb = fb_of(village="Quorbhita")
+        for t in ("referred from CHC Quorbhita", "Quorbhita block", "Quorbhita Hospital OPD", "PHC, Quorbhita"):
+            self.assertEqual(self.kinds(fb, t), [], t)
+
+    def test_district_is_never_a_forbidden_place(self):
+        for v in ("Satara", "सातारा", "Rampur"):
+            self.assertEqual(fb_of(village=v).places, (), v)
+
+    def test_other_script_village(self):
+        fb = fb_of(village="झेमरा टांडा")
+        self.assertEqual([k for _, k in self.kinds(fb, "पता: झेमरा टांडा, पोस्ट ...")], ["PLACE"])
+
+    def test_village_inside_base64_does_not_cost_the_payload(self):
+        fb = fb_of(village="Zemra Tanda")
+        blob = base64.b64encode("Hb 9.1 g/dL; resident of Zemra Tanda".encode()).decode()
+        self.assertEqual(gate.scan('{"data": "%s"}' % blob, fb), [])
+
+    def test_clinical_or_numbered_value_is_not_a_place(self):
+        for v in ("Ward 4", "fever", "Civil Hospital"):
+            self.assertEqual(fb_of(village=v).places, (), v)
+
+
 if __name__ == "__main__":
     unittest.main()

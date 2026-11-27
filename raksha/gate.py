@@ -11,9 +11,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
+from .lexicon import CLINICAL_WORDS, COMPLAINT_WORDS, DISTRICTS
 from .normalize import decode_layers, digits_only, norm_text
 from .scripts import fold
-from .translit import GENERIC_NAME_PARTS, HONORIFICS, TITLES, name_key, name_tokens
+from .translit import GENERIC_NAME_PARTS, HONORIFICS, TITLES, deva_to_latin, name_key, name_tokens
 from .types import Facts, Patient
 
 Hit = Tuple[int, int, str]
@@ -24,6 +25,21 @@ _DOCTOR_WORDS = frozenset(("dr", "doctor", "डॉ", "डा", "डाॅ", "ड
 _SKIP_WORDS = GENERIC_NAME_PARTS | HONORIFICS | TITLES | frozenset(("md", "mohd", "mohammed", "muhammad"))
 _SKIP_KEYS = frozenset(k for k in (name_key(w) for w in _SKIP_WORDS) if k)
 _GENERIC_KEYS = frozenset(k for k in (name_key(w) for w in GENERIC_NAME_PARTS) if k)
+
+# A known village next to one of these words is part of an institution's or an administrative unit's
+# name ("CHC Kanwas", "Kanwas block"), which stays.
+_PLACE_KEEP_NEAR = frozenset((
+    "hospital", "hospitals", "chc", "phc", "uphc", "sdh", "clinic", "dispensary", "medical", "college",
+    "nursing", "centre", "center", "kendra", "lab", "labs", "laboratory", "pharmacy", "institute", "trust",
+    "district", "dist", "distt", "zila", "jila", "zilla", "block", "tehsil", "tahsil", "taluk", "taluka",
+    "mandal", "thana", "station", "ps", "division", "circle", "branch", "unit", "ward",
+    "अस्पताल", "चिकित्सालय", "रुग्णालय", "दवाखाना", "हॉस्पिटल", "हास्पिटल", "केंद्र", "केन्द्र", "जिला", "ज़िला", "तहसील", "ब्लॉक", "थाना"))
+# Words that say what kind of place follows; they are not part of the place's own name.
+_PLACE_CUES = frozenset((
+    "vill", "village", "gram", "gaon", "ganv", "gaanv", "pind", "po", "post", "vpo", "at", "tola", "mohalla",
+    "near", "the", "of", "and", "ग्राम", "गांव", "गाँव", "पोस्ट"))
+
+_DISTRICT_KEYS = frozenset(k for k in (name_key(w) for w in DISTRICTS) if k)
 
 _DIGIT_RUN = re.compile(r"[0-9](?:[ /._-]{0,2}[0-9])*")
 _DIGIT_GROUP = re.compile(r"[0-9]+")
@@ -39,8 +55,14 @@ class Forbidden:
     digit_cores: FrozenSet[str]
     exact: FrozenSet[str]
     full_names: Tuple[Tuple[str, ...], ...]
+    places: Tuple[Tuple[str, ...], ...] = ()
 
     def __post_init__(self) -> None:
+        self._place_first = {}  # type: Dict[str, List[Tuple[str, ...]]]
+        for pl in self.places:
+            self._place_first.setdefault(pl[0], []).append(pl)
+        for v in self._place_first.values():
+            v.sort(key=len, reverse=True)
         self._core_lengths = tuple(sorted({len(c) for c in self.digit_cores}))
         self._exact_rx = _trie_regex(sorted(self.exact)) if self.exact else None
         self._name_sets = frozenset(frozenset(n) for n in self.full_names)
@@ -89,10 +111,40 @@ def _person_name(name: str) -> Optional[Tuple[str, ...]]:
     return tuple(keys) if len(keys) >= 2 else None
 
 
+def _place_words(village: str) -> Optional[Tuple[str, ...]]:
+    """The words of a village learned from a typed village field, when they are distinctive enough to
+    remove wherever they appear: two or more words, or one long word, that is not a district, a
+    clinical word or a place-type word."""
+    nt, _ = _norm_map(str(village or ""))
+    if any(c.isdigit() for c in nt):
+        return None
+    words = _WORD.findall(nt)
+    while words and words[0] in _PLACE_CUES:
+        words = words[1:]
+    while words and words[-1] in _PLACE_CUES:
+        words = words[:-1]
+    if not words or len(words) > 5:
+        return None
+    if any(w in _PLACE_KEEP_NEAR for w in words):
+        return None
+    for w in words:
+        lat = deva_to_latin(w).lower() if not w.isascii() else w
+        if w in DISTRICTS or lat in DISTRICTS or name_key(lat) in _DISTRICT_KEYS:
+            return None                      # a district is kept by policy, in either script
+        if w in CLINICAL_WORDS or w in COMPLAINT_WORDS:
+            return None
+    if len(words) == 1 and len(words[0]) < 6:
+        return None
+    if len(words) >= 2 and sum(len(w) for w in words) < 8:
+        return None
+    return tuple(words)
+
+
 def forbidden_from_facts(facts: Iterable[Facts]) -> Forbidden:
     cores = set()
     exact = set()
     names = set()
+    places = set()
     for f in facts:
         if f is None:
             continue
@@ -111,7 +163,11 @@ def forbidden_from_facts(facts: Iterable[Facts]) -> Forbidden:
             key = _person_name(str(nm))
             if key:
                 names.add(key)
-    return Forbidden(digit_cores=frozenset(cores), exact=frozenset(exact), full_names=tuple(sorted(names)))
+        pl = _place_words(getattr(f, "village", "") or "")
+        if pl:
+            places.add(pl)
+    return Forbidden(digit_cores=frozenset(cores), exact=frozenset(exact), full_names=tuple(sorted(names)),
+                     places=tuple(sorted(places)))
 
 
 def forbidden_from_book(book: Dict[str, Patient]) -> Forbidden:
@@ -234,7 +290,36 @@ def _name_hits(nt: str, fb: Forbidden) -> List[Tuple[int, int]]:
     return out
 
 
-def _plain(text: str, fb: Forbidden) -> List[Hit]:
+def _place_hits(nt: str, fb: Forbidden) -> List[Tuple[int, int]]:
+    """Known villages written out as whole words, unless the neighbouring word makes them part of an
+    institution's or an administrative unit's name."""
+    out = []  # type: List[Tuple[int, int]]
+    first = fb._place_first
+    if not first:
+        return out
+    ws = [(m.start(), m.end(), m.group(0)) for m in _WORD.finditer(nt)]
+    i = 0
+    while i < len(ws):
+        cands = first.get(ws[i][2])
+        hit = 0
+        if cands:
+            for pl in cands:
+                n = len(pl)
+                if i + n <= len(ws) and all(ws[i + k][2] == pl[k] for k in range(n)) and all(
+                        len(nt[ws[i + k][1]:ws[i + k + 1][0]]) <= 3 and "\n" not in nt[ws[i + k][1]:ws[i + k + 1][0]]
+                        for k in range(n - 1)):
+                    prev = ws[i - 1][2] if i > 0 and "\n" not in nt[ws[i - 1][1]:ws[i][0]] else ""
+                    nxt = ws[i + n][2] if i + n < len(ws) and "\n" not in nt[ws[i + n - 1][1]:ws[i + n][0]] else ""
+                    if prev in _PLACE_KEEP_NEAR or nxt in _PLACE_KEEP_NEAR or prev in _DOCTOR_WORDS:
+                        continue
+                    out.append((ws[i][0], ws[i + n - 1][1]))
+                    hit = n
+                    break
+        i += hit or 1
+    return out
+
+
+def _plain(text: str, fb: Forbidden, places: bool = True) -> List[Hit]:
     nt, idx = _norm_map(text)
     n = len(text)
     hits = []  # type: List[Hit]
@@ -246,15 +331,18 @@ def _plain(text: str, fb: Forbidden) -> List[Hit]:
                 hits.append(_orig(idx, m.start(), m.end(), n) + ("EXACT",))
     for s, e in _name_hits(nt, fb):
         hits.append(_orig(idx, s, e, n) + ("NAME",))
+    if places:                               # not inside encoded payloads: a hit there costs the whole payload
+        for s, e in _place_hits(nt, fb):
+            hits.append(_orig(idx, s, e, n) + ("PLACE",))
     return hits
 
 
 def _payload_hit(chunk: str, fb: Forbidden) -> bool:
-    return any(_plain(p, fb) for p in decode_layers(chunk))
+    return any(_plain(p, fb, places=False) for p in decode_layers(chunk))
 
 
 def _encoded(text: str, fb: Forbidden) -> List[Hit]:
-    if not any(_plain(p, fb) for p in decode_layers(text)):
+    if not any(_plain(p, fb, places=False) for p in decode_layers(text)):
         return []
     hits = []  # type: List[Hit]
     for rx in (_B64_RUN, _HEX_RUN, _ESC_RUN):
