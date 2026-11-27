@@ -1,5 +1,6 @@
 [submission]
 name  = "404FoundUs"
 # requirements.txt lists one optional accelerator (rapidfuzz); the pipeline runs on the standard library alone.
-setup = "python -m pip install --disable-pip-version-check -q -r requirements.txt"   # run once, internet allowed
-run   = "python main.py --input {input} --output {output}"                            # run with NO internet
+# Both commands use python3 when it exists and fall back to python, so they work whichever name the machine has.
+setup = "$(command -v python3 || command -v python) -m pip install --disable-pip-version-check -q -r requirements.txt"   # run once, internet allowed
+run   = "$(command -v python3 || command -v python) main.py --input {input} --output {output}"                            # run with NO internet
