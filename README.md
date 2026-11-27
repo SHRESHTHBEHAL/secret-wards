@@ -43,7 +43,7 @@ Local checks with the organisers' kit cloned next to this repo:
 ```bash
 scripts/dev.sh                                   # run on dev/input, validate_output.py, check_dev.py
 python3 scripts/attack.py --release my_output --dev ../Secret-Wards-ToolKit/dev    # replica attacker
-python -m unittest discover -s tests             # 570 tests
+python -m unittest discover -s tests             # 577 tests
 ```
 
 ## Architecture
@@ -132,6 +132,6 @@ scripts/attack.py       replica of the published attacker (dev only, never impor
 scripts/chaos.py        rewrites the practice set with unseen names, labels, ID and date formats
 scripts/synth_gen.py    fresh synthetic dataset with truth; scripts/score_composite.py scores it
 scripts/stress.py       scaling and resource stress test
-tests/                  570 unit, robustness and unseen-format tests
+tests/                  577 unit, robustness and unseen-format tests
 docs/                   multi-script design, generalisation benchmark, project brief (brief.pdf)
 ```
