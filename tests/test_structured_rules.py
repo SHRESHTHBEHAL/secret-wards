@@ -936,3 +936,31 @@ class InstitutionalTables(unittest.TestCase):
         out = _sanitize_csv(pf, other=reg)
         self.assertNotIn("9876104321", out[1][4])
         self.assertEqual(out[1][3], "Velmora Pharma Agency")
+
+
+class MultiPatientDocument(unittest.TestCase):
+    def test_text_with_two_hospital_numbers_of_one_shape_is_unlinked(self):
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Zorvan Qelt"], ids=["uhid:QRH-26-04411", "phone:9000033333"]),
+            _R("reg.csv", "row:1", names=["Imvar Telq"], ids=["uhid:QRH-26-04412"]),
+            _R("misc/app.log", "doc", names=["Zorvan Qelt"],
+               ids=["uhid:QRH-26-04411", "uhid:QRH-26-04412", "phone:9000033333"]),
+        ])
+        self.assertIsNone(m[("misc/app.log", "doc")])
+        self.assertNotEqual(m[("reg.csv", "row:0")], m[("reg.csv", "row:1")])
+
+    def test_text_with_two_aadhaar_is_unlinked(self):
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Zorvan Qelt"], ids=["aadhaar:234567890123"]),
+            _R("letters.txt", "doc", names=["Zorvan Qelt"], ids=["aadhaar:234567890123", "aadhaar:345678901234"]),
+        ])
+        self.assertIsNone(m[("letters.txt", "doc")])
+
+    def test_one_patient_text_with_hospital_and_admission_numbers_still_links(self):
+        m, _ = link([
+            _R("reg.csv", "row:0", names=["Zorvan Qelt"], ids=["uhid:QRH-26-04411"]),
+            _R("ds.txt", "doc", names=["Zorvan Qelt"], ids=["uhid:QRH-26-04411", "enc:IPD-26-0931"]),
+        ])
+        self.assertIsNotNone(m[("ds.txt", "doc")])
+        self.assertEqual(m[("ds.txt", "doc")], m[("reg.csv", "row:0")])
+
