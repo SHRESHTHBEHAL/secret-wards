@@ -375,6 +375,24 @@ class _Rec:
             and bool(self.rels)
 
 
+_SHAPE_RX = re.compile(r"^([A-Z]*)([0-9]+)([A-Z]*)$")
+
+
+def _multi_patient(r: "_Rec") -> bool:
+    """A whole text that carries two different patient numbers of one shape (same prefix, same digit
+    count) or two different Aadhaar numbers holds more than one patient: it is never one record."""
+    shapes: Dict[tuple, Set[str]] = {}
+    for t in r.ids:
+        typ, val = t.split(":", 1)
+        if typ == ID_UHID:
+            m = _SHAPE_RX.match(val)
+            if m and len(m.group(2)) >= 4:
+                shapes.setdefault((typ, m.group(1), len(m.group(2)), m.group(3)), set()).add(m.group(2).lstrip("0"))
+        elif typ == ID_AADHAAR and len(val) == 12 and not _CC_MOBILE.match(val):
+            shapes.setdefault((typ,), set()).add(val)
+    return any(len(v) >= 2 for v in shapes.values())
+
+
 _MIN_EVENT_YEAR = 1995
 # The collection's own year: the most common event-date year over all records (set by link()).
 _NOW = [0]
@@ -660,7 +678,10 @@ def link(records: List[Record]) -> Tuple[Dict[Key, Optional[str]], Dict[str, Pat
             f = rec.facts
             if not (f.ids and any(n and name_tokens(n) for n in f.names)):
                 continue
-        recs.append(_Rec(len(recs), k, rec.facts))
+        r = _Rec(len(recs), k, rec.facts)
+        if rec.loc == "doc" and _multi_patient(r):
+            continue   # a log / letter batch / register printed as one text: ids scrubbed, never linked
+        recs.append(r)
     if not recs:
         return mapping, {}
 
