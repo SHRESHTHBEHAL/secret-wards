@@ -24,8 +24,8 @@ C++ backend for the same fuzzy distances (byte-identical output with or without 
 | Medical values kept | 98.5% |
 | Linking precision / recall / F0.5 | 1.00 / 1.00 / 1.00 (no wrong merges) |
 | Re-identification risk (replica attacker, A1-A7) | combined **11.7%** (resistance 0.88); record linkage 5.7% of raw, profile re-identification 10.4%; 0.4% of records unique in the registry (raw 60.8%) |
-| Run time / peak memory | 1.7 s / 34 MB for 200 files; 45 s / 221 MB for 5,000 files (growth exponent 1.0; limit 15 min / 4 GB) |
-| On data we never tuned on | 0.0% leaked, F0.5 1.00 on five held-out sets (see [docs/BENCHMARK.md](docs/BENCHMARK.md)) |
+| Run time / peak memory | 2.0 s / 49 MB for 200 files; 34 s / 295 MB for 5,000 files (growth exponent 1.0; limit 15 min / 4 GB) |
+| On data we never tuned on | generated unseen-format sets (`scripts/chaos.py`, ten seeds): 0.0% leaked, no wrong merges. Hand-written suites in formats the rules had never met: 1.8% to 10.8% leaked at first sight, each gap then closed with a general rule and a test (see [docs/BENCHMARK.md](docs/BENCHMARK.md) and Known limitations) |
 
 ## Setup and run
 
@@ -43,7 +43,7 @@ Local checks with the organisers' kit cloned next to this repo:
 ```bash
 scripts/dev.sh                                   # run on dev/input, validate_output.py, check_dev.py
 python3 scripts/attack.py --release my_output --dev ../Secret-Wards-ToolKit/dev    # replica attacker
-python -m unittest discover -s tests             # 269 tests
+python -m unittest discover -s tests             # 570 tests
 ```
 
 ## Architecture
@@ -109,6 +109,10 @@ the output is byte-identical without it).
 
 ## Known limitations
 
+* Unfamiliar file layouts are the main risk. A layout the parsers do not recognise is cleaned as free text, and
+  XML, HTML and HL7 content is quarantined rather than rewritten: nothing leaks, but that file's clinical content
+  is not released. On hand-written suites in new formats, first-sight leakage was 1.8% to 10.8%.
+* Lab, bill, visit and queue-token numbers are kept as clinical context, not treated as patient identifiers.
 * The targeted attack still succeeds for about 43% of known-fact targets on the practice data: rare diagnoses and
   exact stay lengths survive by design, because they are the clinical value. Generalising rare diagnoses cost more
   utility than it bought privacy.
@@ -128,6 +132,6 @@ scripts/attack.py       replica of the published attacker (dev only, never impor
 scripts/chaos.py        rewrites the practice set with unseen names, labels, ID and date formats
 scripts/synth_gen.py    fresh synthetic dataset with truth; scripts/score_composite.py scores it
 scripts/stress.py       scaling and resource stress test
-tests/                  269 unit, robustness and unseen-format tests
+tests/                  570 unit, robustness and unseen-format tests
 docs/                   multi-script design, generalisation benchmark, project brief (brief.pdf)
 ```
