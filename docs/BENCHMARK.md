@@ -13,7 +13,7 @@ so we measure on data with **new hospitals, name pools, villages, ID formats, la
 | 10 native-script notes | `tests/test_scripts.py` | 0 / 32 | 16 / 16 | — | — |
 | new layouts x 8 seeds (held out) | `scripts/synth_gen2.py out N`: native-script notes in 8 languages, WhatsApp, e-mail, HL7, JSONL, nested JSON, headerless CSV, patient-named folders, data-URI attachments | 0.0% | 99.6-100% | 1.00 | — |
 | chaos x 6 more seeds, synthetic x 6 more seeds (held out) | as above | 0.0% | 98.5-100% | 1.00 | — |
-| 4 hand-written suites in formats the rules had never met (first sight, before any fix) | written separately from the generators; kept outside this repository | 1.8% / 10.8% / 5.9% / 2.8% | 96-99% | precision 0.86-1.00 | — |
+| 4 hand-written suites in formats the rules had never met (first sight, before any fix) | written separately from the generators; kept outside this repository | 1.8% / 10.8% / 5.9% / 2.8% | not recorded at first sight; 88-99% after fixes | wrong pairs at first sight 15 / 147 / 77 / 28; precision 0.86-1.00 after fixes | — |
 
 \* `scripts/score_composite.py` follows docs/SCORING.md and scoring.toml for every computable part; the
 hidden attacker is approximated by direct-identifier and quasi-identifier exposure, so use
