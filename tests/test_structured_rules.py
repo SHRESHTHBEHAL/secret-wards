@@ -964,3 +964,40 @@ class MultiPatientDocument(unittest.TestCase):
         self.assertIsNotNone(m[("ds.txt", "doc")])
         self.assertEqual(m[("ds.txt", "doc")], m[("reg.csv", "row:0")])
 
+
+
+class AuditPatchEntries(unittest.TestCase):
+    """A JSON Patch audit trail: an entry belongs to the record its pointer path names; a "move"
+    from one record's pointer to another's names two patients and links to neither."""
+
+    def _pf(self):
+        return _json({"schema": "QXAUDIT-1", "changes": [
+            {"ts": "2026-01-05T10:00:00+05:30", "user": "qx_clerk1", "op": "replace",
+             "path": "/patients/QXH~126~1404411/mobile", "uhid": "QXH/26/404411",
+             "old": "9000011111", "new": "9000022222", "context": {"naam": "Zorvan Qelt", "age": "34"}},
+            {"ts": "2026-01-06T10:00:00+05:30", "user": "qx_clerk2", "op": "move",
+             "from": "/patients/QXH~126~1404411/addr", "path": "/patients/QXH~126~1404412/addr",
+             "uhid_from": "QXH/26/404411", "uhid_to": "QXH/26/404412",
+             "new": {"gaon": "Qelvari", "pin": "799001"}},
+            {"ts": "2026-01-07T10:00:00+05:30", "user": "qx_clerk2", "op": "move",
+             "from": "/patients/QXH~126~1404412/addr", "path": "/patients/QXH~126~1404412/old_addr",
+             "uhid": "QXH/26/404412"},
+        ]}, rel="misc/qx_audit_patch.json")
+
+    def test_move_between_two_records_is_scrub_only(self):
+        recs = {r.loc: r for r in harvest.harvest_file(self._pf())}
+        mv = recs["/changes/1"].facts
+        self.assertEqual(mv.ids, [])
+        self.assertFalse(mv.is_patient)
+        self.assertTrue(mv.raw_ids)   # the numbers are still removed from the release
+
+    def test_entry_naming_one_record_keeps_its_number(self):
+        recs = {r.loc: r for r in harvest.harvest_file(self._pf())}
+        self.assertTrue(any(t.startswith("uhid:") for t in recs["/changes/0"].facts.ids))
+        self.assertTrue(any(t.startswith("uhid:") for t in recs["/changes/2"].facts.ids))
+
+    def test_move_entry_links_to_nobody(self):
+        m, _ = link(harvest.harvest_file(self._pf()))
+        self.assertIsNone(m[("misc/qx_audit_patch.json", "/changes/1")])
+        self.assertNotEqual(m[("misc/qx_audit_patch.json", "/changes/0")],
+                            m[("misc/qx_audit_patch.json", "/changes/2")])
