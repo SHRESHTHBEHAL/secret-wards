@@ -169,7 +169,8 @@ _S = {
     "govid": ("ppt", "voter", "epic", "ration", "rashan", "licence", "license", "dl", "passport", "vid",
               "kyc", "idproof"),
     "village": ("vpo", "hamlet", "mauza", "mauja", "mouza", "mouja", "place", "gaun", "panchayat", "grampanchayat", "ooru", "graam", "gaam", "gamv", "gav", "wadi", "dhani", "majra", "thana", "postoffice", "dakghar", "gram", "village", "vill", "vil", "gaon", "gav", "ganv", "gaanv", "gram", "city", "town",
-                "kasba", "qasba", "shahar", "nagar", "gramm"),
+                "kasba", "qasba", "shahar", "nagar", "gramm",
+                "gano", "pind", "graman", "gramam", "kiramam", "uru"),   # গাঁও, ਪਿੰਡ, గ్రామం, ഗ്രാമം, கிராமம், ಊರು
     "tehsil": ("tahasil", "tehesil", "taluq", "thaluk", "pargana", "upazila", "upzila", "mandalam", "tahsel", "tehsil", "tahsil", "tehseel", "tahseel", "taluk", "taluka", "block", "mandal",
                "subdistrict", "tehsel"),
     "district": ("janpad", "janapad", "jilha", "zillah", "jela", "mavattam", "zilah", "jilah", "district", "distt", "dist", "jila", "zila", "zilla", "jilla", "distric"),
