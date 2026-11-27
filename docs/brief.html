@@ -95,9 +95,9 @@ shifts remove the attacker's global-shift recovery outright.</li>
 <tr><td>Medical values kept</td><td class="n">98.5%</td></tr>
 <tr><td>Linking precision / recall / F0.5</td><td class="n">1.00 / 1.00 / 1.00</td></tr>
 <tr><td>Records unique in the voter registry</td><td class="n">0.4% (raw 60.8%)</td></tr>
-<tr><td>Replica attacker combined risk (resistance)</td><td class="n">11.7% (0.88)</td></tr>
-<tr><td>Run time / peak memory, 200 files</td><td class="n">1.7 s / 34 MB</td></tr>
-<tr><td>5,000 files (25× replica), growth exponent</td><td class="n">45 s / 221 MB, 1.0</td></tr>
+<tr><td>Replica attacker combined risk (resistance)</td><td class="n">13.0% (0.87)</td></tr>
+<tr><td>Run time / peak memory, 200 files</td><td class="n">2.0 s / 49 MB</td></tr>
+<tr><td>5,000 files (25× replica), growth exponent</td><td class="n">34 s / 295 MB, 1.0</td></tr>
 </table>
 <table>
 <tr><th>Policy decision</th><th>Privacy</th><th>Cost</th></tr>
@@ -109,11 +109,9 @@ shifts remove the attacker's global-shift recovery outright.</li>
 <tr><td>Generalise rare diagnoses</td><td class="n">+0.01 only</td><td>23% of dx: <b>rejected</b></td></tr>
 </table>
 </div>
-<p><b>On data we did not tune on</b> (renamed columns, new names and villages, new ID and date formats, new scripts):
-five held-out sets (two fresh synthetic datasets, three "chaos" rewrites of the practice set) all leak 0.0% with
-linking F0.5 1.00 and 98.5-99.5% of medical values kept. On a composite of the published scoring formulas Raksha scores
-98.2-98.4; as a ceiling reference, a frontier LLM doing the same job by hand (forbidden by the rules) scored 94.5 in 342 s
-and is not deterministic.</p>
+<p><b>On data we did not tune on.</b> Generated sets (new names, columns, ID and date formats, scripts; ten seeds):
+0.0% leaked, no wrong merges, 98.5-100% of medical values kept. Hand-written suites in layouts the rules had never met:
+1.8%, 10.8%, 5.9% and 2.8% leaked at first sight; each gap was then closed with a general rule and a test.</p>
 <p><b>Why these settings.</b> Exact doses, labs and stay lengths are the research value, so they are never touched; we
 pay instead with age and geography detail, and only where the measured cell is small. Rare diagnoses stay: removing them
 bought almost no privacy for a large clinical loss.</p>
@@ -136,7 +134,7 @@ linked (cross-release risk 0%).</li>
 by design. Next step: coarsen only the few profiles the replica attacker still re-identifies.</li>
 <li>Tamil lacks voiced consonants and Urdu omits short vowels, so a few cross-script names key differently; linking
 then abstains rather than guesses.</li>
-<li>A capitalised phrase after "near" can be taken for a person ("near Optic Disc"): a small over-redaction.</li>
+<li>Unfamiliar file layouts are the main risk: unknown layouts are cleaned as free text; XML, HTML and HL7 are quarantined (no leak, content not released).</li>
 <li>10-year bands are coarser than some studies want; it is one line in <code>config/policy.yaml</code>.</li>
 </ul>
 </body></html>
