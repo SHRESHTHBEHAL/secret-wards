@@ -647,7 +647,7 @@ _CASE_LAT = re.compile(
     re.M)
 _DOB_RE = re.compile(r"(?<![A-Za-z])(?:DOB|D\.O\.B\.?|Date\s+of\s+Birth|Birth\s*Date|B'?day|Janm\s*Tithi|"
                      r"Janam\s*Tithi|जन्म\s*(?:तिथि|तारीख|दिनांक)|Born(?:[ \t]+on)?|Janm|Janam|"
-                     r"(?:जन्म|जनम)(?:[ \t]*(?:तिथि|तिथी|तारीख|तारिख|दिनांक|मिती|मिति|तारीक))?)(?:[ \t]*\.{3,})?[ \t]*[:\-]?[ \t]*", re.I)
+                     r"(?:जन्म|जनम)(?:[ \t]*(?:तिथि|तिथी|तारीख|तारिख|दिनांक|मिती|मिति|तारीक))?)(?:[ \t]*\.{3,})?[ \t]*[:\-=]?[ \t]*", re.I)
 _COMPACT_DOB = re.compile(r"[0-9०-९]{8}(?![0-9०-९A-Za-z])")
 # "birth_date": "19870314", dob=14031987: a key-style birth label before eight compact digits
 _COMPACT_DOB_KEY = re.compile(r"(?i)(?<![a-z])(?:dob|birth[_ ]?date|date[_ ]?of[_ ]?birth|birth[_ ]?dt|janm[_ ]?tithi)[\"']?"
@@ -811,8 +811,16 @@ _ADM_BARE = re.compile(
 _REF_SHAPED = re.compile(r"(?<![A-Za-z0-9/#\-])[A-Z]{2,6}(?:[/#\-][0-9]{2,4})?[/#\-][0-9]{5,10}(?![A-Za-z0-9/\-])")
 
 
+# a hospital number inside a JSON Pointer / audit path, its "/" escaped as "~1" or written "~":
+# "/patients/ABC~126~10012345/mobile" -- one path segment, letters then two digit groups
+_PTR_ID = re.compile(r"(?<=/)[A-Z]{2,6}~1?[0-9]{2,4}~1?[0-9]{4,10}(?=/|$|[\"'])")
+
+
 def _layer_identifiers(cx: _Ctx) -> None:
     t = cx.text
+    if "~" in t:
+        for m in _PTR_ID.finditer(t):
+            cx.add(m.start(), m.end(), "REF_ID", "", 1)
     for sp in patterns.find_identifiers(t):
         cx.add(sp.start, sp.end, sp.kind, sp.value, 0)
     for sp in patterns.find_patient_ids(t):
@@ -958,6 +966,33 @@ def _layer_eq_labels(cx: _Ctx) -> None:
         if cls == "village" and is_district(_clean(t[vs:ve])):
             continue
         _apply_label(cx, cls, label, vs, ve)
+
+
+# "nm=<A B>; sx=M; mob=<n>" -- several key=value pairs in one cell, ";" / "|" between them
+_EQ_PAIR = re.compile(r"(?:^|(?<=[;|,]))[ \t]*([A-Za-z][A-Za-z0-9_.\-]{0,20})[ \t]*=[ \t]*([^;|,=\n]*)")
+_EQ_SHORT = {"nm": "name", "pt_nm": "name", "pnm": "name", "fnm": "relative", "hno": "address", "h_no": "address"}
+_EQ_PAIR_CLASSES = _EQ_CLASSES + ("phone", "uhid", "pin")
+
+
+def _layer_eq_pairs(cx: _Ctx) -> None:
+    t = cx.text
+    if "=" not in t or ";" not in t:
+        return
+    for ls, line in _lines(t):
+        if line.count("=") < 2 or ";" not in line:
+            continue
+        pairs = list(_EQ_PAIR.finditer(line))
+        if len(pairs) < 2:
+            continue
+        for m in pairs:
+            key = m.group(1).lower()
+            cls = _EQ_SHORT.get(key) or _classify_label(re.sub(r"[._\-]+", " ", key).strip())
+            if cls not in _EQ_PAIR_CLASSES:
+                continue
+            vs, ve = _strip_span(t, ls + m.start(2), ls + m.end(2))
+            if vs >= ve or (cls == "village" and is_district(_clean(t[vs:ve]))):
+                continue
+            _apply_label(cx, cls, key, vs, ve)
 
 
 # the rest of a labelled hospital number that a scan broke after a separator: "/ 02 19"
@@ -2901,6 +2936,14 @@ _PIN_AFTER = re.compile(r"[ \t]*[\-–][ \t]*[1-9][0-9]{5}(?![0-9])")
 _MONEY_WORDS = frozenset({"rs", "inr", "rupees", "rupee", "paise", "rs.", "₹"})
 
 
+# a firm, not a person: "<A> Surgicals Pvt Ltd", "<A> Medicos"; a named unit: "<A B> Emergency"
+_BIZ_WORDS = _ws("""
+surgicals surgical medicos medicals biomedicals biomedical pharma pharmaceuticals enterprises traders agencies
+agency distributors pvt ltd limited llp corporation industries technologies instruments equipments
+""")
+_UNIT_NEXT = frozenset("Emergency Ward Wing Block ICU OT Theatre".split())
+
+
 def _layer_unknown_pairs(cx: _Ctx) -> None:
     t = cx.text
     for ls, line in _lines(t):
@@ -2915,10 +2958,10 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
                 real = [w for _, _, w in run if _low(w) not in _GENERIC]
                 nxt = re.match(r"[ \t]*([A-Za-z]+)", t[e:e + 30])
                 allcaps = all(w.isupper() and len(w) > 1 for _, _, w in run)
-                money = any(_low(w) in _MONEY_WORDS for _, _, w in run)
+                money = any(_low(w) in _MONEY_WORDS or _low(w) in _BIZ_WORDS for _, _, w in run)
                 if (real and not money and not re.match(r"[ \t]*[:：]", t[e:e + 3])
                         and not _PLACE_BEFORE.search(_tail(t, ls, s))
-                        and not (nxt and _low(nxt.group(1)) in _ORG_TAIL)
+                        and not (nxt and (_low(nxt.group(1)) in _ORG_TAIL or nxt.group(1) in _UNIT_NEXT))
                         and not _PIN_AFTER.match(t, e)
                         and (not allcaps or _name_context(t, ls, s))):
                     cx.add(s, e, "PERSON", "", 9)
@@ -2935,6 +2978,140 @@ def _layer_unknown_pairs(cx: _Ctx) -> None:
                 flush()
             prev_end = e
         flush()
+
+
+# "TEST MSG to <A B C>: template OK", "Reminder sent to <A B>, ...": an addressee after a recipient word
+_RECIP_WORD = re.compile(r"(?<![A-Za-z/])(?:to|for|attn\.?|c/o|dear|from|by)[ \t]*:?[ \t]+(?=[A-Z])", re.I)
+_RECIP_CUE = re.compile(r"(?i)(?<![a-z])(?:msg|message|sms|test|template|alert|reminder|otp|forwarded|sent|"
+                        r"delivered|call|called)(?![a-z])")
+_RECIP_TITLE = _ws("prof professor sister nurse doctor matron staff dr sir madam")
+_RECIP_END = re.compile(r"[ \t]*(?:[:,;\-\u2013]|$)")
+_RECIP_ORG = _ws("""
+ward clinic lab labs department dept unit hospital centre center camp school college office bank station
+block opd ipd icu theatre store pharmacy ambulance board committee desk counter room bay
+""")
+
+
+def _layer_recipient(cx: _Ctx) -> None:
+    t = cx.text
+    if not _RECIP_CUE.search(t) or len(t) > 600:
+        return
+    for m in _RECIP_WORD.finditer(t):
+        toks = []  # type: List[Tuple[int, int, str]]
+        for tm in re.compile(r"[ \t]?([A-Z][a-z]{2,})(?![A-Za-z'\-.])").finditer(t, m.end()):
+            if toks and tm.start() != toks[-1][1]:
+                break
+            if not toks and tm.start(1) != m.end():
+                break
+            toks.append((tm.start(1), tm.end(1), tm.group(1)))
+            if len(toks) == 4:
+                break
+        if not 2 <= len(toks) <= 4 or not _RECIP_END.match(t, toks[-1][1]):
+            continue
+        if _low(toks[0][2]) in _RECIP_TITLE:
+            continue
+        if any(not _is_name_tok(w, "cap") or _low(w) in _GENERIC or _low(w) in _DISTRICTS
+               or _low(w) in patterns.EPONYMS or _low(w) in _RECIP_ORG or _low(w) in _ORG_TAIL
+               for _, _, w in toks):
+            continue
+        nxt = re.match(r"[ \t]*[:,\-]?[ \t]*([A-Za-z]+)", t[toks[-1][1]:toks[-1][1] + 30])
+        if nxt and (_low(nxt.group(1)) in _RECIP_ORG or _low(nxt.group(1)) in _ORG_TAIL):
+            continue
+        if is_district(" ".join(w for _, _, w in toks)):
+            continue
+        cx.add(toks[0][0], toks[-1][1], "PERSON", "", 9)
+
+
+# a handover / census line "Bed 4: <Name> (brought by ...)", "Cot 2 - <Name>, 45M": one capitalised
+# token right after the bed number, closed by "(" or ","
+_BED_CAP = re.compile(r"(?<![A-Za-z])(?:Bed|BED|Cot|COT)[ \t]*(?:[Nn]o\.?)?[ \t]*[0-9]{1,3}[A-Za-z]?[ \t]*[:\-\u2013)][ \t]*"
+                      r"([A-Z][a-z]{2,})(?=[ \t]*[(,])")
+_BED_NOT = _ws("vacant empty occupied reserved blocked isolation unknown unidentified male female baby none nil same")
+
+
+# a message opening on the addressee: "<Name>, tumara Hb 9.2 ...", "<Name>, your report is ready"
+_VOC_OPEN = re.compile(r"(?:^|(?<=[\n\"]))[ \t]*([A-Z][a-z]{2,})[ \t]*,[ \t]*(?=(?:tumara|tumhara|tumar|tumro|aapka|apka|"
+                       r"aapki|apki|aapke|your|apnar|tomar|tomaro|tumi|tume|aap|apni|apne)(?![A-Za-z]))", re.I)
+
+
+def _layer_vocative_open(cx: _Ctx) -> None:
+    t = cx.text
+    for m in _VOC_OPEN.finditer(t):
+        w = m.group(1)
+        lw = _low(w)
+        if not w[0].isupper() or not w[1:].islower():
+            continue
+        if (not _is_name_tok(w, "cap") or lw in _GENERIC or lw in _RECIP_TITLE or lw in _DISTRICTS
+                or lw in patterns.EPONYMS or lw in _BED_NOT):
+            continue
+        cx.add(m.start(1), m.end(1), "PERSON", "", 9)
+
+
+def _layer_bed_names(cx: _Ctx) -> None:
+    t = cx.text
+    if "ed" not in t and "ot" not in t and "ED" not in t and "OT" not in t:
+        return
+    for m in _BED_CAP.finditer(t):
+        w = m.group(1)
+        lw = _low(w)
+        if (not _is_name_tok(w, "cap") or lw in _GENERIC or lw in _BED_NOT or lw in _DISTRICTS
+                or lw in patterns.EPONYMS or lw in _RECIP_ORG or lw in _ORG_TAIL):
+            continue
+        cx.add(m.start(1), m.end(1), "PERSON", "", 9)
+
+
+# a printed token / queue row "A104  R-2  <NAME NAME>     <id>": an UPPER-CASE name cell right after the
+# token (and room) columns, closed by a column gap, a kin marker or the line end; needs 2+ such rows
+_QUEUE_ROW = re.compile(r"(?m)^[ \t]*[A-Z]{0,2}[0-9]{1,4}[ \t]{2,}(?:[A-Z]{1,3}-?[0-9]{1,3}[ \t]{2,})?"
+                        r"((?:[A-Z]{3,}|[A-Z]\.)(?:[ \t](?:[A-Z]{3,}|[A-Z]\.)){0,3})"
+                        r"(?=[ \t]{2,}|[ \t]+[SDWCHsdwch]/[Oo]|[ \t]*$)")
+
+
+def _layer_queue_rows(cx: _Ctx) -> None:
+    t = cx.text
+    rows = list(_QUEUE_ROW.finditer(t))
+    if len(rows) < 2:
+        return
+    for m in rows:
+        s0 = m.start(1)
+        lead = re.match(r"(?:(?:[A-Za-z]+)\.?[ \t]+)", m.group(1))
+        while lead and _low(lead.group().strip(" \t.")) in _TITLE_BEFORE:
+            s0 += lead.end()
+            lead = re.match(r"(?:(?:[A-Za-z]+)\.?[ \t]+)", t[s0:m.end(1)])
+        ws = [w for w in t[s0:m.end(1)].split() if len(w) > 2]
+        if not ws or all(_low(w) in _GENERIC for w in ws):
+            continue
+        ws = [w for w in ws if _low(w) not in _GENERIC]
+        if not ws or any(not _is_name_tok(w, "cap") or _low(w) in _BED_NOT
+                         or _low(w) in _DISTRICTS or _low(w) in _RECIP_ORG or _low(w) in _ORG_TAIL for w in ws):
+            continue
+        cx.add(s0, m.end(1), "PERSON", "", 9)
+
+
+# letter address block: "S/o <name>" line, then "<Word> No. 12, <place>" / "<Word-Word> 12, <place>",
+# then a line ending in the PIN. The first comma part of the house line is the house number.
+_BLOCK_KIN = re.compile(r"^[ \t]*(?:[SDWCHsdwch][ \t]*/[ \t]*[Oo]|[Cc]are[ \t]+of)\.?[ \t]*:?[ \t]+\S")
+_BLOCK_PIN = re.compile(r"[1-9][0-9]{5}[ \t]*$")
+_BLOCK_HOUSE = re.compile(r"[ \t]*((?:[A-Z][a-z]{2,10}[ \t]*No\.?[ \t]*[0-9][0-9A-Za-z/\-]*"
+                          r"|[A-Z][A-Za-z]{1,12}(?:-[A-Za-z]{1,12}){1,3}[ \t]+[0-9]{1,4}[A-Za-z]?))[ \t]*(?=,)")
+_BLOCK_NOT = _ws("ward bed room opd ipd cabin token reg regn ref sl serial roll")
+
+
+def _layer_address_block(cx: _Ctx) -> None:
+    t = cx.text
+    if "/" not in t:
+        return
+    lines = list(_lines(t))
+    for i in range(1, len(lines) - 1):
+        if not _BLOCK_KIN.match(lines[i - 1][1]):
+            continue
+        ls, line = lines[i]
+        if not (_BLOCK_PIN.search(lines[i + 1][1]) or (i + 2 < len(lines) and _BLOCK_PIN.search(lines[i + 2][1]))):
+            continue
+        m = _BLOCK_HOUSE.match(line)
+        if not m or _low(re.split(r"[ \t\-]", m.group(1))[0]) in _BLOCK_NOT:
+            continue
+        cx.add(ls + m.start(1), ls + m.end(1), "HOUSE", "", 3)
 
 
 def _tail(t: str, ls: int, s: int, keep: int = 40) -> str:
@@ -3219,6 +3396,11 @@ def _run1(text: str, known: Optional[Known], order: str) -> Tuple[List[Span], Se
     if tail is None:
         n0 = len(cx.cands)
         _layer_unknown_pairs(cx)
+        _layer_recipient(cx)
+        _layer_bed_names(cx)
+        _layer_vocative_open(cx)
+        _layer_queue_rows(cx)
+        _layer_address_block(cx)
         _layer_ages(cx)
         while len(_TCACHE) >= _PCACHE_MAX:
             del _TCACHE[next(iter(_TCACHE))]
@@ -3271,6 +3453,7 @@ def _prefix_layers(cx: _Ctx, order: str) -> List[Tuple[int, int]]:
     _layer_pid_labels(cx)
     _layer_labels(cx)
     _layer_eq_labels(cx)
+    _layer_eq_pairs(cx)
     _layer_split_numbers(cx)
     keep_cells = _layer_tables(cx)
     _layer_space_labels(cx)
