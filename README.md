@@ -23,7 +23,7 @@ C++ backend for the same fuzzy distances (byte-identical output with or without 
 | Canaries found in the output | 0 / 4 |
 | Medical values kept | 98.5% |
 | Linking precision / recall / F0.5 | 1.00 / 1.00 / 1.00 (no wrong merges) |
-| Re-identification risk (replica attacker, A1-A7) | combined **11.7%** (resistance 0.88); record linkage 5.7% of raw, profile re-identification 10.4%; 0.4% of records unique in the registry (raw 60.8%) |
+| Re-identification risk (replica attacker, A1-A7) | combined **13.0%** (resistance 0.87); record linkage 5.7% of raw, profile re-identification 10.4%; 0.4% of records unique in the registry (raw 60.8%) |
 | Run time / peak memory | 2.0 s / 49 MB for 200 files; 34 s / 295 MB for 5,000 files (growth exponent 1.0; limit 15 min / 4 GB) |
 | On data we never tuned on | generated unseen-format sets (`scripts/chaos.py`, ten seeds): 0.0% leaked, no wrong merges. Hand-written suites in formats the rules had never met: 1.8% to 10.8% leaked at first sight, each gap then closed with a general rule and a test (see [docs/BENCHMARK.md](docs/BENCHMARK.md) and Known limitations) |
 

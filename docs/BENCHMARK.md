@@ -17,7 +17,7 @@ so we measure on data with **new hospitals, name pools, villages, ID formats, la
 
 \* `scripts/score_composite.py` follows docs/SCORING.md and scoring.toml for every computable part; the
 hidden attacker is approximated by direct-identifier and quasi-identifier exposure, so use
-`scripts/attack.py` for the privacy number (practice: combined risk 11.7%, resistance 0.88).
+`scripts/attack.py` for the privacy number (practice: combined risk 13.0%, resistance 0.87).
 
 **Where it is weakest.** The generated sets above share their generators' habits with the rules, so 0.0% on them
 is the easy case. The hand-written suites are the honest one: every one exposed layouts the parsers had not seen
