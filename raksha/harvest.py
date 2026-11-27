@@ -1146,6 +1146,8 @@ def _json_records(pf: ParsedFile) -> List[Record]:
                 put(fb, F.NAME, kid)
             f = fb.finish()
             f.is_patient = fb.signal or _has_patient_facts(f) or bool(kkind)
+            if isinstance(elem, dict) and _patch_spans_two(elem):
+                _scrub_only(f)
             out.append(Record(rel=pf.rel, loc=loc, facts=f))
         return out
     fb = _FB()
@@ -1163,6 +1165,34 @@ def _json_records(pf: ParsedFile) -> List[Record]:
         f.ids = []
         f.is_patient = False
     return [Record(rel=pf.rel, loc="doc", facts=f)]
+
+
+def _ptr_parent(ptr: str) -> Tuple[str, ...]:
+    """The decoded segments of a JSON Pointer without its last one ("~1" = "/", "~0" = "~")."""
+    segs = [x.replace("~1", "/").replace("~0", "~") for x in ptr.split("/")[1:]]
+    return tuple(segs[:-1])
+
+
+def _patch_spans_two(elem: dict) -> bool:
+    """A JSON Patch / audit-trail entry ("op" with "from" and "path") that moves or copies a value
+    from one record's pointer to another record's: it names two patients, so it belongs to neither."""
+    op, frm, path = elem.get("op"), elem.get("from"), elem.get("path")
+    if not (isinstance(op, str) and isinstance(frm, str) and isinstance(path, str)):
+        return False
+    if not (frm.startswith("/") and path.startswith("/")):
+        return False
+    a, b = _ptr_parent(frm), _ptr_parent(path)
+    return bool(a) and bool(b) and a != b
+
+
+def _scrub_only(f: Facts) -> None:
+    """Every id stays a value to scrub, none links: the record maps to nobody."""
+    for t in f.ids:
+        raw = t.split(":", 1)[-1]
+        if raw and raw not in f.raw_ids:
+            f.raw_ids.append(raw)
+    f.ids = []
+    f.is_patient = False
 
 
 def _mixed_patients(f: Facts) -> bool:
